@@ -120,7 +120,7 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         doc: { ...doc, clips: action.clips, comments: [], removedStack: [] },
-        ui: { ...state.ui, sel: null, detail: null },
+        ui: { ...state.ui, sel: null, detail: null, draft: '' },
       };
     case 'setView':
       return ui(state, { view: action.view });

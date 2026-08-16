@@ -17,7 +17,7 @@ export async function loadEtlClips(): Promise<Clip[] | null> {
     if (!Array.isArray(payload.swings) || payload.swings.length === 0) return null;
     return adaptSession(payload);
   } catch {
-    // No dev server (static preview, or `vite build` output). Seed stands.
+    // No dev server, malformed payload, or corrupt metadata. Seed stands.
     return null;
   }
 }

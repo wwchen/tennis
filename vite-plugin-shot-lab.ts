@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import type { Plugin, ViteDevServer } from 'vite';
 
@@ -26,12 +26,21 @@ const MIME: Record<string, string> = {
 /**
  * Resolves a request path inside the output root, or returns null.
  *
- * Rejecting on the resolved prefix is what stops `../` in a URL from reaching
- * outside `out/` — checking the raw string would miss encoded traversals.
+ * Resolves symlinks before the containment check so that a symlink inside the
+ * tree pointing outside cannot escape the sandbox. Returns null for paths that
+ * do not exist on disk.
  */
 function safeJoin(root: string, rel: string): string | null {
   const full = resolve(root, rel);
-  return full === root || full.startsWith(root + sep) ? full : null;
+  if (!existsSync(full)) return null;
+
+  try {
+    const realRoot = realpathSync(root);
+    const realFull = realpathSync(full);
+    return realFull === realRoot || realFull.startsWith(realRoot + sep) ? realFull : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Mirrors `schema.doc_hash`: sorted-key JSON of everything but `edit`. */
@@ -87,14 +96,20 @@ export default function shotLab(): Plugin {
     apply: 'serve',
     configureServer(server: ViteDevServer) {
       server.middlewares.use('/api/session', (_req, res) => {
-        const payload = readSession(OUT_ROOT());
-        if (payload === null) {
-          res.statusCode = 404;
-          res.end('{"error":"no session"}');
-          return;
+        try {
+          const payload = readSession(OUT_ROOT());
+          if (payload === null) {
+            res.statusCode = 404;
+            res.end('{"error":"no session"}');
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(payload));
+        } catch {
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end('{"error":"corrupt metadata"}');
         }
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify(payload));
       });
 
       server.middlewares.use('/api/media', (req, res) => {
