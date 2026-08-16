@@ -12,6 +12,25 @@ export default defineConfig({
       '@': here('./src'),
     },
   },
+  optimizeDeps: {
+    // @lew-ds/lds-react ships raw .jsx and its runtime imports
+    // `renderToStaticMarkup` from react-dom/server, which resolves to a CJS
+    // build. Left un-prebundled, the dev server hands that CJS file to the
+    // browser as-is, no named exports can be detected, and the app dies at
+    // import time with:
+    //
+    //   does not provide an export named 'renderToStaticMarkup'
+    //
+    // Forcing it through the optimizer produces real ESM with named exports.
+    // Only react-dom/server needs listing — @lew-ds/lds-react is ESM source
+    // Vite cannot prebundle, and naming it here just logs "Cannot optimize
+    // dependency" without changing the outcome.
+    //
+    // `vite build` was never affected: Rollup's commonjs plugin does this
+    // interop already. That is exactly why the bug is invisible to
+    // `vite preview` and to CI, and shows up only in `npm run dev`.
+    include: ['react-dom/server'],
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
