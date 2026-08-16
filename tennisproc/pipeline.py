@@ -70,7 +70,8 @@ def stage_pose(video, candidates, source, settings, work_dir=None,
     backend = pose_mod.make_backend(
         settings.pose_backend, model_path=settings.pose_model,
         tiles=max(1, settings.pose_tiles),
-        min_confidence=settings.pose_min_confidence)
+        min_confidence=settings.pose_min_confidence,
+        window_s=settings.pose_window_s)
     out = []
     try:
         for i, candidate in enumerate(candidates):
@@ -142,6 +143,7 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
     root = session.out_root(outdir, video)
     paths = session.paths_for(root)
     os.makedirs(paths["swings"], exist_ok=True)
+    existing_dirs = _swing_dirs(paths["swings"])
 
     candidates = stage_detect(video, settings, report)
     track_list = stage_pose(video, candidates, source, settings,
@@ -155,6 +157,10 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
             before - len(accepted))
         report.say("dedupe: %d -> %d swings" % (before, len(accepted)))
 
+    # Counted before --limit truncates, so the session document describes
+    # the video rather than the slice of it that was rendered. Reporting
+    # verified=5 next to candidates=150 read as "145 shots evaporated".
+    verified_total = len(accepted)
     if limit:
         accepted = accepted[:limit]
 
@@ -165,13 +171,20 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
                                      players_info["mode"]))
 
     refs = []
+    written_dirs = set()
     for index, ((track, measured), slot) in enumerate(zip(accepted, slots), 1):
         dir_name = session.swing_dir_name(index)
         dest = os.path.join(paths["swings"], dir_name)
         rect = crop.rect_for(measured.boxes, source["width"], source["height"],
                              pad_fraction=settings.crop_pad)
+
+        def missing(source_ms, reason, _dir=dir_name):
+            report.say("  warning: %s frame at %dms not written: %s"
+                       % (_dir, source_ms, reason))
+
         trim, frames = render.render_swing(video, dest, rect, track.contact_ms,
-                                           source, settings)
+                                           source, settings,
+                                           on_missing=missing)
         _attach_pose_scores(frames, track, measured.slot)
         _write_pose_file(dest, track, measured.slot)
 
@@ -186,12 +199,21 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
             raise RuntimeError("built an invalid swing doc for %s: %s"
                                % (dir_name, errors[:3]))
         session.write_json(os.path.join(dest, "metadata.json"), doc)
-        refs.append(session.swing_ref(doc, dir_name))
+        # Probed from disk, not from `doc`: the ETL never writes an `edit`
+        # block, so a swing already reviewed by a human is only visible as a
+        # user-edit.json sitting next to the metadata we just rewrote.
+        refs.append(session.swing_ref(doc, dir_name,
+                                      reviewed=session.swing_reviewed(dest)))
+        written_dirs.add(dir_name)
         if index % 25 == 0:
             report.say("render: %d/%d" % (index, len(accepted)))
 
+    _report_stale(existing_dirs - written_dirs, paths["swings"], report)
+
     detection = {"candidates": len(candidates),
-                 "verified": len(refs),
+                 # The whole video, not the --limit slice of it.
+                 "verified": verified_total,
+                 "rendered": len(refs),
                  "rejected": sum(histogram.values()),
                  "reject_histogram": histogram}
     doc = session.build_session_doc(source, settings, detection, players_info,
@@ -202,6 +224,42 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
     session.write_json(paths["metadata"], doc)
     report.say("wrote %d swings to %s" % (len(refs), root))
     return doc
+
+
+def _swing_dirs(swings_root):
+    """Names of the swing_NNN directories already on disk."""
+    try:
+        return {name for name in os.listdir(swings_root)
+                if name.startswith("swing_")
+                and os.path.isdir(os.path.join(swings_root, name))}
+    except OSError:
+        return set()
+
+
+def _report_stale(stale, swings_root, report):
+    """Warn about swing directories this run did not write.
+
+    Left in place rather than deleted, deliberately. A shorter run -- a
+    raised --onset-k, a --limit -- leaves the tail of a previous run behind,
+    unreferenced by the new session document but still on disk, and
+    `validate` still checks it. Those directories can hold user-edit.json,
+    which is human review work and the one thing here that cannot be
+    regenerated, so removing them automatically is not the ETL's call.
+    """
+    if not stale:
+        return
+    reviewed = sorted(name for name in stale
+                      if session.swing_reviewed(os.path.join(swings_root, name)))
+    report.say("warning: %d swing directories from an earlier run are not "
+               "part of this one (%s)"
+               % (len(stale), ", ".join(sorted(stale)[:5])
+                  + (", ..." if len(stale) > 5 else "")))
+    if reviewed:
+        report.say("         %d of them contain user-edit.json: %s"
+                   % (len(reviewed), ", ".join(reviewed[:5])
+                      + (", ..." if len(reviewed) > 5 else "")))
+    report.say("         they are left in place; remove them yourself if "
+               "they are not wanted")
 
 
 def _attach_pose_scores(frames, track, slot):
@@ -220,10 +278,20 @@ def _attach_pose_scores(frames, track, slot):
 
 
 def _write_pose_file(dest, track, slot):
-    """Per-frame landmarks beside the frames, in crop-normalized space.
+    """Per-frame landmarks beside the frames, in *frame*-normalized space.
 
     Kept so a future classifier or training run does not need the source
     video re-processed, and so the website can draw a skeleton overlay.
+
+    The space is the full source-display frame, 0..1, which is what the
+    `space` field below says and what the tracker produced. It is not the
+    crop: to draw these over clip.mp4 or a frame still, map through the
+    `crop` rect in metadata.json first. This docstring used to claim
+    crop-normalized, contradicting its own payload.
+
+    `measurements` in metadata.json is labelled crop_normalized and is
+    unaffected either way -- every value there is a ratio over
+    torso_height, so it is identical in both spaces.
     """
     series = track.series(slot)
     session.write_json(os.path.join(dest, "pose.json"), {

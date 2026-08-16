@@ -384,5 +384,84 @@ class TestCli(unittest.TestCase):
         self.assertEqual(cli.main(["probe", str(Path(self.tmp) / "no.mp4")]), 2)
 
 
+@unittest.skipUnless(HAVE_FFMPEG, "needs ffmpeg/ffprobe")
+class TestDefaultSettingsEndToEnd(unittest.TestCase):
+    """The defaults, changing nothing but the backend.
+
+    Every other end-to-end test tunes the settings down to keep the fixture
+    small -- and in doing so stopped exercising the configuration real users
+    get. Three defects lived in that blind spot at once:
+
+      * frame_span_s (1.6) is wider than 2*pose_window_s (0.8), so the outer
+        stills legitimately have no pose_score, which the validator then
+        rejected. Every default run wrote a clip and 49 JPEGs and *then*
+        raised, so no session document was ever produced.
+      * pose_tiles defaulting to 0 selected MediaPipe's VIDEO running mode,
+        which rejects the non-monotonic timestamps this pipeline hands it.
+      * the pose cache key ignored pose_backend.
+
+    pose_backend is the one override, and it is unavoidable: MediaPipe
+    aborts the process without a window server. Everything else must stay
+    whatever config.Settings() says -- do not "fix" a failure here by
+    narrowing the span.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        # 20s, so a swing's full +/-800ms frame span sits well inside.
+        cls.video = make_session_video(cls.tmp, duration=20)
+        cls.outdir = Path(cls.tmp) / "out"
+        cls.settings = config.Settings(pose_backend="stub")
+        cls.doc = pipeline.run(cls.video, cls.outdir, cls.settings)
+        cls.root = session.out_root(cls.outdir, cls.video)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_defaults_are_internally_consistent(self):
+        self.assertEqual(config.Settings().validate(), [])
+
+    def test_run_completes_and_writes_a_session_document(self):
+        self.assertEqual(schema.validate_session(self.doc), [])
+        self.assertTrue(self.doc["swings"],
+                        "no swings survived a default run")
+        self.assertTrue(os.path.exists(
+            os.path.join(self.root, "metadata.json")))
+        checked, problems = session.validate_tree(self.root)
+        self.assertEqual(problems, [])
+        self.assertGreater(checked, 1)
+
+    def test_frames_outside_the_pose_window_may_lack_a_score(self):
+        """The exact shape that used to abort the run.
+
+        A default swing spans +/-800ms of stills over a +/-400ms pose
+        window, so roughly half the frames carry pose_score: null while
+        `measurements` is fully populated. That document must validate.
+        """
+        with open(os.path.join(self.root, self.doc["swings"][0]["dir"],
+                               "metadata.json")) as fh:
+            swing = json.load(fh)
+
+        self.assertIsNotNone(swing["measurements"])
+        scored = [f for f in swing["frames"] if f["pose_score"] is not None]
+        unscored = [f for f in swing["frames"] if f["pose_score"] is None]
+        self.assertTrue(scored, "no frame carried a pose score")
+        self.assertTrue(unscored,
+                        "expected scoreless frames at the span edges; if this "
+                        "fails the defaults changed and the regression is no "
+                        "longer covered")
+        self.assertEqual(schema.validate_swing(swing), [])
+
+    def test_rerun_reuses_the_pose_cache(self):
+        cache = os.path.join(self.root, "work", "pose.jsonl.gz")
+        self.assertTrue(os.path.exists(cache))
+        stamp = os.path.getmtime(cache)
+        pipeline.run(self.video, self.outdir, self.settings)
+        self.assertEqual(os.path.getmtime(cache), stamp,
+                         "second run rewrote a cache it should have reused")
+
+
 if __name__ == "__main__":
     unittest.main()

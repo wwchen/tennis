@@ -1,19 +1,32 @@
 """Resolved settings for one ETL run.
 
 Every tunable lives here with its default. `settings_hash` is part of the
-cache key for the expensive stages, so changing a knob that affects pose or
-frame extraction invalidates the cache automatically rather than silently
-reusing stale work.
+cache key for the one cached stage -- pose -- so changing a knob that feeds
+it invalidates the cache automatically rather than silently reusing stale
+work. Nothing else caches; render always re-runs.
 """
 
 import dataclasses
 import hashlib
 import json
 
-# Which settings actually change the cached artifacts. Changing --jobs or
-# --limit must not throw away a pose pass that is still valid.
-_CACHE_KEYS = ("onset_k", "min_gap_s", "pose_window_s", "pose_model",
-               "pose_tiles", "pose_min_confidence", "min_torso")
+# Which settings actually change the *pose cache*, the only cached artifact.
+# Two rules, both of which have bitten:
+#
+#   * Anything the pose pass consumes must be listed. `pose_backend` was
+#     not, so a headless `--pose-backend=stub` run wrote a cache of
+#     synthetic stick figures that a later real MediaPipe run read straight
+#     back -- every crop, hitting-side call and measurement came from the
+#     stub, with no warning.
+#   * Anything it does not consume must not be listed, or tuning a cheap
+#     knob discards an expensive pass. `min_gap_s` and `min_torso` were
+#     here despite being verify-stage only, so sweeping --gap re-ran pose
+#     for nothing.
+#
+# Verify-stage knobs (min_gap_s, min_torso, min_wrist_speed), every render
+# knob, and --limit are all deliberately absent.
+_CACHE_KEYS = ("onset_k", "pose_backend", "pose_window_s", "pose_model",
+               "pose_tiles", "pose_min_confidence")
 
 
 @dataclasses.dataclass
@@ -45,7 +58,10 @@ class Settings:
     # --- pose ------------------------------------------------------------
     pose_window_s: float = 0.40   # decoded either side of the onset
     pose_model: str = "models/pose_landmarker_lite.task"
-    pose_tiles: int = 0           # 0 = probe automatically
+    # Vertical strips, for a player too small in frame to be detected whole.
+    # 0 and 1 both mean "no tiling"; there is no auto-probe, whatever the
+    # name once suggested.
+    pose_tiles: int = 0
     pose_min_confidence: float = 0.4
     pose_backend: str = "mediapipe"
 
@@ -70,12 +86,24 @@ class Settings:
     player_count: int = 0         # 0 = auto
 
     # --- run -------------------------------------------------------------
-    jobs: int = 4
     limit: int = 0                # 0 = all
 
     def frames_per_swing(self, source_fps):
+        """How many stills `render.frame_times_ms` will ask for.
+
+        Must mirror that function exactly: it builds the grid outward from
+        contact, so the count is 2*half+1, not round(span*fps)+1. The two
+        disagreed by one whenever span*fps landed on an odd integer
+        (--span 0.5 at 30fps: 16 predicted, 17 written).
+
+        This is the count *requested*. Times outside the video are dropped,
+        so a swing near either end yields fewer.
+        """
         fps = self.frame_fps or source_fps
-        return int(round(self.frame_span_s * fps)) + 1
+        if fps <= 0:
+            return 1
+        half = max(1, int(round((self.frame_span_s / 2.0) * fps)))
+        return 2 * half + 1
 
     def to_dict(self):
         return dataclasses.asdict(self)
@@ -101,19 +129,51 @@ class Settings:
         return out
 
     def validate(self):
+        """Every knob that can fail downstream, checked before pose runs.
+
+        The point is to fail in the first second rather than after a
+        half-hour pose pass: an unvalidated --clip-height of -10 used to
+        reach ffmpeg as `scale=-2:-10` and blow up at render time.
+        """
         errs = []
         if self.onset_k <= 0:
             errs.append("onset_k must be > 0")
+        if self.min_gap_s < 0:
+            errs.append("min_gap_s must be >= 0")
+        if self.min_torso < 0:
+            errs.append("min_torso must be >= 0")
+        if self.min_wrist_speed < 0:
+            errs.append("min_wrist_speed must be >= 0")
+        if self.pose_window_s <= 0:
+            errs.append("pose_window_s must be > 0")
+        if self.pose_tiles < 0:
+            errs.append("pose_tiles must be >= 0")
+        if not 0 <= self.pose_min_confidence <= 1:
+            errs.append("pose_min_confidence must be 0..1")
         if self.pre_s <= 0 or self.post_s <= 0:
             errs.append("pre_s and post_s must be > 0")
+        if self.clip_height <= 0:
+            errs.append("clip_height must be > 0")
+        if not 0 <= self.clip_crf <= 51:
+            errs.append("clip_crf must be 0..51")
         if self.frame_span_s <= 0:
             errs.append("frame_span_s must be > 0")
+        if self.frame_fps < 0:
+            errs.append("frame_fps must be >= 0 (0 means the source rate)")
+        if self.frame_long_edge <= 0:
+            errs.append("frame_long_edge must be > 0")
         if not 1 <= self.frame_quality <= 100:
             errs.append("frame_quality must be 1..100")
         if self.player_mode not in ("side", "depth"):
             errs.append("player_mode must be side or depth")
-        if self.pose_backend not in ("mediapipe", "stub", "none"):
-            errs.append("pose_backend must be mediapipe, stub or none")
+        if self.player_count not in (0, 1, 2):
+            errs.append("player_count must be 0 (auto), 1 or 2")
+        # Only what make_backend() can actually build. "none" used to pass
+        # here and then raise PoseError several stages later.
+        if self.pose_backend not in ("mediapipe", "stub"):
+            errs.append("pose_backend must be mediapipe or stub")
         if self.crop_pad < 0:
             errs.append("crop_pad must be >= 0")
+        if self.limit < 0:
+            errs.append("limit must be >= 0 (0 means all)")
         return errs

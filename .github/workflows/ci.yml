@@ -47,6 +47,46 @@ jobs:
           path: dist/
           retention-days: 7
 
+  etl:
+    # tennisproc, the Python ETL. Separate from `app` because it shares
+    # nothing with it -- no package.json, no node_modules -- and because a
+    # failure here should name the ETL rather than "CI".
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # ffmpeg and ffprobe are not optional: without them 82 of the tests
+      # skip, including every end-to-end one, and the suite reports green
+      # while covering almost nothing.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+
+      # Guards the claim the suite makes about itself. If ffmpeg went missing
+      # or the fixtures stopped building, the run above would still say OK --
+      # just with everything skipped.
+      - name: Assert the end-to-end tests actually ran
+        run: |
+          python -m unittest discover -s tests 2>&1 | tee /tmp/out.txt
+          skipped=$(grep -oE 'skipped=[0-9]+' /tmp/out.txt | cut -d= -f2 || true)
+          skipped=${skipped:-0}
+          echo "skipped: $skipped"
+          if [ "$skipped" -gt 12 ]; then
+            echo "::error::$skipped tests skipped, expected <= 12 (real-footage fixtures plus the display check). Is ffmpeg installed?"
+            exit 1
+          fi
+
   docker-build:
     runs-on: ubuntu-latest
     timeout-minutes: 25

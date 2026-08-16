@@ -224,16 +224,23 @@ metadata written. See its README for tuning, the output layout and the full
 schema; this is the short version.
 
 ```bash
-# MediaPipe 0.10.x on Python 3.13 specifically. Newer versions abort on macOS.
-python3.13 -m venv .venv313
-.venv313/bin/pip install "mediapipe==0.10.35" opencv-python-headless numpy
+brew install ffmpeg            # or: sudo apt-get install -y ffmpeg
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 
-.venv313/bin/python -m tennisproc detect ~/Downloads/session.MOV   # tune, renders nothing
-.venv313/bin/python -m tennisproc run    ~/Downloads/session.MOV --outdir out
-.venv313/bin/python -m tennisproc validate out/session
+.venv/bin/python -m tennisproc detect ~/Downloads/session.MOV   # tune, renders nothing
+.venv/bin/python -m tennisproc run    ~/Downloads/session.MOV --outdir out
+.venv/bin/python -m tennisproc validate out/session
 
-.venv313/bin/python -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s tests
 ```
+
+`ffmpeg` and `ffprobe` are required, not optional — without them the suite
+still prints `OK` while skipping every end-to-end test.
+
+Pose is a separate install and is not needed for the tests. When you do want
+it: `pip install "mediapipe==0.10.35"` on **Python 3.13 specifically**, since
+newer versions abort on macOS. `requirements.txt` carries the model download.
 
 **Pose needs a logged-in GUI session.** Over ssh or from a background job,
 MediaPipe does not raise — it aborts the process. `tennisproc` checks for a

@@ -42,6 +42,7 @@
  "detection": {
   "candidates": 290,
   "verified": 191,
+  "rendered": 191,
   "rejected": 99,
   "reject_histogram": {
    "no_pose": 41,

@@ -17,6 +17,8 @@ Landmark coordinates are normalized to the frame that was passed in
 
 import ctypes
 
+from .errors import TennisprocError
+
 # The subset of the 33 BlazePose landmarks this pipeline uses.
 NOSE = 0
 L_SHOULDER, R_SHOULDER = 11, 12
@@ -28,7 +30,7 @@ N_LANDMARKS = 33
 DEFAULT_MODEL = "models/pose_landmarker_lite.task"
 
 
-class PoseError(RuntimeError):
+class PoseError(TennisprocError):
     pass
 
 
@@ -127,29 +129,58 @@ class StubBackend(PoseBackend):
     Either replays a caller-supplied script keyed by frame index, or -- by
     default -- generates one player whose right wrist swings through an arc,
     so verification and measurement have something plausible to chew on.
+
+    The arc is timestamp-driven, not call-counted, and its *speed* peaks at
+    the middle of each track. Both details matter. extract_track builds a
+    track spanning contact +/- pose_window_s, so the middle of a track is
+    the moment of contact -- which is where a real swing is fastest and
+    where verify.py expects to find the peak. The previous version swept
+    linearly off a global call counter, so its speed was constant, argmax
+    picked the first sample, and every synthetic swing peaked at the window
+    *edge*: a shape no real swing has. That went unnoticed only because the
+    onset gate it should have tripped was itself unreachable.
     """
 
     name = "stub"
 
-    def __init__(self, script=None, players=1, swing_at=None):
+    def __init__(self, script=None, players=1, window_s=0.40):
         self.script = script
         self.players = players
-        self.swing_at = swing_at
+        self.window_ms = float(window_s) * 1000.0
         self.calls = 0
+        self._origin_ms = None
+        self._last_ms = None
 
     def detect(self, frame, timestamp_ms=None):
         index = self.calls
         self.calls += 1
         if self.script is not None:
             return list(self.script[index % len(self.script)])
-        return [self._body(index, slot) for slot in range(self.players)]
+        phase = self._phase(timestamp_ms, index)
+        return [self._body(phase, slot) for slot in range(self.players)]
 
-    def _body(self, index, slot):
+    def _phase(self, timestamp_ms, index):
+        """0..1 across one track, so 0.5 is the moment of contact.
+
+        A new track is recognised by a timestamp that goes backwards or
+        jumps further than one window -- which is exactly what happens when
+        the decoder moves on to the next candidate.
+        """
+        if timestamp_ms is None:
+            return (index % 24) / 24.0
+        if (self._last_ms is None or timestamp_ms < self._last_ms
+                or timestamp_ms - self._last_ms > self.window_ms):
+            self._origin_ms = timestamp_ms
+        self._last_ms = timestamp_ms
+        span = max(1.0, 2.0 * self.window_ms)
+        return min(1.0, max(0.0, (timestamp_ms - self._origin_ms) / span))
+
+    def _body(self, phase, slot):
         base_x = 0.3 + slot * 0.4
-        # Wrist sweeps front to back across the frames it is asked for; the
-        # peak lands mid-window, which is where an onset should sit.
-        phase = (index % 24) / 24.0
-        sweep = -0.18 + 0.36 * phase
+        # Smoothstep, so d(sweep)/dt is 6p(1-p) -- zero at the ends and
+        # greatest at p=0.5. That puts peak wrist speed at contact.
+        eased = 3.0 * phase ** 2 - 2.0 * phase ** 3
+        sweep = -0.18 + 0.36 * eased
         points = [(base_x, 0.5, 0.9)] * N_LANDMARKS
         points = list(points)
         points[NOSE] = (base_x, 0.30, 0.95)
@@ -175,8 +206,18 @@ class MediaPipeBackend(PoseBackend):
     Tiling exists because a player in a portrait phone video occupies a small
     part of the frame and the detector misses them outright. Overlapping
     vertical strips are each run at full model resolution and the results
-    de-duplicated. IMAGE running mode is used when tiling, since VIDEO mode's
-    tracker assumes successive frames are the same view.
+    de-duplicated.
+
+    IMAGE running mode, always. VIDEO mode's tracker assumes successive
+    frames are one continuous view, and this pipeline never gives it one: a
+    single landmarker is reused across every candidate, and consecutive
+    candidates can be minutes apart. Worse, VIDEO mode requires strictly
+    increasing timestamps, and candidates are not gap-collapsed before pose
+    -- each track spans contact +/- pose_window_s, so any two shots closer
+    than 2*pose_window_s made the second track open at a timestamp earlier
+    than the first one closed, and MediaPipe rejected it. config.py
+    documents genuine shot pairs 0.12s apart, so that was routine rather
+    than a corner case.
     """
 
     name = "mediapipe"
@@ -202,12 +243,10 @@ class MediaPipeBackend(PoseBackend):
         self.overlap = overlap
         self._mp = mp
         base = mp.tasks.BaseOptions(model_asset_path=model_path)
-        mode = (mp.tasks.vision.RunningMode.IMAGE if self.tiles > 1
-                else mp.tasks.vision.RunningMode.VIDEO)
-        self._mode = mode
+        self._mode = mp.tasks.vision.RunningMode.IMAGE
         options = mp.tasks.vision.PoseLandmarkerOptions(
             base_options=base,
-            running_mode=mode,
+            running_mode=self._mode,
             num_poses=max_people,
             min_pose_detection_confidence=min_confidence,
             min_pose_presence_confidence=min_confidence,
@@ -220,13 +259,12 @@ class MediaPipeBackend(PoseBackend):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         return self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
 
-    def _detect_whole(self, frame, timestamp_ms):
+    def _detect_whole(self, frame, timestamp_ms=None):
+        # timestamp_ms is accepted to satisfy the PoseBackend interface and
+        # deliberately unused: IMAGE mode carries no state between calls,
+        # which is the whole point (see the class docstring).
         image = self._to_mp_image(frame)
-        if self._mode == self._mp.tasks.vision.RunningMode.VIDEO:
-            result = self._landmarker.detect_for_video(
-                image, int(timestamp_ms or 0))
-        else:
-            result = self._landmarker.detect(image)
+        result = self._landmarker.detect(image)
         return [self._convert(lms) for lms in (result.pose_landmarks or [])]
 
     def _convert(self, lms, x_offset=0.0, x_scale=1.0):
@@ -279,9 +317,15 @@ def dedupe(poses, min_dist=0.05):
 
 
 def make_backend(name, model_path=DEFAULT_MODEL, tiles=1, min_confidence=0.4,
-                 **kwargs):
+                 window_s=0.40, **kwargs):
+    """Build a backend by name.
+
+    `window_s` is the pose window the caller will decode with. Only the stub
+    uses it, to centre its synthetic swing on contact; MediaPipe neither
+    needs nor receives it.
+    """
     if name == "stub":
-        return StubBackend(**kwargs)
+        return StubBackend(window_s=window_s, **kwargs)
     if name == "mediapipe":
         return MediaPipeBackend(model_path=model_path, tiles=tiles,
                                 min_confidence=min_confidence)

@@ -32,6 +32,11 @@ WRIST_TOO_SLOW = "wrist_too_slow"
 ONSET_OFF_SWING = "onset_off_swing"
 
 MIN_DETECTED_FRAMES = 4
+
+# How far from the onset the wrist's peak may sit, as a fraction of the pose
+# window. Must be < 1.0 or the test is vacuous -- the track is only that wide
+# to begin with. See measure_slot().
+ONSET_WINDOW_FRACTION = 0.5
 # A wrist that jumps implausibly far between frames is a detector glitch, not
 # a limb: cap it rather than letting one bad frame dominate peak speed.
 SPEED_CAP = 40.0
@@ -161,7 +166,15 @@ def measure_slot(track, slot, settings):
 
     # The onset should coincide with the swing, not sit outside it. A ball
     # bouncing near a stationary player would otherwise pass.
-    window_ms = settings.pose_window_s * 1000.0
+    #
+    # The tolerance is a *fraction* of the pose window, and has to be: the
+    # track is decoded as contact +/- pose_window_s, so comparing against
+    # the full window made this unreachable by construction. It never fired
+    # on real footage and the histogram read onset_off_swing: 0 forever.
+    # Half the window means the wrist's fastest moment must land in the
+    # middle of the decoded span, which is what "the onset is on the swing"
+    # actually means.
+    window_ms = settings.pose_window_s * 1000.0 * ONSET_WINDOW_FRACTION
     if peak_ms is not None and abs(peak_ms - track.contact_ms) > window_ms:
         return Measured(slot, reason=ONSET_OFF_SWING, torso_height=torso,
                         wrist_peak_speed=peak_speed, hitting_side=side,

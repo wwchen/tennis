@@ -180,7 +180,7 @@ def _check_labels(c, labels, path):
                 c.add("%s.tags[%d]" % (path, i), "expected string")
 
 
-def _check_frames(c, frames, path, has_pose):
+def _check_frames(c, frames, path):
     if not isinstance(frames, list):
         c.add(path, "expected list, got %s" % type(frames).__name__)
         return
@@ -197,7 +197,13 @@ def _check_frames(c, frames, path, has_pose):
         ms = c.field(frame, "source_ms", where, _INT, non_negative=True)
         c.field(frame, "clip_ms", where, _INT)
         c.field(frame, "offset_contact_ms", where, _INT)
-        c.field(frame, "pose_score", where, _NUM, optional=not has_pose)
+        # Always optional, even when `measurements` is present. The frame
+        # span is deliberately wider than the pose window -- a human needs
+        # dense stills either side of contact, but pose is only decoded near
+        # it -- so the outer frames have no score to carry. Requiring one
+        # here made every default `run` fail validation after writing the
+        # clip and all its JPEGs.
+        c.field(frame, "pose_score", where, _NUM, optional=True)
         c.field(frame, "stage", where, (str,), optional=True, enum=STAGES)
         # Strictly increasing: overlay() joins on source_ms, so a duplicate
         # would make a human's stage label ambiguous.
@@ -260,12 +266,12 @@ def validate_swing(doc):
     if labels is not None:
         _check_labels(c, labels, "labels")
 
-    # measurements is null when pose was unavailable; frames then carry no
-    # pose_score either, so the two checks are linked.
-    has_pose = doc.get("measurements") is not None
+    # measurements is null when pose was unavailable. Frame pose_score is
+    # *not* tied to it: pose is decoded over a narrower window than the frame
+    # span, so even a fully measured swing has scoreless frames at the edges.
     if "measurements" not in doc:
         c.add("measurements", "missing")
-    elif has_pose:
+    elif doc["measurements"] is not None:
         if not isinstance(doc["measurements"], dict):
             c.add("measurements", "expected object or null")
         else:
@@ -274,7 +280,7 @@ def validate_swing(doc):
     if "frames" not in doc:
         c.add("frames", "missing")
     else:
-        _check_frames(c, doc["frames"], "frames", has_pose)
+        _check_frames(c, doc["frames"], "frames")
 
     if "edit" not in doc:
         c.add("edit", "missing (use null in ETL output)")
@@ -302,7 +308,11 @@ def validate_session(doc):
 
     det = c.block(doc, "detection", "<root>")
     if det is not None:
-        for name in ("candidates", "verified", "rejected"):
+        # `verified` counts what survived verification in the whole video;
+        # `rendered` counts what --limit actually wrote. They differ only
+        # under --limit, and conflating them made a limited run's document
+        # read as though the missing shots had been rejected.
+        for name in ("candidates", "verified", "rendered", "rejected"):
             c.field(det, name, "detection", _INT, non_negative=True)
         hist = c.block(det, "reject_histogram", "detection")
         if hist is not None:

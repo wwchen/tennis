@@ -16,7 +16,7 @@ import argparse
 import os
 import sys
 
-from . import config, pipeline, probe, session
+from . import config, errors, pipeline, probe, session
 
 
 def _add_settings_args(parser):
@@ -37,7 +37,8 @@ def _add_settings_args(parser):
                    help="stub runs headless with synthetic poses")
     g.add_argument("--pose-model", default=s.pose_model)
     g.add_argument("--pose-tiles", type=int, default=s.pose_tiles,
-                   help="vertical tiles for small players; 0 to probe")
+                   help="vertical tiles for a player too small to detect "
+                        "whole; 0 or 1 means no tiling (default %(default)s)")
     g.add_argument("--pose-window", type=float, default=s.pose_window_s,
                    dest="pose_window_s",
                    help="seconds either side of the onset to decode")
@@ -63,7 +64,8 @@ def _add_settings_args(parser):
     g.add_argument("--player-mode", default=s.player_mode,
                    choices=("side", "depth"))
     g.add_argument("--players", type=int, default=s.player_count,
-                   dest="player_count", help="0 to detect automatically")
+                   dest="player_count", choices=(0, 1, 2),
+                   help="0 to detect automatically (default %(default)s)")
 
 
 def _settings_from(args):
@@ -119,8 +121,9 @@ def cmd_detect(args):
     print("\n%d candidates -> %d swings (%.0f%% kept)"
           % (len(candidates), len(accepted),
              100.0 * len(accepted) / max(1, len(candidates))))
-    if not args.dry_run:
-        print("(nothing written; use `run` to render)")
+    # Unconditional: `detect` never writes in either mode, so printing this
+    # only when --dry-run was absent had it exactly backwards.
+    print("(nothing written; use `run` to render)")
     return 0
 
 
@@ -213,7 +216,11 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (probe.ProbeError, OSError) as exc:
+    except (errors.TennisprocError, OSError) as exc:
+        # The base class, not a list of stage errors. Enumerating them meant
+        # PoseError was not caught, so the one message that actually helps a
+        # user on a headless box -- "MediaPipe needs a window-server
+        # session" -- arrived as a traceback.
         print("error: %s" % exc, file=sys.stderr)
         return 2
 

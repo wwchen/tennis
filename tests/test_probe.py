@@ -147,12 +147,31 @@ class TestSettings(unittest.TestCase):
         self.assertNotEqual(base.cache_hash(),
                             config.Settings(pose_tiles=3).cache_hash())
 
+    def test_cache_hash_separates_pose_backends(self):
+        """Regression: a stub cache must never be reused by a real run.
+
+        pose_backend was missing from the cache key, so `run
+        --pose-backend=stub` wrote a cache of synthetic stick figures that a
+        later MediaPipe run read straight back -- every crop, hitting-side
+        call and measurement came from the stub, silently.
+        """
+        self.assertNotEqual(
+            config.Settings(pose_backend="stub").cache_hash(),
+            config.Settings(pose_backend="mediapipe").cache_hash())
+
     def test_cache_hash_stable_for_irrelevant_knobs(self):
-        """Changing --jobs must not throw away a valid pose pass."""
+        """A knob the pose pass never reads must not invalidate it.
+
+        min_gap_s and min_torso are verify-stage only and used to sit in the
+        key, so sweeping --gap re-ran pose for nothing.
+        """
         base = config.Settings()
-        for other in (config.Settings(jobs=16), config.Settings(limit=5),
+        for other in (config.Settings(limit=5),
                       config.Settings(clip_crf=18),
-                      config.Settings(frame_quality=70)):
+                      config.Settings(frame_quality=70),
+                      config.Settings(min_gap_s=0.5),
+                      config.Settings(min_torso=0.2),
+                      config.Settings(min_wrist_speed=2.0)):
             self.assertEqual(base.cache_hash(), other.cache_hash())
 
     def test_frames_per_swing_uses_source_fps_by_default(self):

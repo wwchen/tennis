@@ -8,20 +8,43 @@ stage ship as `null` fields for a human to fill in via a review website. A
 classifier can land later as a separate step writing the same fields, without
 touching the ETL or migrating the schema.
 
+## Install
+
+Python 3.9 or newer, plus `ffmpeg` and `ffprobe` on PATH. Those two are not
+pip-installable and nothing here works without them: every stage shells out to
+ffmpeg, and the test suite skips 82 of its cases when they are missing.
+
+```bash
+brew install ffmpeg            # or: sudo apt-get install -y ffmpeg
+
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt      # at the repo root
+```
+
+Pose is optional and separate. `--pose-backend=stub` runs the whole pipeline
+without it, which is the only way this package works on a headless machine at
+all. Real detection needs a desktop session, MediaPipe, and the model:
+
+```bash
+.venv/bin/pip install mediapipe
+curl --create-dirs -o models/pose_landmarker_lite.task \
+  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+```
+
 ## Quick start
 
 ```bash
 # what is this video?
-.venv313/bin/python -m tennisproc probe ~/Downloads/IMG_0305.MOV
+.venv/bin/python -m tennisproc probe ~/Downloads/IMG_0305.MOV
 
 # how many shots would it find, without rendering anything?
-.venv313/bin/python -m tennisproc detect ~/Downloads/IMG_0305.MOV
+.venv/bin/python -m tennisproc detect ~/Downloads/IMG_0305.MOV
 
 # the whole ETL
-.venv313/bin/python -m tennisproc run ~/Downloads/IMG_0305.MOV --outdir out
+.venv/bin/python -m tennisproc run ~/Downloads/IMG_0305.MOV --outdir out
 
 # check the output against the schema
-.venv313/bin/python -m tennisproc validate out/IMG_0305
+.venv/bin/python -m tennisproc validate out/IMG_0305
 ```
 
 ### Pose needs a logged-in GUI session
@@ -69,7 +92,7 @@ behind the court.
 
 ```bash
 for k in 4 6 8 12; do
-  .venv313/bin/python -m tennisproc detect ~/Downloads/IMG_0305.MOV --onset-k $k
+  .venv/bin/python -m tennisproc detect ~/Downloads/IMG_0305.MOV --onset-k $k
 done
 ```
 
@@ -95,7 +118,7 @@ Shots missing entirely means the opposite: lower it.
 | `--onset-k` | 8.0 | Audio threshold, in MADs above the median. Lower finds more and admits more noise. |
 | `--gap` | 0.12 | Collapse candidates closer together than this many seconds. |
 | `--min-wrist-speed` | 0.45 | Reject swings slower than this, in torso heights per second. |
-| `--pose-tiles` | 0 | Vertical tiles for small players; 0 probes automatically. |
+| `--pose-tiles` | 0 | Vertical tiles for a player too small to detect whole. 0 or 1 means no tiling; there is no auto-probe. |
 | `--span` | 1.6 | Total seconds of frame stills around contact. |
 | `--fps` | 0 | Stills per second; 0 uses the source rate. |
 | `--long-edge` | 640 | Longest side of a frame still, in pixels. |
@@ -247,12 +270,27 @@ stops meaning the same person the moment two players change ends. That is why
 ## Tests
 
 ```bash
-.venv313/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-Stdlib `unittest`, because there is no network in this environment to install
-pytest. The `StubBackend` is what makes the suite possible at all: it injects
-synthetic landmark tracks, so the whole ETL runs headless where MediaPipe would
-abort. It also reproduces the free-arm-is-wider geometry deliberately, so the
-hitting-wrist selection is tested against the real failure mode rather than a
-friendly case.
+290 tests, about two minutes. **Check the skip count.** Without ffmpeg on PATH
+the suite still reports `OK` while skipping 82 cases -- every end-to-end test
+among them -- so a green run means very little on its own. Expect no more than
+5 skips: four real-footage tests whose videos are not in the repository, and
+one display check. CI enforces that ceiling.
+
+Stdlib `unittest`, because there is no network in the environment this was
+built in to install pytest. The `StubBackend` is what makes the suite possible
+at all: it injects synthetic landmark tracks, so the whole ETL runs headless
+where MediaPipe would abort. It reproduces the free-arm-is-wider geometry
+deliberately, so hitting-wrist selection is tested against the real failure
+mode rather than a friendly case, and its wrist *accelerates* through the
+middle of each track, so peak speed lands at contact the way a real swing
+does.
+
+`TestDefaultSettingsEndToEnd` runs the pipeline with `config.Settings()`
+untouched apart from the backend. Every other end-to-end test narrows the
+frame span to keep its fixture small, and three defects once lived in exactly
+that blind spot -- including one that made every default run abort after
+writing a clip and 49 stills. Do not fix a failure there by narrowing the
+span.

@@ -25,9 +25,10 @@ import subprocess
 
 from . import crop as crop_mod
 from . import probe as probe_mod
+from .errors import TennisprocError
 
 
-class RenderError(RuntimeError):
+class RenderError(TennisprocError):
     pass
 
 
@@ -57,17 +58,24 @@ def frame_times_ms(contact_ms, span_s, fps, duration_ms):
 
     Contact itself is always on the grid -- the times are built outward from
     it -- so the frame a human will call "contact" exists to be labelled.
+
+    The upper bound is the last frame's presentation time, not the duration.
+    A video runs for `duration` but its final frame starts one interval
+    earlier, and asking ffmpeg for a timestamp inside that trailing gap
+    yields no frame at all -- which used to abort an entire run on a swing
+    near the end of a session.
     """
     if fps <= 0:
         return [int(contact_ms)]
     step_ms = 1000.0 / fps
+    last_ms = max(0, int(duration_ms) - int(step_ms))
     half = max(1, int(round((span_s / 2.0) / (step_ms / 1000.0))))
     times = []
     for i in range(-half, half + 1):
         t = int(round(contact_ms + i * step_ms))
-        if 0 <= t <= duration_ms:
+        if 0 <= t <= last_ms:
             times.append(t)
-    return times or [int(min(max(0, contact_ms), duration_ms))]
+    return times or [int(min(max(0, contact_ms), last_ms))]
 
 
 def cut_clip(video, dest, rect, start_ms, end_ms, height=480, crf=26):
@@ -108,12 +116,21 @@ def cut_clip(video, dest, rect, start_ms, end_ms, height=480, crf=26):
     }
 
 
-def extract_frames(video, dest_dir, rect, times_ms, long_edge=640, quality=88):
+def extract_frames(video, dest_dir, rect, times_ms, long_edge=640, quality=88,
+                   on_missing=None):
     """Write one JPEG per timestamp. Returns [(index, filename, source_ms)].
 
     Each still is seeked individually rather than filtered as a stream: the
     grid must land on exact timestamps that metadata.json can record, and an
     fps filter would drift off them.
+
+    A still that cannot be produced is skipped, not fatal. One unreadable
+    timestamp near the end of a session used to raise out of the whole ETL
+    after 297 swings had already been rendered, losing the session document
+    with it -- a gap in one frame grid is not worth that. `on_missing` is
+    called with (source_ms, reason) for each, so the skip is reported rather
+    than silent: ffmpeg can exit 0 having written nothing at all, which is
+    exactly the yuvj420p failure noted above.
     """
     os.makedirs(dest_dir, exist_ok=True)
     out_w, out_h = crop_mod.scale_to_long_edge(rect["w"], rect["h"], long_edge)
@@ -127,23 +144,34 @@ def extract_frames(video, dest_dir, rect, times_ms, long_edge=640, quality=88):
     for index, source_ms in enumerate(times_ms):
         name = "frame_%04d.jpg" % index
         path = os.path.join(dest_dir, name)
-        _run(["ffmpeg", "-v", "error",
-              "-ss", "%.3f" % (source_ms / 1000.0),
-              "-i", str(video),
-              "-frames:v", "1", "-vf", vf, "-q:v", str(qv),
-              "-y", path])
+        try:
+            _run(["ffmpeg", "-v", "error",
+                  "-ss", "%.3f" % (source_ms / 1000.0),
+                  "-i", str(video),
+                  "-frames:v", "1", "-vf", vf, "-q:v", str(qv),
+                  "-y", path])
+        except RenderError as exc:
+            if on_missing:
+                on_missing(source_ms, str(exc))
+            continue
         if os.path.exists(path):
             written.append((index, name, source_ms))
+        elif on_missing:
+            on_missing(source_ms, "ffmpeg exited 0 but wrote no file")
     return written
 
 
-def render_swing(video, dest_dir, rect, contact_ms, source, settings):
+def render_swing(video, dest_dir, rect, contact_ms, source, settings,
+                 on_missing=None):
     """Render one swing's clip and frames.
 
     Returns (trim_block, [frame_records]) ready for a SwingDoc. Frame records
     carry `source_ms` as identity and `offset_contact_ms` measured from the
     detector's contact time, which the ETL owns and never rewrites -- so a
     human moving contact later cannot leave 49 stale offsets behind.
+
+    `on_missing(source_ms, reason)` is forwarded to extract_frames; a still
+    that cannot be produced is skipped and reported, never fatal.
     """
     os.makedirs(dest_dir, exist_ok=True)
     start_ms, end_ms = clip_bounds(contact_ms, settings.pre_s, settings.post_s,
@@ -158,7 +186,8 @@ def render_swing(video, dest_dir, rect, contact_ms, source, settings):
                            source["duration_ms"])
     written = extract_frames(video, os.path.join(dest_dir, "frames"), rect,
                              times, long_edge=settings.frame_long_edge,
-                             quality=settings.frame_quality)
+                             quality=settings.frame_quality,
+                             on_missing=on_missing)
 
     frames = []
     for _, name, source_ms in written:

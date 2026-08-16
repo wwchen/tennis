@@ -129,6 +129,7 @@ def extract_track(video, candidate, source, backend, window_s=0.40, cv2=None):
     cap = open_capture(video, cv2)
     frames = []
     frame_size = None
+    decoded = 0
     try:
         cap.set(cv2.CAP_PROP_POS_MSEC, float(start_ms))
         while True:
@@ -137,9 +138,21 @@ def extract_track(video, candidate, source, backend, window_s=0.40, cv2=None):
             if not ok:
                 break
             if position_ms is None or position_ms <= 0:
-                position_ms = start_ms + len(frames) * (1000.0 / source["fps"])
+                # Counted from frames *decoded*, not frames kept: the skip
+                # below can drop some, and len(frames) would then understate
+                # how far the decoder has actually advanced.
+                position_ms = start_ms + decoded * (1000.0 / source["fps"])
+            decoded += 1
             if position_ms > end_ms:
                 break
+            # A msec seek lands on or *before* the requested time -- with a
+            # long GOP, potentially seconds before. Without this the window
+            # silently widens on one side: every early frame gets a pose
+            # detection (the expensive call) and its bbox joins the crop
+            # union, so the rectangle grows to cover the player walking into
+            # position rather than the swing.
+            if position_ms < start_ms:
+                continue
             frame = rotate_frame(raw, source.get("rotation", 0), cv2)
             if frame_size is None:
                 frame_size = (frame.shape[1], frame.shape[0])

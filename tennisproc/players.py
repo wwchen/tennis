@@ -98,9 +98,14 @@ def assign(swings, mode=SIDE, count=0):
         return [None] * len(swings), {"mode": mode, "count": 0, "zones": []}
 
     boundary = None
-    if count != 1 and len(usable) >= 4:
+    # `count == 2` is an instruction, not a hint: the operator has watched
+    # the video. Only the automatic path needs enough swings to infer a
+    # split from, so the >= 4 floor is gated on count == 0. Forcing 2 used
+    # to be discarded in silence whenever fewer than four swings survived
+    # verification -- it reported count: 1 with every swing labelled "left".
+    if count == 2 or (count == 0 and len(usable) >= 4):
         boundary, gap, median_gap = gap_stats(usable)
-        if boundary is not None:
+        if boundary is not None and count == 0:
             left = [p for p in usable if p < boundary]
             right = [p for p in usable if p >= boundary]
             # Three ways a candidate split is not really a split:
@@ -116,7 +121,7 @@ def assign(swings, mode=SIDE, count=0):
             # needs to catch outliers -- a flat minimum, not a proportion,
             # so that a player who took 4 of 19 swings still counts.
             lopsided = min(len(left), len(right)) < MIN_ZONE_SWINGS
-            if too_flat or not_separated or (lopsided and count == 0):
+            if too_flat or not_separated or lopsided:
                 boundary = None
 
     if boundary is None or count == 1:

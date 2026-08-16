@@ -95,12 +95,18 @@ def build_session_doc(source, settings, detection, players_info, swing_refs):
     }
 
 
-def swing_ref(doc, dir_name):
+def swing_ref(doc, dir_name, reviewed=None):
     """The compact index entry for a swing.
 
-    Deliberately small: a 300-swing session should render from one fetch, not
-    300. `reviewed` is derived from whether a user-edit.json exists, which the
-    caller passes in.
+    Deliberately small: a 300-swing session should render from one fetch,
+    not 300.
+
+    `reviewed` must be passed in, because the ETL cannot know it: the ETL
+    only ever writes metadata.json, whose `edit` block is null by
+    construction. Deriving it from `doc` -- which is what this used to do --
+    left the field permanently false, so a consumer had to stat all 300
+    directories anyway, which is the exact cost this index exists to avoid.
+    `swing_reviewed()` computes it from the output tree.
     """
     trim = doc["trim"]
     return {
@@ -111,8 +117,14 @@ def swing_ref(doc, dir_name):
         "player_slot": doc["labels"].get("player_slot"),
         "frame_count": len(doc["frames"]),
         "verified": doc["detection"]["verified"],
-        "reviewed": bool(doc.get("edit")),
+        "reviewed": (bool(doc.get("edit")) if reviewed is None
+                     else bool(reviewed)),
     }
+
+
+def swing_reviewed(swing_dir):
+    """True when a human has left a user-edit.json in this swing directory."""
+    return os.path.exists(os.path.join(str(swing_dir), "user-edit.json"))
 
 
 def out_root(outdir, video_path):

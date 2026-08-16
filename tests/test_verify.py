@@ -190,18 +190,34 @@ class TestMeasureSlot(unittest.TestCase):
         self.assertEqual(got.reason, verify.WRIST_TOO_SLOW)
 
     def test_rejects_an_onset_away_from_the_swing(self):
-        """Swing happens early in the window; the onset is much later."""
+        """The wrist peaks early in the window; the onset sits at its end.
+
+        The offset has to be reachable by a real decode. extract_track only
+        builds tracks spanning contact +/- pose_window_s, so asserting on a
+        contact_ms thousands of ms outside the frames -- which this test
+        used to do -- proved nothing: it exercised a track the decoder
+        cannot produce. Here the frames run 1000..1264ms with the peak near
+        the start and contact declared at 1264ms, inside the window but
+        beyond ONSET_WINDOW_FRACTION of it.
+        """
         track = track_from(swinging(n=9), base_ms=1000, step_ms=33,
-                           contact_ms=5000)
+                           contact_ms=1264)
         got = verify.measure_slot(track, 0, self.settings)
         self.assertEqual(got.reason, verify.ONSET_OFF_SWING)
 
     def test_contact_offset_sign_says_which_side(self):
-        """Positive means the wrist was right of the midline at contact."""
+        """Positive means the wrist was right of the midline at contact.
+
+        Contact sits mid-window, as on real footage: the onset is the
+        strike and the wrist is fastest through it. Declaring contact on
+        the window's last frame instead leaves the peak ~230ms away, which
+        is precisely what "the onset is off the swing" means.
+        """
+        mid_ms = 1000 + 4 * 33
         right_side = [body(cx=0.5, l_wrist=(0.2, 0.5),
                            r_wrist=(0.5 + 0.05 * i, 0.46)) for i in range(9)]
         track = track_from(right_side, base_ms=1000, step_ms=33,
-                           contact_ms=1000 + 8 * 33)
+                           contact_ms=mid_ms)
         got = verify.measure_slot(track, 0, self.settings)
         self.assertTrue(got.ok, got.reason)
         self.assertGreater(got.contact_offset, 0)
@@ -209,7 +225,7 @@ class TestMeasureSlot(unittest.TestCase):
         left_side = [body(cx=0.5, l_wrist=(0.5 - 0.05 * i, 0.46),
                           r_wrist=(0.8, 0.5)) for i in range(9)]
         track = track_from(left_side, base_ms=1000, step_ms=33,
-                           contact_ms=1000 + 8 * 33)
+                           contact_ms=mid_ms)
         got = verify.measure_slot(track, 0, self.settings)
         self.assertTrue(got.ok, got.reason)
         self.assertLess(got.contact_offset, 0)
@@ -219,10 +235,19 @@ class TestMeasureSlot(unittest.TestCase):
         overhead = [body(cx=0.5, l_wrist=(0.2, 0.5),
                          r_wrist=(0.5 + 0.03 * i, 0.15)) for i in range(9)]
         track = track_from(overhead, base_ms=1000, step_ms=33,
-                           contact_ms=1000 + 8 * 33)
+                           contact_ms=1000 + 4 * 33)
         got = verify.measure_slot(track, 0, self.settings)
         self.assertTrue(got.ok, got.reason)
         self.assertLess(got.contact_height, 0)
+
+    def test_onset_gate_is_reachable_within_a_real_track_window(self):
+        """Regression: the gate must be able to fire at all.
+
+        It was compared against the full pose window, but extract_track
+        clamps a track to exactly that width, so no decoded track could
+        exceed it and onset_off_swing read 0 forever.
+        """
+        self.assertLess(verify.ONSET_WINDOW_FRACTION, 1.0)
 
     def test_measurements_are_normalized_by_torso(self):
         """Two players at different scales must measure the same swing alike."""

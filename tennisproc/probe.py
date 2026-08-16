@@ -25,10 +25,12 @@ import os
 import shutil
 import subprocess
 
+from .errors import TennisprocError
+
 FINGERPRINT_CHUNK = 8 * 1024 * 1024
 
 
-class ProbeError(RuntimeError):
+class ProbeError(TennisprocError):
     pass
 
 

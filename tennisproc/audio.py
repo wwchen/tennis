@@ -25,13 +25,15 @@ import wave
 
 import numpy as np
 
+from .errors import TennisprocError
+
 SAMPLE_RATE = 22050
 ENV_WINDOW_S = 0.020   # RMS window
 ENV_HOP_S = 0.005      # envelope resolution: 5 ms
 REFRACTORY_S = 0.12    # ignore a second peak this close to the last one
 
 
-class AudioError(RuntimeError):
+class AudioError(TennisprocError):
     pass
 
 
