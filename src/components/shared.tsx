@@ -237,7 +237,14 @@ export function StrokeCell({
   }
   return (
     <span onClick={onEdit} title="Click to change stroke" style={{ cursor: 'pointer' }}>
-      <Tag size="sm" interactive hue={strokeHue(clip.stroke)} emphasis="soft" hint-size="auto,20px">
+      <Tag
+        size="sm"
+        interactive
+        hue={strokeHue(clip.stroke)}
+        emphasis="soft"
+        hint-size="auto,20px"
+        style={clip.stroke === null ? { opacity: 0.62 } : undefined}
+      >
         {clip.stroke ?? UNTAGGED_STROKE}
       </Tag>
     </span>
