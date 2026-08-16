@@ -1,0 +1,89 @@
+name: Security
+
+# GitHub Advanced Security surfaces, kept out of ci.yml on purpose: a CodeQL
+# analysis has no bearing on whether the image is publishable, and the weekly
+# schedule below has no equivalent there. Results land in the repository's
+# Security tab rather than as build output.
+#
+# Two GHAS surfaces are repository settings rather than workflows and so cannot
+# live here — secret scanning with push protection, and private vulnerability
+# reporting. See the Security section of the README for turning those on.
+# Dependabot's alerts and version updates are configured in dependabot.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 07:00 UTC. A scheduled run matters even when nothing changed:
+    # CodeQL ships new queries continuously, so today's clean tree can fail
+    # next month's ruleset with no commit in between.
+    - cron: '0 7 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Required to upload the SARIF results to code scanning.
+      security-events: write
+      # CodeQL reads workflow run metadata to attribute alerts to a run.
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
+        with:
+          languages: javascript-typescript
+          # No compilation step: CodeQL reads the TS sources directly, so the
+          # usual autobuild phase is skipped entirely.
+          build-mode: none
+          # `security-extended` over the default suite — the default is tuned to
+          # keep large legacy codebases quiet, and this tree is neither.
+          # `security-and-quality` is deliberately not used: its quality queries
+          # overlap ESLint, which already runs on every PR in ci.yml.
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
+        with:
+          category: /language:javascript-typescript
+
+  dependency-review:
+    name: Dependency review
+    # PR-only by definition: the action diffs the base and head manifests, and
+    # there is no such diff on a push or a schedule.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Lets the action post its findings as a PR comment.
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # Block a PR that introduces a known-vulnerable package at high or
+          # above; anything lower is reported without failing the check.
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+          # Surface unmaintained or low-provenance new dependencies without
+          # failing on them. `deny-licenses` is deliberately absent: it fails
+          # the check on license strings this project has never encountered,
+          # which turns a one-line dependency bump into a config archaeology
+          # session.
+          warn-on-openssf-scorecard-level: 3

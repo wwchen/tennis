@@ -137,6 +137,60 @@ required check can gate the branch.
 Images are addressed by commit SHA, never `latest`, so a deploy names exactly
 one build.
 
+## Security
+
+[`.github/workflows/security.yml`](.github/workflows/security.yml) runs the two
+GitHub Advanced Security surfaces that are expressible as workflows:
+
+- **CodeQL** — `javascript-typescript`, `build-mode: none` (nothing to compile),
+  `security-extended` query suite. On push, on PR, and weekly, because CodeQL
+  ships new queries continuously and an unchanged tree can start failing without
+  a commit.
+- **Dependency review** — on PRs only, since the action diffs base against head
+  manifests. Fails the check when a PR introduces a known-vulnerable package at
+  high severity or above.
+
+Neither is wired into `ci-passed`. A scan finding is not a reason to block an
+image build, and coupling them means a CodeQL outage stops deploys. Add them as
+required checks in branch protection instead, where they belong.
+
+### Settings, not files
+
+The remaining surfaces are repository settings and cannot be committed. All of
+these are already applied to `wwchen/tennis`; the commands are here for a fork
+or a rebuild.
+
+GitHub turns secret scanning and push protection on by default for a public
+repo, so in practice only these need running:
+
+```bash
+gh api -X PUT repos/{owner}/{repo}/vulnerability-alerts
+gh api -X PUT repos/{owner}/{repo}/private-vulnerability-reporting
+gh api -X PATCH repos/{owner}/{repo} --input - <<'JSON'
+{"security_and_analysis":{"dependabot_security_updates":{"status":"enabled"}}}
+JSON
+```
+
+Note the request shape: `secret_scanning_push_protection` is a **sibling** of
+`secret_scanning`, not nested inside it, and the nested `security_and_analysis`
+object needs a JSON body — `gh api -F key[sub]=value` does not build one.
+
+Push protection is the one that earns its keep: it rejects a commit carrying a
+recognised credential at push time, the only point where the fix is still cheap.
+Once a secret reaches the remote, rotating it is the only real remedy; scrubbing
+history is theatre.
+
+Two toggles are **not** available here and will silently stay `disabled` even
+though the API returns 200 — they require a GHAS licence, which a free personal
+repo does not carry:
+
+- `secret_scanning_non_provider_patterns` (generic/unbranded secrets)
+- `secret_scanning_validity_checks` (does this leaked key still work?)
+
+On a **private** repo, CodeQL and secret scanning themselves also require GHAS.
+On a public repo both are free. Dependabot and dependency review work either
+way.
+
 Deployment is not wired up yet: CI stops at a pushed image. The roadtrip pattern
 to mirror when that changes is a `deploy.yml` triggered by `workflow_run` on CI
 success, joining the tailnet, installing a release over SSH and running
