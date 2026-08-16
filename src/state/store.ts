@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useReducer } from 'react';
-import type { Grade, Phase, Selection, Stroke, View } from '@/domain/types';
+import type { Clip, Grade, Phase, Selection, Stroke, View } from '@/domain/types';
 import { ADD_PLAYER, ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
 import { SEED_NEXT_COMMENT_ID, SEED_REMOVED_STACK, seedClips, seedComments } from '@/domain/seed';
 import type { Doc } from './persistence';
 import { loadDoc, saveDoc } from './persistence';
+import { loadEtlClips } from './etl-source';
 
 /** Everything that is a view preference rather than coaching data. */
 export interface Ui {
@@ -33,6 +34,7 @@ export interface State {
 }
 
 export type Action =
+  | { type: 'hydrate'; clips: Clip[] }
   | { type: 'setView'; view: View }
   | { type: 'setPlayerFilter'; value: string }
   | { type: 'setStrokeFilter'; value: string }
@@ -111,6 +113,15 @@ export function reducer(state: State, action: Action): State {
   const { doc } = state;
 
   switch (action.type) {
+    case 'hydrate':
+      // Replaces the seed wholesale. Comments are seeded scratch data pinned to
+      // seed clip ids, so they go too rather than dangle on ids that no longer
+      // exist.
+      return {
+        ...state,
+        doc: { ...doc, clips: action.clips, comments: [], removedStack: [] },
+        ui: { ...state.ui, sel: null, detail: null },
+      };
     case 'setView':
       return ui(state, { view: action.view });
     case 'setPlayerFilter':
@@ -271,6 +282,16 @@ export function reducer(state: State, action: Action): State {
 
 export function useShotLab() {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
+
+  useEffect(() => {
+    let live = true;
+    void loadEtlClips().then((clips) => {
+      if (live && clips !== null) dispatch({ type: 'hydrate', clips });
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     saveDoc(state.doc);
