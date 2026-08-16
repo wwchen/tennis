@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import type { Cell } from '@/lib/selectors';
 import type { Clip, Grade, Phase, Stroke } from '@/domain/types';
-import { ADD_PLAYER, STROKES } from '@/domain/types';
+import { ADD_PLAYER, STROKES, UNTAGGED_STROKE } from '@/domain/types';
 import { GRADE_ORDER, GRADES, PHASE_BADGE, strokeHue } from '@/domain/grades';
 import { Select, Tag, valueOf } from '@/lds';
 
@@ -226,7 +226,7 @@ export function StrokeCell({
           size="sm"
           autoFocus
           aria-label="Stroke type"
-          value={clip.stroke}
+          value={clip.stroke ?? ''}
           onChange={(e: Event) => onChange(valueOf(e) as Stroke)}
           onBlur={onStopEdit}
           options={[...STROKES]}
@@ -238,7 +238,7 @@ export function StrokeCell({
   return (
     <span onClick={onEdit} title="Click to change stroke" style={{ cursor: 'pointer' }}>
       <Tag size="sm" interactive hue={strokeHue(clip.stroke)} emphasis="soft" hint-size="auto,20px">
-        {clip.stroke}
+        {clip.stroke ?? UNTAGGED_STROKE}
       </Tag>
     </span>
   );
