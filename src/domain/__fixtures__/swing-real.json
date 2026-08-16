@@ -1,0 +1,459 @@
+{
+ "schema": "tennis.swing/1",
+ "id": "IMG_0304/swing_001",
+ "source": {
+  "name": "IMG_0304.MOV",
+  "path": "/Users/wc/Downloads/IMG_0304.MOV",
+  "sha256_16": "acb9171ceb5aaf7b",
+  "bytes": 82438795,
+  "duration_ms": 71633,
+  "fps": 29.999302,
+  "vfr": false,
+  "width": 1080,
+  "height": 1920,
+  "rotation": 90,
+  "has_audio": true,
+  "audio_sr": 48000
+ },
+ "trim": {
+  "file": "clip.mp4",
+  "source_start_ms": 4801,
+  "source_end_ms": 8301,
+  "encoded_start_ms": 4834,
+  "width": 386,
+  "height": 480
+ },
+ "crop": {
+  "x": 0,
+  "y": 429,
+  "w": 624,
+  "h": 774,
+  "space": "source_display",
+  "static": true
+ },
+ "detection": {
+  "method": "audio_onset+pose_verify",
+  "contact_ms": 6301,
+  "onset_peak": 11.653,
+  "verified": true,
+  "reject_reason": null
+ },
+ "labels": {
+  "player_slot": "left",
+  "player_name": null,
+  "stroke": null,
+  "quality": null,
+  "verdict": null,
+  "tags": [],
+  "notes": null
+ },
+ "frames": [
+  {
+   "file": "frames/frame_0000.jpg",
+   "source_ms": 5501,
+   "clip_ms": 700,
+   "offset_contact_ms": -800,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0001.jpg",
+   "source_ms": 5534,
+   "clip_ms": 733,
+   "offset_contact_ms": -767,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0002.jpg",
+   "source_ms": 5568,
+   "clip_ms": 767,
+   "offset_contact_ms": -733,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0003.jpg",
+   "source_ms": 5601,
+   "clip_ms": 800,
+   "offset_contact_ms": -700,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0004.jpg",
+   "source_ms": 5634,
+   "clip_ms": 833,
+   "offset_contact_ms": -667,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0005.jpg",
+   "source_ms": 5668,
+   "clip_ms": 867,
+   "offset_contact_ms": -633,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0006.jpg",
+   "source_ms": 5701,
+   "clip_ms": 900,
+   "offset_contact_ms": -600,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0007.jpg",
+   "source_ms": 5734,
+   "clip_ms": 933,
+   "offset_contact_ms": -567,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0008.jpg",
+   "source_ms": 5768,
+   "clip_ms": 967,
+   "offset_contact_ms": -533,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0009.jpg",
+   "source_ms": 5801,
+   "clip_ms": 1000,
+   "offset_contact_ms": -500,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0010.jpg",
+   "source_ms": 5834,
+   "clip_ms": 1033,
+   "offset_contact_ms": -467,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0011.jpg",
+   "source_ms": 5868,
+   "clip_ms": 1067,
+   "offset_contact_ms": -433,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0012.jpg",
+   "source_ms": 5901,
+   "clip_ms": 1100,
+   "offset_contact_ms": -400,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0013.jpg",
+   "source_ms": 5934,
+   "clip_ms": 1133,
+   "offset_contact_ms": -367,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0014.jpg",
+   "source_ms": 5968,
+   "clip_ms": 1167,
+   "offset_contact_ms": -333,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0015.jpg",
+   "source_ms": 6001,
+   "clip_ms": 1200,
+   "offset_contact_ms": -300,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0016.jpg",
+   "source_ms": 6034,
+   "clip_ms": 1233,
+   "offset_contact_ms": -267,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0017.jpg",
+   "source_ms": 6068,
+   "clip_ms": 1267,
+   "offset_contact_ms": -233,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0018.jpg",
+   "source_ms": 6101,
+   "clip_ms": 1300,
+   "offset_contact_ms": -200,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0019.jpg",
+   "source_ms": 6134,
+   "clip_ms": 1333,
+   "offset_contact_ms": -167,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0020.jpg",
+   "source_ms": 6168,
+   "clip_ms": 1367,
+   "offset_contact_ms": -133,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0021.jpg",
+   "source_ms": 6201,
+   "clip_ms": 1400,
+   "offset_contact_ms": -100,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0022.jpg",
+   "source_ms": 6234,
+   "clip_ms": 1433,
+   "offset_contact_ms": -67,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0023.jpg",
+   "source_ms": 6268,
+   "clip_ms": 1467,
+   "offset_contact_ms": -33,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0024.jpg",
+   "source_ms": 6301,
+   "clip_ms": 1500,
+   "offset_contact_ms": 0,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0025.jpg",
+   "source_ms": 6334,
+   "clip_ms": 1533,
+   "offset_contact_ms": 33,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0026.jpg",
+   "source_ms": 6368,
+   "clip_ms": 1567,
+   "offset_contact_ms": 67,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0027.jpg",
+   "source_ms": 6401,
+   "clip_ms": 1600,
+   "offset_contact_ms": 100,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0028.jpg",
+   "source_ms": 6434,
+   "clip_ms": 1633,
+   "offset_contact_ms": 133,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0029.jpg",
+   "source_ms": 6468,
+   "clip_ms": 1667,
+   "offset_contact_ms": 167,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0030.jpg",
+   "source_ms": 6501,
+   "clip_ms": 1700,
+   "offset_contact_ms": 200,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0031.jpg",
+   "source_ms": 6534,
+   "clip_ms": 1733,
+   "offset_contact_ms": 233,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0032.jpg",
+   "source_ms": 6568,
+   "clip_ms": 1767,
+   "offset_contact_ms": 267,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0033.jpg",
+   "source_ms": 6601,
+   "clip_ms": 1800,
+   "offset_contact_ms": 300,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0034.jpg",
+   "source_ms": 6634,
+   "clip_ms": 1833,
+   "offset_contact_ms": 333,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0035.jpg",
+   "source_ms": 6668,
+   "clip_ms": 1867,
+   "offset_contact_ms": 367,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0036.jpg",
+   "source_ms": 6701,
+   "clip_ms": 1900,
+   "offset_contact_ms": 400,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0037.jpg",
+   "source_ms": 6734,
+   "clip_ms": 1933,
+   "offset_contact_ms": 433,
+   "pose_score": 0.9,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0038.jpg",
+   "source_ms": 6768,
+   "clip_ms": 1967,
+   "offset_contact_ms": 467,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0039.jpg",
+   "source_ms": 6801,
+   "clip_ms": 2000,
+   "offset_contact_ms": 500,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0040.jpg",
+   "source_ms": 6834,
+   "clip_ms": 2033,
+   "offset_contact_ms": 533,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0041.jpg",
+   "source_ms": 6868,
+   "clip_ms": 2067,
+   "offset_contact_ms": 567,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0042.jpg",
+   "source_ms": 6901,
+   "clip_ms": 2100,
+   "offset_contact_ms": 600,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0043.jpg",
+   "source_ms": 6934,
+   "clip_ms": 2133,
+   "offset_contact_ms": 633,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0044.jpg",
+   "source_ms": 6968,
+   "clip_ms": 2167,
+   "offset_contact_ms": 667,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0045.jpg",
+   "source_ms": 7001,
+   "clip_ms": 2200,
+   "offset_contact_ms": 700,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0046.jpg",
+   "source_ms": 7034,
+   "clip_ms": 2233,
+   "offset_contact_ms": 733,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0047.jpg",
+   "source_ms": 7068,
+   "clip_ms": 2267,
+   "offset_contact_ms": 767,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0048.jpg",
+   "source_ms": 7101,
+   "clip_ms": 2300,
+   "offset_contact_ms": 800,
+   "pose_score": null,
+   "stage": null
+  }
+ ],
+ "measurements": {
+  "space": "crop_normalized",
+  "origin": "top_left",
+  "units": {
+   "length": "torso_heights",
+   "speed": "torso_heights_per_s"
+  },
+  "hitting_side": "right",
+  "per_frame": "pose.json",
+  "wrist_peak_speed": 32.8358,
+  "torso_height": 0.15,
+  "contact_offset": 0.1,
+  "contact_height": 0.4
+ },
+ "edit": null
+}
