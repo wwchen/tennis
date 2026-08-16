@@ -1,0 +1,109 @@
+{
+ "schema": "tennis.session/1",
+ "source": {
+  "name": "IMG_0305.MOV",
+  "path": "~/Downloads/IMG_0305.MOV",
+  "sha256_16": "343add36edd5f208",
+  "bytes": 1048576000,
+  "duration_ms": 318875,
+  "fps": 30.0,
+  "vfr": false,
+  "width": 1080,
+  "height": 1920,
+  "rotation": 90,
+  "has_audio": true,
+  "audio_sr": 44100
+ },
+ "settings": {
+  "onset_k": 8.0,
+  "min_gap_s": 0.35,
+  "min_torso": 0.045,
+  "min_wrist_speed": 0.45,
+  "pose_window_s": 0.4,
+  "pose_model": "models/pose_landmarker_lite.task",
+  "pose_tiles": 0,
+  "pose_min_confidence": 0.4,
+  "pose_backend": "stub",
+  "pre_s": 1.5,
+  "post_s": 2.0,
+  "clip_height": 360,
+  "clip_crf": 26,
+  "frame_span_s": 0.6,
+  "frame_fps": 0.0,
+  "frame_long_edge": 320,
+  "frame_quality": 88,
+  "crop_pad": 0.18,
+  "player_mode": "side",
+  "player_count": 0,
+  "jobs": 4,
+  "limit": 0,
+  "settings_hash": "ad96b3ef20b654d8"
+ },
+ "detection": {
+  "candidates": 290,
+  "verified": 191,
+  "rejected": 99,
+  "reject_histogram": {
+   "no_pose": 41,
+   "wrist_too_slow": 33,
+   "torso_too_small": 14,
+   "onset_off_swing": 8,
+   "duplicate": 3
+  }
+ },
+ "players": {
+  "mode": "side",
+  "count": 2,
+  "boundary": 0.5121,
+  "zones": [
+   {
+    "slot": "left",
+    "range": [
+     0.19,
+     0.44
+    ],
+    "swings": 103
+   },
+   {
+    "slot": "right",
+    "range": [
+     0.58,
+     0.83
+    ],
+    "swings": 88
+   }
+  ]
+ },
+ "swings": [
+  {
+   "id": "IMG_0305/swing_001",
+   "dir": "swings/swing_001",
+   "contact_ms": 23380,
+   "duration_ms": 3500,
+   "player_slot": "left",
+   "frame_count": 49,
+   "verified": true,
+   "reviewed": true
+  },
+  {
+   "id": "IMG_0305/swing_002",
+   "dir": "swings/swing_002",
+   "contact_ms": 27510,
+   "duration_ms": 3500,
+   "player_slot": "right",
+   "frame_count": 49,
+   "verified": true,
+   "reviewed": false
+  },
+  {
+   "id": "IMG_0305/swing_003",
+   "dir": "swings/swing_003",
+   "contact_ms": 31640,
+   "duration_ms": 3500,
+   "player_slot": "left",
+   "frame_count": 49,
+   "verified": true,
+   "reviewed": false
+  }
+ ]
+}

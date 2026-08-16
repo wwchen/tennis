@@ -13,3 +13,22 @@ coverage/
 
 .idea/
 .vscode/
+
+# --- tennisproc (the Python ETL that produces the clips this app reviews) ---
+
+__pycache__/
+*.pyc
+.venv/
+.venv313/
+
+# ETL output: clips, frames, pose and metadata per swing, plus stage caches
+# under work/. Regenerable from the source video, and large (~2-6 MB per
+# swing).
+#
+# Note that user-edit.json — human review work, which is NOT regenerable —
+# also lands in here. If you start reviewing swings, either track those files
+# deliberately or back them up outside this tree.
+out/
+
+# MediaPipe pose models (~14 MB). Download link is in tennisproc/README.md.
+models/

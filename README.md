@@ -1,10 +1,28 @@
 # Shot Lab
 
-A frame-level review tool for tennis clips. A classifier tags each clip's
-**setup**, **contact** and **finish** frames; this app is where a coach checks
-that work — aligning every clip on the same swing phase so they can be compared
-column by column, correcting bad auto-tags, rating shots, and pinning comments
-to individual frames.
+Two halves of one workflow: a Python ETL that cuts a session video into
+per-shot clips, and a React app for reviewing them frame by frame.
+
+| | | |
+| --- | --- | --- |
+| **[`tennisproc/`](tennisproc/README.md)** | Python ETL | long video → per-shot clips, cropped per player, frames + metadata |
+| **[`src/`](src/)** | React app | frame-level review: align, retag, rate, comment |
+
+The ETL writes a `metadata.json` per swing with `stroke` and per-frame `stage`
+left `null`; the app is where a human fills them in. **The two are not wired
+together yet** — the app currently seeds twelve clips from a fixture and the ETL
+writes to `out/`. Connecting them means teaching the app to read the ETL's
+schema, which [`docs/examples/`](docs/examples/) documents.
+
+---
+
+## The review app
+
+A frame-level review tool for tennis clips. Each clip's **setup**, **contact**
+and **finish** frames are tagged; this app is where a coach checks that work —
+aligning every clip on the same swing phase so they can be compared column by
+column, correcting bad tags, rating shots, and pinning comments to individual
+frames.
 
 Ported from the [Claude Design project][design] (`Shot Lab.dc.html`). The design
 project remains the source of truth for the visual language; this repository is
@@ -12,7 +30,7 @@ the running implementation.
 
 [design]: https://claude.ai/design/p/5fd67ca4-0dd8-4d16-9224-92eed95971e1
 
-## Quick start
+### Quick start
 
 ```bash
 npm ci && npm run dev
@@ -23,7 +41,7 @@ Then open http://localhost:5173.
 `make help` lists everything else. `make check` runs exactly what CI runs, in
 CI's order.
 
-## What's in the box
+### What's in the box
 
 | Command | What it does |
 | --- | --- |
@@ -33,7 +51,7 @@ CI's order.
 | `npm run typecheck` | `tsc --noEmit` on its own |
 | `npm test` | Vitest unit suite |
 
-## Layout
+### Layout
 
 ```
 src/
@@ -49,7 +67,7 @@ The split that matters is `domain` + `state` + `lib` knowing nothing about
 React. The alignment maths and every state transition are plain functions, which
 is why the test suite drives them directly rather than through the DOM.
 
-### The alignment algorithm
+#### The alignment algorithm
 
 `buildCompare` in [`src/lib/selectors.ts`](src/lib/selectors.ts) is the heart of
 the compare view. Each clip's chosen anchor frame (setup / contact / finish) is
@@ -57,7 +75,7 @@ padded forward so that all of them land in the same column; columns are then
 labelled by their offset from that anchor (`-2`, `-1`, `CONTACT`, `+1`, …). A
 clip carrying no tag for the current anchor falls back to its midpoint frame.
 
-### Data
+#### Data
 
 There is no backend. Twelve clips are seeded from a fixture and every edit —
 ratings, comments, stroke/player corrections, removals — persists to
@@ -65,7 +83,7 @@ ratings, comments, stroke/player corrections, removals — persists to
 document is discarded rather than half-migrated. Clearing site data resets to
 the seed.
 
-### Design system
+#### Design system
 
 UI comes from `@lew-ds/lds-react`, with tokens, the core stylesheet and the
 three self-hosted font families from `@lew-ds/lds`, and the icon sprite from
@@ -75,7 +93,7 @@ component markup out from under the layout. Nothing is loaded from a CDN — the
 built image is entirely self-contained, which is what lets the CSP be as tight
 as it is.
 
-## Running the container
+### Running the container
 
 ```bash
 make up      # builds, serves the production bundle on 127.0.0.1:8080
@@ -87,7 +105,7 @@ error fails the image, not just CI. Caddy handles the SPA fallback, sets the
 CSP and security headers, caches fingerprinted `/assets/*` forever and
 `index.html` never, and answers `/healthz` for the container healthcheck.
 
-### Cloudflare Access
+#### Cloudflare Access
 
 Authentication is enforced **at the Cloudflare edge**, the same way the roadtrip
 stack does it. The container serves an unauthenticated static app; nothing
@@ -120,7 +138,7 @@ To stand it up:
 Verify by loading the hostname in a private window: you should get Cloudflare's
 sign-in screen before any of the app renders.
 
-## CI/CD
+### CI/CD
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) follows the roadtrip
 conventions — every action pinned to a commit SHA, `concurrency` cancelling
@@ -137,7 +155,7 @@ required check can gate the branch.
 Images are addressed by commit SHA, never `latest`, so a deploy names exactly
 one build.
 
-## Security
+### Security
 
 [`.github/workflows/security.yml`](.github/workflows/security.yml) runs the two
 GitHub Advanced Security surfaces that are expressible as workflows:
@@ -154,7 +172,7 @@ Neither is wired into `ci-passed`. A scan finding is not a reason to block an
 image build, and coupling them means a CodeQL outage stops deploys. Add them as
 required checks in branch protection instead, where they belong.
 
-### Settings, not files
+#### Settings, not files
 
 The remaining surfaces are repository settings and cannot be committed. All of
 these are already applied to `wwchen/tennis`; the commands are here for a fork
@@ -195,3 +213,79 @@ Deployment is not wired up yet: CI stops at a pushed image. The roadtrip pattern
 to mirror when that changes is a `deploy.yml` triggered by `workflow_run` on CI
 success, joining the tailnet, installing a release over SSH and running
 `docker compose --profile tunnel up -d` on the host.
+
+---
+
+## The ETL
+
+[`tennisproc`](tennisproc/README.md) turns a long session video into the clips
+this app reviews: shots found, clips cut, cropped per player, frames extracted,
+metadata written. See its README for tuning, the output layout and the full
+schema; this is the short version.
+
+```bash
+# MediaPipe 0.10.x on Python 3.13 specifically. Newer versions abort on macOS.
+python3.13 -m venv .venv313
+.venv313/bin/pip install "mediapipe==0.10.35" opencv-python-headless numpy
+
+.venv313/bin/python -m tennisproc detect ~/Downloads/session.MOV   # tune, renders nothing
+.venv313/bin/python -m tennisproc run    ~/Downloads/session.MOV --outdir out
+.venv313/bin/python -m tennisproc validate out/session
+
+.venv313/bin/python -m unittest discover -s tests
+```
+
+**Pose needs a logged-in GUI session.** Over ssh or from a background job,
+MediaPipe does not raise — it aborts the process. `tennisproc` checks for a
+window server first and says so. `--pose-backend=stub` runs everything except
+real pose detection, which is how the Python suite works headless.
+
+### How shots are found
+
+A ball strike is a sharp broadband transient, which locates contact to about
+±20 ms; at 30 fps a frame is 33 ms and the ball moves feet between frames, so no
+visual estimate comes close. Pose then confirms a body actually swung at that
+moment, rejecting bounces, claps and the feeder. The crop is the union of the
+tracked player's pose boxes, so it follows the *player* rather than whatever
+moved.
+
+Motion differencing was tried and abandoned: on a fixed camera the players move
+almost constantly, so it finds one long blob per rally and cannot say where one
+shot ends and the next begins.
+
+### What it writes
+
+```
+out/<video-stem>/
+  metadata.json                  session: source, settings, swing index
+  swings/swing_001/
+    clip.mp4                     a few seconds around contact, cropped
+    frames/frame_0000.jpg ...    native fps, cropped
+    pose.json                    landmarks per frame
+    metadata.json                written by the ETL
+    user-edit.json               written by a reviewer, same schema
+```
+
+One document shape written to two files: `metadata.json` is what the machine
+knows, `user-edit.json` is the same document with human fields filled in. The
+ETL only ever writes the first, so it can be re-run without destroying review
+work. Reading a swing means overlaying them, joining frames on `source_ms`
+rather than array index — so re-extracting at a different frame rate leaves a
+human's contact label on the same *moment*. Validated examples of all three
+document types are in [`docs/examples/`](docs/examples/).
+
+`stroke` and per-frame `stage` ship `null`. Classification is deliberately not
+part of the ETL; it can land later as a separate step writing the same fields.
+
+### What is and isn't verified
+
+Detection recall is **99–100%** against 354 known shot times from three real
+sessions ([`tests/test_real_footage.py`](tests/test_real_footage.py), which
+skips unless the videos are present). Everything after the audio stage — pose
+verification, player zones, cropping — is exercised only on synthetic fixtures,
+because pose cannot run in CI or any headless environment. Precision is
+unmeasured: on one session the audio stage yields 267 candidates against 151
+known shots, and it takes pose or a human to say what the rest are.
+
+The Python suite is stdlib `unittest`, not pytest, and is not part of `npm test`
+or the CI workflow. Nothing in CI runs it yet.
