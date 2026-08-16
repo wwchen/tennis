@@ -1,0 +1,23 @@
+# tennisproc, the Python ETL. The React app has no Python dependency.
+#
+# Python 3.9+. Also needs ffmpeg and ffprobe on PATH -- not pip installable;
+# `brew install ffmpeg` on macOS, `apt install ffmpeg` on Debian.
+#
+# Everything except pose runs on these two. The suite is stdlib unittest, so
+# there is no test-only dependency to install.
+
+numpy>=1.24
+opencv-python-headless>=4.8
+
+# Pose detection is optional, and deliberately not required to run the tests:
+# `--pose-backend=stub` exercises the whole pipeline without it, which is the
+# only way this package runs headless at all (MediaPipe aborts the process
+# without a window server -- see tennisproc/pose.py).
+#
+# Install it, and the model, only when you have a desktop session. Pin 0.10.x
+# on Python 3.13 specifically -- newer MediaPipe aborts on macOS:
+#   pip install "mediapipe==0.10.35"
+#   curl --create-dirs -o models/pose_landmarker_lite.task \
+#     https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+#
+# mediapipe

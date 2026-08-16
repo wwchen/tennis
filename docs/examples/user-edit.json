@@ -1,0 +1,227 @@
+{
+ "schema": "tennis.swing/1",
+ "id": "IMG_0305/swing_001",
+ "source": {
+  "name": "IMG_0305.MOV",
+  "path": "~/Downloads/IMG_0305.MOV",
+  "sha256_16": "343add36edd5f208",
+  "bytes": 1048576000,
+  "duration_ms": 318875,
+  "fps": 30.0,
+  "vfr": false,
+  "width": 1080,
+  "height": 1920,
+  "rotation": 90,
+  "has_audio": true,
+  "audio_sr": 44100
+ },
+ "trim": {
+  "file": "clip.mp4",
+  "source_start_ms": 490,
+  "source_end_ms": 3990,
+  "encoded_start_ms": 490,
+  "width": 686,
+  "height": 360
+ },
+ "crop": {
+  "x": 0,
+  "y": 107,
+  "w": 370,
+  "h": 194,
+  "space": "source_display",
+  "static": true
+ },
+ "detection": {
+  "method": "audio_onset+pose_verify",
+  "contact_ms": 1990,
+  "onset_peak": 979.902,
+  "verified": true,
+  "reject_reason": null
+ },
+ "labels": {
+  "player_slot": "left",
+  "player_name": "me",
+  "stroke": "backhand",
+  "quality": 3,
+  "verdict": "valid",
+  "tags": [
+   "late contact",
+   "off balance"
+  ],
+  "notes": "clipped the net"
+ },
+ "frames": [
+  {
+   "file": "frames/frame_0000.jpg",
+   "source_ms": 1690,
+   "clip_ms": 1200,
+   "offset_contact_ms": -300,
+   "pose_score": 0.9,
+   "stage": "setup"
+  },
+  {
+   "file": "frames/frame_0001.jpg",
+   "source_ms": 1723,
+   "clip_ms": 1233,
+   "offset_contact_ms": -267,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0002.jpg",
+   "source_ms": 1757,
+   "clip_ms": 1267,
+   "offset_contact_ms": -233,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0003.jpg",
+   "source_ms": 1790,
+   "clip_ms": 1300,
+   "offset_contact_ms": -200,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0004.jpg",
+   "source_ms": 1823,
+   "clip_ms": 1333,
+   "offset_contact_ms": -167,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0005.jpg",
+   "source_ms": 1857,
+   "clip_ms": 1367,
+   "offset_contact_ms": -133,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0006.jpg",
+   "source_ms": 1890,
+   "clip_ms": 1400,
+   "offset_contact_ms": -100,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0007.jpg",
+   "source_ms": 1923,
+   "clip_ms": 1433,
+   "offset_contact_ms": -67,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0008.jpg",
+   "source_ms": 1957,
+   "clip_ms": 1467,
+   "offset_contact_ms": -33,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0009.jpg",
+   "source_ms": 1990,
+   "clip_ms": 1500,
+   "offset_contact_ms": 0,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0010.jpg",
+   "source_ms": 2023,
+   "clip_ms": 1533,
+   "offset_contact_ms": 33,
+   "pose_score": 0.9,
+   "stage": "contact"
+  },
+  {
+   "file": "frames/frame_0011.jpg",
+   "source_ms": 2057,
+   "clip_ms": 1567,
+   "offset_contact_ms": 67,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0012.jpg",
+   "source_ms": 2090,
+   "clip_ms": 1600,
+   "offset_contact_ms": 100,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0013.jpg",
+   "source_ms": 2123,
+   "clip_ms": 1633,
+   "offset_contact_ms": 133,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0014.jpg",
+   "source_ms": 2157,
+   "clip_ms": 1667,
+   "offset_contact_ms": 167,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0015.jpg",
+   "source_ms": 2190,
+   "clip_ms": 1700,
+   "offset_contact_ms": 200,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0016.jpg",
+   "source_ms": 2223,
+   "clip_ms": 1733,
+   "offset_contact_ms": 233,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0017.jpg",
+   "source_ms": 2257,
+   "clip_ms": 1767,
+   "offset_contact_ms": 267,
+   "pose_score": 0.9,
+   "stage": "other"
+  },
+  {
+   "file": "frames/frame_0018.jpg",
+   "source_ms": 2290,
+   "clip_ms": 1800,
+   "offset_contact_ms": 300,
+   "pose_score": 0.9,
+   "stage": "finish"
+  }
+ ],
+ "measurements": {
+  "space": "crop_normalized",
+  "origin": "top_left",
+  "units": {
+   "length": "torso_heights",
+   "speed": "torso_heights_per_s"
+  },
+  "hitting_side": "right",
+  "per_frame": "pose.json",
+  "wrist_peak_speed": 40.0,
+  "torso_height": 0.15,
+  "contact_offset": 0.1,
+  "contact_height": 0.4
+ },
+ "edit": {
+  "by": "wc",
+  "at": "2026-08-16T10:12:04Z",
+  "against": "sha256:f99dac7e39f8f527",
+  "reviewed": true
+ }
+}
