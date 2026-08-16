@@ -26,6 +26,34 @@ Measured against one real session (`IMG_0304.MOV`, 42 swings):
 | per-frame confidence | none (`pose_score` is detection quality) | `conf`, drives `CONFIDENCE_FLOOR` |
 | labels present | all `null` by design | populated in the fixture |
 
+## File ownership in `out/`
+
+The output tree is shared state with split ownership, not a one-way pipe. Every
+path below is verified against the code: all `tennisproc` writes go through
+`session.write_json` or `render.py`, and `user-edit.json` appears in the ETL
+only as a read (`session.py:141`, `schema.py:393`).
+
+| Path | ETL | App |
+|---|---|---|
+| `metadata.json` (session) | writes | reads |
+| `work/pose.jsonl.gz` | writes | ignores |
+| `swings/swing_NNN/metadata.json` | writes | reads |
+| `swings/swing_NNN/pose.json` | writes | reads (skeleton overlay, future) |
+| `swings/swing_NNN/clip.mp4` | writes | reads |
+| `swings/swing_NNN/frames/*.jpg` | writes | reads |
+| `swings/swing_NNN/user-edit.json` | **reads** | **writes** |
+
+Two consequences:
+
+- **`reviewed` is derived, not stored.** `session.py:102` computes it from whether
+  `user-edit.json` exists, so the app creating that file is what marks a swing
+  reviewed. There is no separate flag to keep in sync.
+- **"Safe to re-run" means labels survive, not that nothing changes.** A re-run
+  rewrites `clip.mp4` and `frames/` (`render.py:118`, `:148`), so the pixels a
+  human reviewed against can change even though their labels persist. `edit.against`
+  carries the `doc_hash` of the metadata that was reviewed precisely so
+  `overlay()` can report this rather than let it pass silently.
+
 ## Principle: the ETL schema is authoritative
 
 Where the two disagree, the ETL wins. Its choices carry measured reasoning
