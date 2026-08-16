@@ -32,7 +32,8 @@ export interface EtlFrame {
 }
 
 export interface EtlLabels {
-  player_slot: EtlPlayerSlot;
+  /** Optional in schema.py:165 — can be null. */
+  player_slot: EtlPlayerSlot | null;
   player_name: string | null;
   stroke: EtlStroke | null;
   quality: 1 | 2 | 3 | 4 | 5 | null;
@@ -83,7 +84,8 @@ export interface EtlSwingRef {
   dir: string;
   contact_ms: number;
   duration_ms: number;
-  player_slot: EtlPlayerSlot;
+  /** Optional in schema.py:356-357 — can be null. */
+  player_slot: EtlPlayerSlot | null;
   frame_count: number;
   verified: boolean;
   reviewed: boolean;
