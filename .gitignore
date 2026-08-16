@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+
+.env
+.env.*
+!.env.example
+
+# Scratch copy of the Claude Design export the UI was ported from. Kept out of
+# git: the design project is the source of truth, this tree is the port.
+.design/
+
+.idea/
+.vscode/

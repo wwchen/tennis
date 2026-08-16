@@ -1,0 +1,32 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per ecosystem cluster keeps the review surface small; these
+      # packages only ever move together anyway.
+      react:
+        patterns: ['react', 'react-dom', '@types/react', '@types/react-dom']
+      tooling:
+        patterns:
+          ['eslint*', '@eslint/*', 'typescript-eslint', 'typescript', 'vite', 'vitest', '@vitejs/*']
+      testing:
+        patterns: ['@testing-library/*', 'jsdom']
+    ignore:
+      # The design system is pinned exactly: it is the contract with the Claude
+      # Design project this UI was ported from, and a minor bump can move
+      # component markup out from under the layout.
+      - dependency-name: '@lew-ds/*'
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build output
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Expose cache-service credentials to buildx
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              if (process.env[name]) core.exportVariable(name, process.env[name]);
+            }
+
+      - name: Build web image
+        run: |
+          docker buildx build -t shot-lab/web --target web --load \
+            --cache-from type=gha,scope=web-image \
+            --cache-to type=gha,scope=web-image,mode=max,ignore-error=true \
+            .
+
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name shot-lab-smoke -p 127.0.0.1:8080:80 shot-lab/web
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/healthz >/dev/null \
+            || { echo "healthz never came up"; docker logs shot-lab-smoke; exit 1; }
+          # The served root must be the built React shell, not a stray file or a
+          # Caddy default page — the failure mode a plain 200 would hide.
+          curl -fsS http://127.0.0.1:8080/ | grep -q 'id="root"' \
+            || { echo "/ is not the React shell — dist missing or shadowed"; exit 1; }
+          # Unknown paths fall back to index.html rather than 404ing.
+          curl -fsS http://127.0.0.1:8080/does-not-exist | grep -q 'id="root"' \
+            || { echo "SPA fallback is not wired"; exit 1; }
+          echo "image smoke OK"
+          docker rm -f shot-lab-smoke
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push web image by SHA
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}/web"
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          docker tag shot-lab/web "$IMAGE:${SHA}"
+          docker push "$IMAGE:${SHA}"
+
+  ci-passed:
+    needs:
+      - app
+      - docker-build
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check aggregate result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$RESULTS"
+          bad="$(printf '%s' "$RESULTS" | jq -r '
+            to_entries[]
+            | select(.value.result == "failure" or .value.result == "cancelled")
+            | .key')"
+          if [ -n "$bad" ]; then
+            echo "failed or cancelled: $bad"
+            exit 1
+          fi
+          echo "all needed jobs succeeded or were skipped"

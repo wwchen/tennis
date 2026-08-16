@@ -1,0 +1,49 @@
+# Shot Lab runtime.
+#
+# Two profiles:
+#   (none)   — `docker compose up`, serves the app on 127.0.0.1:8080 for local
+#              inspection of a production build.
+#   tunnel   — `docker compose --profile tunnel up -d` on the deploy host, which
+#              additionally runs cloudflared. Access policy lives in Cloudflare
+#              Zero Trust, not here (see README).
+
+x-log-rotation: &log-rotation
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '3'
+
+services:
+  web:
+    build:
+      context: .
+      target: web
+    image: ghcr.io/wwchen/tennis/web:${SHOT_LAB_SHA:-dev}
+    restart: unless-stopped
+    logging: *log-rotation
+    # Bound to loopback on purpose. Cloudflare's tunnel reaches this container
+    # over the Docker network at http://web:80, so the published port exists
+    # only for local debugging — publishing it on 0.0.0.0 would put an
+    # unauthenticated copy of the app on the host's LAN address, next to the
+    # copy Access is protecting.
+    ports:
+      - '127.0.0.1:8080:80'
+
+  cloudflared:
+    profiles: [tunnel]
+    image: cloudflare/cloudflared:2026.7.3
+    restart: unless-stopped
+    logging: *log-rotation
+    # TUNNEL_TOKEN_FILE, not --token: a flag would put the token in the
+    # container's command line, where `ps` and `docker inspect` both show it.
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN_FILE=/run/secrets/cloudflare_tunnel_token
+    secrets:
+      - cloudflare_tunnel_token
+    depends_on:
+      - web
+
+secrets:
+  cloudflare_tunnel_token:
+    file: ./secrets/cloudflare_tunnel_token

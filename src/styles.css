@@ -1,0 +1,91 @@
+/* Pulls in the APCA palette, the LDS core stylesheet and the three self-hosted
+   font families. Everything below is app chrome only — component styling comes
+   from LDS itself. */
+@import '@lew-ds/lds/css';
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--gray-100);
+}
+
+body {
+  font-family: var(--th-body);
+  color: var(--gray-900);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+/* The inline stroke/player editors swap a Tag for a Select in place. Without
+   this the dropdown renders a size larger than the chip it replaced and the
+   whole row jumps. */
+[data-stroke-edit] select,
+[data-player-edit] select {
+  font: inherit;
+  line-height: 1.2;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: 8px;
+  border: 3px solid var(--gray-100);
+}
+
+/* Court-through-a-viewfinder placeholder standing in for real frame stills:
+   a dark green wash, a horizon line and a lighter court surface below it. */
+.frame-still {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(168deg, #3b4536 0%, #2d3729 46%, #4a5143 100%);
+  border: 1px solid var(--gray-300);
+}
+
+.frame-still::before,
+.frame-still::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+/* Net line. */
+.frame-still::before {
+  bottom: 26%;
+  height: 1px;
+  background: rgba(250, 249, 233, 0.18);
+}
+
+/* Court surface. */
+.frame-still::after {
+  bottom: 0;
+  height: 26%;
+  background: rgba(136, 140, 122, 0.28);
+}
+
+/* Compare grid tile size. One knob so the row labels, the header columns and
+   the cells themselves can never drift apart. */
+.compare {
+  --tile: 108px;
+  --tileh: 71px;
+}
+
+/* A removed clip stays legible but visibly demoted while "Show removed" is on. */
+.is-removed {
+  opacity: 0.45;
+}

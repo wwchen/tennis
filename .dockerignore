@@ -1,0 +1,16 @@
+.git
+.github
+.design
+.env
+.env.*
+.DS_Store
+.idea
+.vscode
+
+node_modules
+dist
+coverage
+
+Dockerfile
+docker-compose*.yml
+README.md

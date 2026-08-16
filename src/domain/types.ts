@@ -1,0 +1,62 @@
+/** The three swing phases the classifier tags. A frame between them is `null`. */
+export type Phase = 'setup' | 'contact' | 'finish';
+
+/** Coach's verdict on a clip. Absent (`null`) means unrated. */
+export type Grade = 'good' | 'ok' | 'work';
+
+export const STROKES = ['Forehand', 'Backhand', 'Serve', 'Volley', 'Slice'] as const;
+export type Stroke = (typeof STROKES)[number];
+
+export type View = 'compare' | 'catalog' | 'detail';
+
+export interface Frame {
+  /** Index within the clip, 0-based. Rendered as `f01`…`f09`. */
+  i: number;
+  phase: Phase | null;
+  /** Classifier confidence, 0–1. Below CONFIDENCE_FLOOR the frame is flagged. */
+  conf: number;
+}
+
+export interface Clip {
+  id: string;
+  player: string;
+  stroke: Stroke;
+  conf: number;
+  rejected: boolean;
+  duration: string;
+  /** True once a human has confirmed or corrected any of the auto tags. */
+  triaged: boolean;
+  grade: Grade | null;
+  note: string;
+  frames: Frame[];
+}
+
+export interface Comment {
+  id: number;
+  /** Clip id the comment is pinned to. */
+  clip: string;
+  /** Frame index within that clip. */
+  frame: number;
+  author: string;
+  /** Relative age label as shown in the UI ("2d", "now") — not a timestamp. */
+  at: string;
+  text: string;
+}
+
+export interface Selection {
+  clip: string;
+  frame: number;
+}
+
+export const ALL_PLAYERS = 'All players';
+export const ALL_STROKES = 'All strokes';
+export const ALL_RATINGS = 'All ratings';
+
+/** Sentinel option in the player dropdowns that opens the "new player" bar. */
+export const ADD_PLAYER = '+ Add player…';
+
+/** Frames below this confidence are flagged for review and count as pending. */
+export const CONFIDENCE_FLOOR = 0.7;
+
+/** Every clip carries this many frames. */
+export const FRAMES_PER_CLIP = 9;

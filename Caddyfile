@@ -1,0 +1,47 @@
+{
+	# TLS is terminated by Cloudflare at the tunnel edge, so this Caddy must not
+	# try to provision its own certificates. The site address below is therefore
+	# `:80` — a scheme-less address would bind :443.
+	auto_https off
+	# The admin API is not needed: this config never reloads at runtime.
+	admin off
+}
+
+:80 {
+	root * /srv
+	encode gzip zstd
+
+	# Compose's healthcheck and any uptime probe. Declared before the SPA
+	# fallback so it cannot be swallowed by try_files.
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle {
+		header {
+			X-Content-Type-Options nosniff
+			Referrer-Policy strict-origin-when-cross-origin
+			# The app is fully self-contained — no CDN, no external fetches, no
+			# inline script (Vite emits a module bundle). Fonts are same-origin
+			# .woff2 shipped inside the image.
+			Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+			-Server
+		}
+
+		# Vite fingerprints everything under /assets, so those may be cached
+		# forever. index.html must not be, or a deploy is invisible until the
+		# browser's cache expires.
+		#
+		# The two matchers are mutually exclusive on purpose. An unconditioned
+		# `header Cache-Control` as the fallback does NOT work: both directives
+		# then apply to a /assets request and the bare one wins, silently
+		# downgrading every fingerprinted asset to no-cache.
+		@hashed path /assets/*
+		@unhashed not path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		header @unhashed Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
+	}
+}
