@@ -197,7 +197,11 @@ def _check_frames(c, frames, path, has_pose):
         ms = c.field(frame, "source_ms", where, _INT, non_negative=True)
         c.field(frame, "clip_ms", where, _INT)
         c.field(frame, "offset_contact_ms", where, _INT)
-        c.field(frame, "pose_score", where, _NUM, optional=not has_pose)
+        # Always optional per frame: the pose window is narrower than the frame
+        # span at the defaults (+/-0.40s decoded vs +/-0.80s extracted), so the
+        # outermost stills of a normal swing have no landmarks. `has_pose` is
+        # enforced across the list below instead of frame by frame.
+        c.field(frame, "pose_score", where, _NUM, optional=True)
         c.field(frame, "stage", where, (str,), optional=True, enum=STAGES)
         # Strictly increasing: overlay() joins on source_ms, so a duplicate
         # would make a human's stage label ambiguous.
@@ -209,6 +213,13 @@ def _check_frames(c, frames, path, has_pose):
                       "must increase: %d after %d" % (ms, prev_ms))
         if ms is not None:
             prev_ms = ms
+
+    # Non-null measurements assert pose ran, so *some* frame must carry a
+    # score. All-null means the two blocks disagree about what happened.
+    if has_pose and all(f.get("pose_score") is None
+                        for f in frames if isinstance(f, dict)):
+        c.add("%s.pose_score" % path,
+              "no frame has a score, but measurements is not null")
 
 
 def _check_measurements(c, m, path):

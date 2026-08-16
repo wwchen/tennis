@@ -154,6 +154,31 @@ class TestValidateSwing(unittest.TestCase):
             f["pose_score"] = None
         self.assertEqual(schema.validate_swing(doc), [])
 
+    def test_allows_edge_frames_without_pose_when_pose_ran(self):
+        """The pose window is narrower than the frame span at the defaults.
+
+        pose_window_s=0.40 decodes +/-0.40s around the onset while
+        frame_span_s=1.6 extracts +/-0.80s, so the outermost stills of every
+        swing legitimately have no landmarks and keep pose_score=None -- which
+        is what _attach_pose_scores documents. Requiring a score on every frame
+        whenever measurements exist made the ETL raise on real footage while
+        this suite passed, because the integration fixtures use
+        frame_span_s=0.4: inside the window, so every frame got a score.
+        """
+        doc = make_swing()
+        doc["frames"][0]["pose_score"] = None
+        doc["frames"][-1]["pose_score"] = None
+        self.assertEqual(schema.validate_swing(doc), [])
+
+    def test_rejects_frames_with_no_pose_at_all_when_pose_ran(self):
+        """A score somewhere is still required: all-null means pose failed,
+        and then measurements should have been null too."""
+        doc = make_swing()
+        for f in doc["frames"]:
+            f["pose_score"] = None
+        self.assertTrue(any("pose_score" in e
+                            for e in schema.validate_swing(doc)))
+
     def test_rejects_trim_end_before_start(self):
         doc = make_swing()
         doc["trim"]["source_end_ms"] = doc["trim"]["source_start_ms"] - 1
