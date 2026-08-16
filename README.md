@@ -156,24 +156,40 @@ required checks in branch protection instead, where they belong.
 
 ### Settings, not files
 
-The remaining surfaces are repository settings and cannot be committed. Enable
-them once the repo has a remote:
+The remaining surfaces are repository settings and cannot be committed. All of
+these are already applied to `wwchen/tennis`; the commands are here for a fork
+or a rebuild.
+
+GitHub turns secret scanning and push protection on by default for a public
+repo, so in practice only these need running:
 
 ```bash
-gh api -X PATCH repos/{owner}/{repo} \
-  -F security_and_analysis[secret_scanning][status]=enabled \
-  -F security_and_analysis[secret_scanning][push_protection][status]=enabled
+gh api -X PUT repos/{owner}/{repo}/vulnerability-alerts
 gh api -X PUT repos/{owner}/{repo}/private-vulnerability-reporting
+gh api -X PATCH repos/{owner}/{repo} --input - <<'JSON'
+{"security_and_analysis":{"dependabot_security_updates":{"status":"enabled"}}}
+JSON
 ```
 
-Push protection is the one worth doing first — it rejects a commit carrying a
-recognised credential at push time, which is the only point where the fix is
-still cheap. Once a secret reaches the remote, rotating it is the only real
-remedy; scrubbing history is theatre.
+Note the request shape: `secret_scanning_push_protection` is a **sibling** of
+`secret_scanning`, not nested inside it, and the nested `security_and_analysis`
+object needs a JSON body — `gh api -F key[sub]=value` does not build one.
 
-Note that on a **private** repo, CodeQL and secret scanning require a GHAS
-licence. On a public repo both are free. Dependabot and dependency review work
-either way.
+Push protection is the one that earns its keep: it rejects a commit carrying a
+recognised credential at push time, the only point where the fix is still cheap.
+Once a secret reaches the remote, rotating it is the only real remedy; scrubbing
+history is theatre.
+
+Two toggles are **not** available here and will silently stay `disabled` even
+though the API returns 200 — they require a GHAS licence, which a free personal
+repo does not carry:
+
+- `secret_scanning_non_provider_patterns` (generic/unbranded secrets)
+- `secret_scanning_validity_checks` (does this leaked key still work?)
+
+On a **private** repo, CodeQL and secret scanning themselves also require GHAS.
+On a public repo both are free. Dependabot and dependency review work either
+way.
 
 Deployment is not wired up yet: CI stops at a pushed image. The roadtrip pattern
 to mirror when that changes is a `deploy.yml` triggered by `workflow_run` on CI

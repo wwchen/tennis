@@ -12,9 +12,9 @@ name: Security
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
   schedule:
     # Mondays 07:00 UTC. A scheduled run matters even when nothing changed:
     # CodeQL ships new queries continuously, so today's clean tree can fail
