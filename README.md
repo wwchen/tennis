@@ -137,6 +137,44 @@ required check can gate the branch.
 Images are addressed by commit SHA, never `latest`, so a deploy names exactly
 one build.
 
+## Security
+
+[`.github/workflows/security.yml`](.github/workflows/security.yml) runs the two
+GitHub Advanced Security surfaces that are expressible as workflows:
+
+- **CodeQL** — `javascript-typescript`, `build-mode: none` (nothing to compile),
+  `security-extended` query suite. On push, on PR, and weekly, because CodeQL
+  ships new queries continuously and an unchanged tree can start failing without
+  a commit.
+- **Dependency review** — on PRs only, since the action diffs base against head
+  manifests. Fails the check when a PR introduces a known-vulnerable package at
+  high severity or above.
+
+Neither is wired into `ci-passed`. A scan finding is not a reason to block an
+image build, and coupling them means a CodeQL outage stops deploys. Add them as
+required checks in branch protection instead, where they belong.
+
+### Settings, not files
+
+The remaining surfaces are repository settings and cannot be committed. Enable
+them once the repo has a remote:
+
+```bash
+gh api -X PATCH repos/{owner}/{repo} \
+  -F security_and_analysis[secret_scanning][status]=enabled \
+  -F security_and_analysis[secret_scanning][push_protection][status]=enabled
+gh api -X PUT repos/{owner}/{repo}/private-vulnerability-reporting
+```
+
+Push protection is the one worth doing first — it rejects a commit carrying a
+recognised credential at push time, which is the only point where the fix is
+still cheap. Once a secret reaches the remote, rotating it is the only real
+remedy; scrubbing history is theatre.
+
+Note that on a **private** repo, CodeQL and secret scanning require a GHAS
+licence. On a public repo both are free. Dependabot and dependency review work
+either way.
+
 Deployment is not wired up yet: CI stops at a pushed image. The roadtrip pattern
 to mirror when that changes is a `deploy.yml` triggered by `workflow_run` on CI
 success, joining the tailnet, installing a release over SSH and running
