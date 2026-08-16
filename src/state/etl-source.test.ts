@@ -32,4 +32,16 @@ describe('loadEtlClips', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
     expect(await loadEtlClips()).toBeNull();
   });
+
+  it('returns null when the payload has corrupt metadata', async () => {
+    const corruptPayload = {
+      session: 'IMG_0304',
+      swings: [{ dir: 'swings/swing_001', hash: 'sha256:abc', doc: { id: 'broken' } }],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(corruptPayload) }),
+    );
+    expect(await loadEtlClips()).toBeNull();
+  });
 });
