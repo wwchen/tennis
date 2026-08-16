@@ -1,4 +1,4 @@
-import type { Clip, Comment, Phase } from '@/domain/types';
+import type { Clip, Comment, Phase, Stroke } from '@/domain/types';
 import {
   ALL_PLAYERS,
   ALL_RATINGS,
@@ -90,7 +90,7 @@ export function buildCompare(
         frame: f.i,
         num: `f${String(f.i + 1).padStart(2, '0')}`,
         phase: f.phase,
-        flagged: f.conf < CONFIDENCE_FLOOR,
+        flagged: f.conf !== undefined && f.conf < CONFIDENCE_FLOOR,
         pinCount: pinsFor(comments, clip.id, f.i).length,
         selected: sel?.clip === clip.id && sel.frame === f.i,
       });
@@ -115,7 +115,7 @@ export const rosterOf = (doc: Doc): string[] =>
   Array.from(new Set([...doc.clips.map((c) => c.player), ...doc.extraPlayers]));
 
 export const strokesOf = (doc: Doc): string[] =>
-  Array.from(new Set(doc.clips.map((c) => c.stroke)));
+  Array.from(new Set(doc.clips.map((c) => c.stroke).filter((s): s is Stroke => s !== null)));
 
 export interface Stats {
   visible: number;

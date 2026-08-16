@@ -2,7 +2,7 @@ import type { Dispatch } from 'react';
 import type { Action } from '@/state/store';
 import { pinsFor } from '@/lib/selectors';
 import type { Clip, Comment, Stroke } from '@/domain/types';
-import { STROKES } from '@/domain/types';
+import { STROKES, UNTAGGED_STROKE } from '@/domain/types';
 import { strokeHue } from '@/domain/grades';
 import { Button, ICONS, Icon, Select, Tag, Textarea, valueOf } from '@/lds';
 import { FrameTile, GradeChips, Mono } from './shared';
@@ -48,7 +48,7 @@ export function DetailView({
           {clip.id}
         </span>
         <Tag size="sm" hue={strokeHue(clip.stroke)} emphasis="soft" hint-size="auto,20px">
-          {clip.stroke}
+          {clip.stroke ?? UNTAGGED_STROKE}
         </Tag>
         <span style={{ fontSize: 13, color: 'var(--gray-600)' }}>{clip.player}</span>
         <div style={{ flex: 1 }} />
@@ -224,7 +224,7 @@ export function DetailView({
         />
         <Select
           label="Stroke type"
-          value={clip.stroke}
+          value={clip.stroke ?? ''}
           onChange={(e: Event) =>
             dispatch({ type: 'setClipStroke', clip: clip.id, stroke: valueOf(e) as Stroke })
           }

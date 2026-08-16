@@ -4,24 +4,47 @@ export type Phase = 'setup' | 'contact' | 'finish';
 /** Coach's verdict on a clip. Absent (`null`) means unrated. */
 export type Grade = 'good' | 'ok' | 'work';
 
-export const STROKES = ['Forehand', 'Backhand', 'Serve', 'Volley', 'Slice'] as const;
+/**
+ * Mirrors `STROKES` in `tennisproc/schema.py`, which owns the vocabulary.
+ * `Slice` is deliberately absent: the ETL cannot emit it (spin is not
+ * recoverable at 30 fps), so nothing could ever produce the value.
+ */
+export const STROKES = [
+  'Forehand',
+  'Backhand',
+  'Serve',
+  'Volley',
+  'Overhead',
+  'Other',
+] as const;
 export type Stroke = (typeof STROKES)[number];
+
+/** Shown where a stroke would go on a clip the ETL left unlabelled. */
+export const UNTAGGED_STROKE = 'untagged';
 
 export type View = 'compare' | 'catalog' | 'detail';
 
 export interface Frame {
   /** Index within the clip, 0-based. Rendered as `f01`…`f09`. */
   i: number;
+  /** Milliseconds into the source video. The join key for `user-edit.json`;
+   *  `i` is only a render index and shifts when sampling changes. */
+  sourceMs: number;
   phase: Phase | null;
-  /** Classifier confidence, 0–1. Below CONFIDENCE_FLOOR the frame is flagged. */
-  conf: number;
+  /**
+   * Classifier confidence, 0–1. Below CONFIDENCE_FLOOR the frame is flagged.
+   * Absent on ETL clips: there is no classifier, and `pose_score` measures
+   * landmark quality, which is a different quantity.
+   */
+  conf?: number;
 }
 
 export interface Clip {
   id: string;
   player: string;
-  stroke: Stroke;
-  conf: number;
+  /** Null until a human labels it — the ETL ships every stroke unlabelled. */
+  stroke: Stroke | null;
+  conf?: number;
   rejected: boolean;
   duration: string;
   /** True once a human has confirmed or corrected any of the auto tags. */
