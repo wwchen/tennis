@@ -5,7 +5,10 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules', '.design', 'coverage'] },
+  // `.venv*` holds the ETL's Python deps, some of which ship bundled browser
+  // JS (matplotlib's mpl.js). Linting site-packages reports warnings nobody
+  // here can act on.
+  { ignores: ['dist', 'node_modules', '.design', 'coverage', '.venv*'] },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
