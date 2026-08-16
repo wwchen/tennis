@@ -7,6 +7,11 @@ coverage/
 .env.*
 !.env.example
 
+# The Cloudflare tunnel token, mounted as a Docker secret. It is an unbranded
+# base64 blob, so GitHub's push protection will not recognise it on the way out
+# — this entry is the only thing standing between it and the remote.
+secrets/
+
 # Scratch copy of the Claude Design export the UI was ported from. Kept out of
 # git: the design project is the source of truth, this tree is the port.
 .design/
