@@ -37,6 +37,8 @@ export interface Frame {
    * landmark quality, which is a different quantity.
    */
   conf?: number;
+  /** Served by the dev middleware. Absent for seeded clips. */
+  imageUrl?: string;
 }
 
 export interface Clip {
