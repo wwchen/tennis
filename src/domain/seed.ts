@@ -29,6 +29,9 @@ const frameConf = (clipConf: number, i: number) =>
 const buildFrames = (conf: number, setup: number, contact: number, finish: number): Frame[] =>
   Array.from({ length: FRAMES_PER_CLIP }, (_, i) => ({
     i,
+    // The seed has no source video; 33 ms apart mimics 30 fps so ordering and
+    // any join logic behave the same as on real output.
+    sourceMs: i * 33,
     phase: i === setup ? 'setup' : i === contact ? 'contact' : i === finish ? 'finish' : null,
     conf: frameConf(conf, i),
   }));

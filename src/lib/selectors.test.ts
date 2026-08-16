@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCompare, rosterOf, statsOf, visibleClips } from './selectors';
+import { buildCompare, rosterOf, statsOf, strokesOf, visibleClips } from './selectors';
 import { SEED_NEXT_COMMENT_ID, seedClips, seedComments } from '@/domain/seed';
 import type { Doc } from '@/state/persistence';
 import type { Ui } from '@/state/store';
@@ -134,5 +134,20 @@ describe('stats and roster', () => {
       'Pro reference',
       'Sam',
     ]);
+  });
+});
+
+describe('null strokes', () => {
+  it('an untagged clip survives the "all strokes" filter but no specific one', () => {
+    const d = doc();
+    d.clips = [{ ...d.clips[0], id: 'X-1', stroke: null }];
+    expect(visibleClips(d, ui()).map((c) => c.id)).toEqual(['X-1']);
+    expect(visibleClips(d, ui({ strokeFilter: 'Forehand' }))).toHaveLength(0);
+  });
+
+  it('strokesOf never offers null as a filter option', () => {
+    const d = doc();
+    d.clips = [{ ...d.clips[0], stroke: null }, { ...d.clips[1], stroke: 'Backhand' }];
+    expect(strokesOf(d)).toEqual(['Backhand']);
   });
 });
