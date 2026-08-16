@@ -155,6 +155,7 @@ jobs:
   ci-passed:
     needs:
       - app
+      - etl
       - docker-build
     if: always()
     runs-on: ubuntu-latest
