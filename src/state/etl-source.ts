@@ -1,5 +1,5 @@
 import type { Clip } from '@/domain/types';
-import type { SessionPayload } from '@/domain/etl-types';
+import type { SessionPayload, SwingEntry } from '@/domain/etl-types';
 import { adaptSession } from '@/domain/etl';
 
 /**
@@ -9,13 +9,21 @@ import { adaptSession } from '@/domain/etl';
  * dev server, a static build, a malformed response. The caller keeps the seed,
  * so a missing tree is a normal state rather than an error the user has to see.
  */
-export async function loadEtlClips(): Promise<Clip[] | null> {
+export async function loadEtlClips(): Promise<{
+  clips: Clip[];
+  entries: SwingEntry[];
+  session: string;
+} | null> {
   try {
     const res = await fetch('/api/session');
     if (!res.ok) return null;
     const payload = (await res.json()) as SessionPayload;
     if (!Array.isArray(payload.swings) || payload.swings.length === 0) return null;
-    return adaptSession(payload);
+    return {
+      clips: adaptSession(payload),
+      entries: payload.swings,
+      session: payload.session,
+    };
   } catch {
     // No dev server, malformed payload, or corrupt metadata. Seed stands.
     return null;
