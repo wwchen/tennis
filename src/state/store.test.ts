@@ -4,7 +4,8 @@ import type { Action, State } from './store';
 import { initialState, reducer, useShotLab } from './store';
 import { loadDoc, saveDoc } from './persistence';
 import { ADD_PLAYER } from '@/domain/types';
-import type { SwingEntry } from '@/domain/etl-types';
+import type { EtlSwingDoc, SwingEntry } from '@/domain/etl-types';
+import { adaptSwing } from '@/domain/etl';
 import realSwing from '@/domain/__fixtures__/swing-real.json';
 import * as etlSource from './etl-source';
 
@@ -258,6 +259,54 @@ describe('write-back deduplication', () => {
     });
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 1000 });
+  });
+
+  it('writes back a previously-reviewed swing unchanged on a bare page load', async () => {
+    // The §1 symptom, at the layer it actually happened: hydrating a tree that
+    // already has user-edit.json files derives `triaged: true`, so the effect
+    // PUTs every one of them with no human action. That is only safe if the
+    // payload matches what is already on disk.
+    const onDisk = {
+      ...(realSwing as unknown as EtlSwingDoc),
+      labels: {
+        ...(realSwing as unknown as EtlSwingDoc).labels,
+        quality: 5 as const,
+        verdict: 'duplicate' as const,
+        player_name: null,
+        stroke: 'backhand' as const,
+        notes: 'shanked, keep for the reel',
+      },
+      frames: (realSwing as unknown as EtlSwingDoc).frames.map((f, i) =>
+        i === 2 ? { ...f, stage: 'setup' as const } : f,
+      ),
+      edit: { by: 'reviewer', at: '2026-08-15T09:00:00Z', against: 'sha256:abc', reviewed: true },
+    };
+    const entries: SwingEntry[] = [
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: onDisk },
+    ];
+
+    const { result } = renderHook(() => useShotLab());
+
+    // Exactly what `loadEtlClips` hands the reducer: `adaptSession`'s output.
+    act(() => {
+      result.current.dispatch({
+        type: 'hydrate',
+        clips: [adaptSwing(onDisk)],
+        entries,
+        session: 'IMG_0304',
+      });
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(url).toBe('/api/swings/IMG_0304/swings/swing_001/user-edit');
+    const sent = JSON.parse(init.body) as EtlSwingDoc;
+
+    // Byte-identical apart from edit.at.
+    expect({ ...sent, edit: null }).toEqual({ ...onDisk, edit: null });
+    expect(sent.edit?.at).not.toBe(onDisk.edit?.at);
+    expect({ ...sent.edit, at: '' }).toEqual({ ...onDisk.edit, at: '' });
   });
 
   it('retries after a rejected write instead of caching it as sent', async () => {
