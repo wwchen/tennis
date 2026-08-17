@@ -120,6 +120,22 @@ export function FrameTile({
         ...style,
       }}
     >
+      {cell.imageUrl !== undefined && (
+        <img
+          src={cell.imageUrl}
+          alt=""
+          role="presentation"
+          loading="lazy"
+          decoding="async"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+          }}
+        />
+      )}
       {phase !== null && <PhaseBadge phase={phase} size={badgeSize} />}
       <span
         style={{
