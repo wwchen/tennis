@@ -28,6 +28,7 @@ export type Cell =
       flagged: boolean;
       pinCount: number;
       selected: boolean;
+      imageUrl?: string;
     };
 
 export interface Row {
@@ -90,6 +91,7 @@ export function buildCompare(
         frame: f.i,
         num: `f${String(f.i + 1).padStart(2, '0')}`,
         phase: f.phase,
+        imageUrl: f.imageUrl,
         flagged: f.conf !== undefined && f.conf < CONFIDENCE_FLOOR,
         pinCount: pinsFor(comments, clip.id, f.i).length,
         selected: sel?.clip === clip.id && sel.frame === f.i,
