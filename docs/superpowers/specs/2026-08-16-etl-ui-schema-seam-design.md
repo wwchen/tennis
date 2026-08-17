@@ -217,9 +217,14 @@ always reading current ETL output.
 The tree root comes from an env var (`SHOT_LAB_OUT`), defaulting to `./out`. All
 paths are resolved and confirmed to sit inside that root before any read or
 write, so a traversal in a request cannot escape it. Writes are restricted to
-files named `user-edit.json`; the middleware will not overwrite `metadata.json`
-under any request, which preserves the ETL's "re-runnable without destroying
-human work" property at the transport layer as well as by convention.
+files named `user-edit.json` inside a directory matching
+`<session>/swings/swing_NNN`, and the write target is rejected if it is a
+symlink — constraining the filename alone is not enough, because the final path
+component is still followed, so a planted `user-edit.json -> metadata.json` link
+would otherwise let the route corrupt ETL output. With all three checks the
+middleware will not overwrite `metadata.json` under any request, which preserves
+the ETL's "re-runnable without destroying human work" property at the transport
+layer as well as by convention.
 
 This is dev-only, and the app must still work without it: on a failed fetch the
 store keeps the seed. That keeps `vite build`, `vite preview` and the existing
@@ -316,4 +321,4 @@ needs to be cut short, the earlier steps still have standalone value.
 | `quality` <-> `grade` is lossy | mapping fixed and documented; no silent re-rating |
 | Sampling hides frames a reviewer needs | detail view reads all 42–49; sampling only narrows the compare grid |
 | Dev-only transport reads as "done" | fallback to seed is explicit, and this section is the record that production transport is unbuilt |
-| Write-back corrupts ETL output | middleware refuses to write anything but `user-edit.json`; ETL only ever writes `metadata.json` |
+| Write-back corrupts ETL output | middleware refuses to write anything but `user-edit.json`, only inside `<session>/swings/swing_NNN`, and never through a symlink at the target; ETL only ever writes `metadata.json` |

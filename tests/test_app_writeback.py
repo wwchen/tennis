@@ -40,6 +40,35 @@ class TestAppWriteback(unittest.TestCase):
         self.assertEqual(schema.doc_hash(self.metadata),
                          "sha256:6caa72ffd3c91439")
 
+    def test_doc_hash_keeps_an_integral_float_apart_from_an_int(self):
+        """The pinned fixture above happens to contain no integral float, so it
+        asserts nothing about the one place the two implementations actually
+        diverged: json.dumps writes a float with repr(), so 1.0 stays "1.0",
+        while JSON.stringify(1.0) is "1". Real output hits this --
+        detection.contact_offset is -1.0 in 2 of the sample session's 42 swings
+        and measurements.wrist_peak_speed is 40.0 in another -- and the effect
+        was a false "stale review" warning on ~10% of reviewed swings.
+
+        The same two constants are pinned in vite-plugin-shot-lab.test.ts, so
+        neither side can drift alone."""
+        self.assertNotEqual(schema.doc_hash({"a": 1.0}),
+                            schema.doc_hash({"a": 1}))
+        self.assertEqual(schema.doc_hash({"a": 1.0}),
+                         "sha256:c29a44abc114a1d7")
+        self.assertEqual(schema.doc_hash({"a": 1}),
+                         "sha256:015abd7f5cc57a2d")
+
+    def test_doc_hash_of_a_swing_carrying_an_integral_float_is_pinned(self):
+        """A whole swing doc shaped like swing_010, whose contact_offset is
+        -1.0. This is the document class the TypeScript hash got wrong, and it
+        still has to validate -- both fields are _NUM, so an integral float is
+        legal output, not a malformed doc."""
+        doc = json.loads(json.dumps(self.metadata))
+        doc["measurements"]["contact_offset"] = -1.0
+        doc["measurements"]["wrist_peak_speed"] = 40.0
+        self.assertEqual(schema.validate_swing(doc), [])
+        self.assertEqual(schema.doc_hash(doc), "sha256:501eafc9a1f2f70d")
+
     def test_app_written_document_is_valid(self):
         doc = self._user_edit(stroke="backhand", quality=4, verdict="valid",
                               notes="late contact")
