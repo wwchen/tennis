@@ -202,7 +202,12 @@ export function reducer(state: State, action: Action): State {
       };
 
     case 'setNote':
-      return { ...state, doc: patchClip(doc, action.clip, (c) => ({ ...c, note: action.note })) };
+      // `triaged` gates write-back, so a note that does not set it is written
+      // to localStorage and never reaches user-edit.json.
+      return {
+        ...state,
+        doc: patchClip(doc, action.clip, (c) => ({ ...c, note: action.note, triaged: true })),
+      };
 
     case 'toggleReject': {
       const target = doc.clips.find((c) => c.id === action.clip);
@@ -211,7 +216,9 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         doc: {
-          ...patchClip(doc, action.clip, (c) => ({ ...c, rejected })),
+          // Rejecting is a human verdict like any other, and gates write-back
+          // the same way; see `setNote`.
+          ...patchClip(doc, action.clip, (c) => ({ ...c, rejected, triaged: true })),
           removedStack: rejected
             ? [...doc.removedStack, action.clip]
             : doc.removedStack.filter((id) => id !== action.clip),
@@ -341,8 +348,10 @@ export function useShotLab() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(finalDoc),
         })
-          .then(() => {
-            lastSentRef.current.set(entry.dir, payload);
+          .then((res) => {
+            // `fetch` resolves for 4xx/5xx too. Caching a rejected payload as
+            // sent would retire that label permanently.
+            if (res.ok) lastSentRef.current.set(entry.dir, payload);
           })
           .catch(() => {
             // Dev-only route; a static build has nowhere to write.
