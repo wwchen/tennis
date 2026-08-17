@@ -53,6 +53,28 @@ describe('reducer', () => {
     expect(run(s, { type: 'undoRemove' }).doc.clips).toHaveLength(12);
   });
 
+  it('marks a clip triaged when the only edit is a note', () => {
+    // Write-back is gated on `triaged`, so a note-only edit that left it false
+    // was a silent no-op: saved to localStorage, never sent to user-edit.json.
+    let s = initialState();
+    expect(clip(s, 'SL-001').triaged).toBe(false);
+    s = run(s, { type: 'setNote', clip: 'SL-001', note: 'duplicate of 14' });
+    expect(clip(s, 'SL-001').note).toBe('duplicate of 14');
+    expect(clip(s, 'SL-001').triaged).toBe(true);
+  });
+
+  it('marks a clip triaged when the only edit is a rejection', () => {
+    let s = initialState();
+    expect(clip(s, 'SL-001').triaged).toBe(false);
+    s = run(s, { type: 'toggleReject', clip: 'SL-001' });
+    expect(clip(s, 'SL-001').rejected).toBe(true);
+    expect(clip(s, 'SL-001').triaged).toBe(true);
+    // Un-rejecting is still a call a human made, so it stays reviewed.
+    s = run(s, { type: 'toggleReject', clip: 'SL-001' });
+    expect(clip(s, 'SL-001').rejected).toBe(false);
+    expect(clip(s, 'SL-001').triaged).toBe(true);
+  });
+
   it('moves a phase tag off whichever frame held it before', () => {
     let s = initialState();
     // SL-001 is seeded with contact at frame 4.
@@ -196,7 +218,13 @@ describe('write-back deduplication', () => {
     // Wait for debounced write
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 1000 });
 
-    // Force another render WITHOUT changing clip data
+    // Re-run the effect for real: `patchClip` rebuilds the clips array, so this
+    // changes the dep's identity while leaving the payload byte-identical.
+    // A bare `rerender()` would not re-run the effect at all.
+    const sameNote = clip(result.current.state, 'IMG_0304/swing_001').note;
+    act(() => {
+      result.current.dispatch({ type: 'setNote', clip: 'IMG_0304/swing_001', note: sameNote });
+    });
     rerender();
 
     // Wait to ensure no new PUTs
@@ -230,5 +258,41 @@ describe('write-back deduplication', () => {
     });
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 1000 });
+  });
+
+  it('retries after a rejected write instead of caching it as sent', async () => {
+    // `fetch` resolves for 4xx/5xx, so caching without checking `res.ok` retired
+    // the label permanently on a 404 or a 400.
+    fetchMock.mockResolvedValue({ ok: false, status: 404 });
+
+    const entries: SwingEntry[] = [
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never },
+    ];
+
+    const { result, rerender } = renderHook(() => useShotLab());
+
+    act(() => {
+      result.current.dispatch({
+        type: 'hydrate',
+        clips: [
+          { ...result.current.state.doc.clips[0], id: 'IMG_0304/swing_001', triaged: true, grade: 'good' },
+        ],
+        entries,
+        session: 'IMG_0304',
+      });
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+
+    // Re-run the effect with the payload unchanged. The dedup cache is the only
+    // thing that could suppress the second PUT, and a 404 must not have filled
+    // it — the reviewer's label is still not on disk.
+    const sameNote = clip(result.current.state, 'IMG_0304/swing_001').note;
+    act(() => {
+      result.current.dispatch({ type: 'setNote', clip: 'IMG_0304/swing_001', note: sameNote });
+    });
+    rerender();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 2000 });
   });
 });
