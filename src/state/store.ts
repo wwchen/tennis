@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer } from 'react';
+import { useEffect, useMemo, useReducer, useRef } from 'react';
 import type { Clip, Grade, Phase, Selection, Stroke, View } from '@/domain/types';
 import { ADD_PLAYER, ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
 import { SEED_NEXT_COMMENT_ID, SEED_REMOVED_STACK, seedClips, seedComments } from '@/domain/seed';
@@ -295,6 +295,7 @@ export function reducer(state: State, action: Action): State {
 
 export function useShotLab() {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
+  const lastSentRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     let live = true;
@@ -318,15 +319,34 @@ export function useShotLab() {
       for (const entry of state.entries) {
         const clip = state.doc.clips.find((c) => c.id === entry.doc.id);
         if (clip === undefined || !clip.triaged) continue;
+
+        // Build the doc without the volatile timestamp so we can compare
+        const docWithoutTimestamp = toUserEdit(
+          clip,
+          entry.doc,
+          entry.hash,
+          'reviewer',
+          '', // placeholder; we'll replace it below
+        );
+        const { edit, ...rest } = docWithoutTimestamp;
+        const payload = JSON.stringify(rest);
+
+        // Skip if this exact payload was already sent
+        if (lastSentRef.current.get(entry.dir) === payload) continue;
+
+        // Now stamp the real timestamp and send
+        const finalDoc = { ...docWithoutTimestamp, edit: { ...edit, at: new Date().toISOString() } };
         void fetch(`/api/swings/${state.session}/${entry.dir}/user-edit`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(
-            toUserEdit(clip, entry.doc, entry.hash, 'reviewer', new Date().toISOString()),
-          ),
-        }).catch(() => {
-          // Dev-only route; a static build has nowhere to write.
-        });
+          body: JSON.stringify(finalDoc),
+        })
+          .then(() => {
+            lastSentRef.current.set(entry.dir, payload);
+          })
+          .catch(() => {
+            // Dev-only route; a static build has nowhere to write.
+          });
       }
     }, 600);
     return () => clearTimeout(timer);
