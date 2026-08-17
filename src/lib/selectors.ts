@@ -6,6 +6,7 @@ import {
   CONFIDENCE_FLOOR,
   FRAMES_PER_CLIP,
 } from '@/domain/types';
+import { frameWindow } from '@/domain/window';
 import { gradeOf } from '@/domain/grades';
 import type { Doc } from '@/state/persistence';
 import type { Ui } from '@/state/store';
@@ -20,8 +21,9 @@ export type Cell =
       real: true;
       key: string;
       clip: string;
+      /** Index into the clip's FULL frame list, not into `cells`. */
       frame: number;
-      /** Frame label, `f01`…`f09`. */
+      /** Frame label, `f01`…`f49`. */
       num: string;
       phase: Phase | null;
       /** Classifier is unsure about this frame. */
@@ -55,9 +57,18 @@ export function visibleClips(doc: Doc, ui: Ui): Clip[] {
   );
 }
 
-/** Index of the clip's anchor frame, or the midpoint when it carries no tag. */
+/**
+ * Index of the clip's anchor frame, or the middle of the extraction when it
+ * carries no tag.
+ *
+ * The midpoint rather than a constant: a `Clip` carries every extracted frame
+ * (42-49 on real footage), and the ETL centres its extraction on contact, so the
+ * middle of an untagged clip is the best guess at the same moment the tagged
+ * clips are aligned on. A fixed 4 would have pinned every untagged real clip to
+ * its 5th still, ~750 ms before contact.
+ */
 const anchorIndex = (clip: Clip, anchor: Phase): number =>
-  clip.frames.find((f) => f.phase === anchor)?.i ?? 4;
+  clip.frames.find((f) => f.phase === anchor)?.i ?? Math.floor((clip.frames.length - 1) / 2);
 
 /**
  * Lays every visible clip out on one timeline, shifted so all their anchor
@@ -65,6 +76,14 @@ const anchorIndex = (clip: Clip, anchor: Phase): number =>
  * lead padding; one whose contact is at frame 3 gets three pad cells in front.
  * Columns are then labelled by their offset from the anchor (−2, −1, CONTACT,
  * +1, …), which is what makes two swings comparable at a glance.
+ *
+ * Each row shows at most `FRAMES_PER_CLIP` of its clip's frames, windowed around
+ * that clip's anchor by `frameWindow` — the same definition `sampleFrames` uses.
+ * The narrowing lives here rather than in `adaptSwing` because this is the only
+ * view that needs a bounded width: 12 clips of 49 stills is a 588-tile grid
+ * nobody can read, while the detail view wants every frame. `cell.frame` stays
+ * an index into the clip's FULL frame list, so a click still selects the real
+ * still.
  */
 export function buildCompare(
   clips: Clip[],
@@ -73,17 +92,24 @@ export function buildCompare(
   sel: { clip: string; frame: number } | null,
 ): { rows: Row[]; colLabels: string[] } {
   const anchors = clips.map((c) => anchorIndex(c, anchor));
+  const windows = clips.map((c, i) => frameWindow(c.frames.length, anchors[i]));
+  // Lead and tail are measured within the window, not the whole clip: the
+  // columns either side of the anchor are the ones the grid actually renders.
+  const leads = anchors.map((a, i) => a - windows[i].start);
   // Floors of 4 and FRAMES_PER_CLIP keep the grid a stable width when the
   // filters leave only one or two clips on screen.
-  const maxLead = Math.max(4, ...anchors);
-  const maxTail = Math.max(FRAMES_PER_CLIP, ...clips.map((c, i) => c.frames.length - anchors[i]));
+  const maxLead = Math.max(4, ...leads);
+  const maxTail = Math.max(
+    FRAMES_PER_CLIP,
+    ...clips.map((_, i) => windows[i].end - anchors[i]),
+  );
   const total = maxLead + maxTail;
 
   const rows: Row[] = clips.map((clip, i) => {
-    const lead = maxLead - anchors[i];
+    const lead = maxLead - leads[i];
     const cells: Cell[] = [];
     for (let k = 0; k < lead; k++) cells.push({ real: false, key: `${clip.id}:lead:${k}` });
-    for (const f of clip.frames) {
+    for (const f of clip.frames.slice(windows[i].start, windows[i].end)) {
       cells.push({
         real: true,
         key: `${clip.id}:${f.i}`,
