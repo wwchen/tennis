@@ -58,17 +58,29 @@ export function visibleClips(doc: Doc, ui: Ui): Clip[] {
 }
 
 /**
- * Index of the clip's anchor frame, or the middle of the extraction when it
- * carries no tag.
+ * Index of the clip's anchor frame.
  *
- * The midpoint rather than a constant: a `Clip` carries every extracted frame
- * (42-49 on real footage), and the ETL centres its extraction on contact, so the
- * middle of an untagged clip is the best guess at the same moment the tagged
- * clips are aligned on. A fixed 4 would have pinned every untagged real clip to
- * its 5th still, ~750 ms before contact.
+ * A human's tag wins — that is the whole point of tagging. Failing that, and for
+ * the `contact` anchor only, the ETL already knows: `offsetContactMs === 0` is
+ * exactly the detector's contact frame. Every real ETL frame ships with
+ * `stage: null`, so this is the path all 42 real swings take.
+ *
+ * The midpoint is the last resort, for `setup`/`finish` (which have no ETL
+ * equivalent) and for seeded clips (which have no detector). It is only ever an
+ * approximation of contact: `render.py` truncates extraction at the video
+ * boundaries, so a swing near either end of the source is not centred on contact
+ * at all — measured off by 1 frame on swing_041 and 4 frames (~133 ms) on
+ * swing_042 of the sample tree, with nothing on screen to say so.
  */
-const anchorIndex = (clip: Clip, anchor: Phase): number =>
-  clip.frames.find((f) => f.phase === anchor)?.i ?? Math.floor((clip.frames.length - 1) / 2);
+const anchorIndex = (clip: Clip, anchor: Phase): number => {
+  const tagged = clip.frames.find((f) => f.phase === anchor);
+  if (tagged !== undefined) return tagged.i;
+  if (anchor === 'contact') {
+    const contact = clip.frames.find((f) => f.offsetContactMs === 0);
+    if (contact !== undefined) return contact.i;
+  }
+  return Math.floor((clip.frames.length - 1) / 2);
+};
 
 /**
  * Lays every visible clip out on one timeline, shifted so all their anchor

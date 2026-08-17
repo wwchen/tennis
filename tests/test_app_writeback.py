@@ -142,6 +142,12 @@ class TestPreservedLabelsRoundTrip(unittest.TestCase):
         return doc
 
     def test_every_verdict_the_app_can_now_preserve_is_valid(self):
+        # Asserted explicitly rather than derived from VERDICTS: iterating the
+        # constant under test means shrinking the vocabulary back to the old
+        # lossy set still passes. `duplicate` is the member the old projection
+        # could not emit, and the one whose loss re-hid a clip on every load.
+        self.assertIn("duplicate", schema.VERDICTS)
+        self.assertIn("unclear", schema.VERDICTS)
         for verdict in schema.VERDICTS:
             with self.subTest(verdict=verdict):
                 doc = self._preserving_edit(verdict=verdict)
@@ -152,7 +158,11 @@ class TestPreservedLabelsRoundTrip(unittest.TestCase):
 
     def test_every_quality_the_app_can_now_preserve_is_valid(self):
         # 1 and 5 were unreachable through the old projection; an untouched
-        # rating now writes back whatever it was.
+        # rating now writes back whatever it was. Pinned explicitly for the same
+        # reason as the verdicts above -- these two are the values the old
+        # projection collapsed, so the test has to name them.
+        self.assertIn(1, schema.QUALITY)
+        self.assertIn(5, schema.QUALITY)
         for quality in schema.QUALITY:
             with self.subTest(quality=quality):
                 doc = self._preserving_edit(quality=quality)
@@ -213,32 +223,154 @@ class TestPreservedLabelsRoundTrip(unittest.TestCase):
         merged, _ = self._write(doc)
         self.assertEqual(merged["frames"][3]["stage"], "other")
 
-    def test_the_load_only_write_is_a_fixed_point_for_the_etl_too(self):
-        """The property the whole follow-up exists to establish, checked from
-        the ETL's side: re-reading a swing whose user-edit.json the app rewrote
-        without any human action gives back the same merged document."""
-        doc = self._preserving_edit(quality=5, verdict="duplicate",
-                                    player_name=None, stroke="backhand",
-                                    notes="shanked, keep for the reel")
+    def _lossy_projection(self, merged):
+        """What the OLD write projection produced from a merged document.
+
+        Reimplemented here on purpose. The point is not to mirror the current
+        TypeScript -- that would just be a second copy to drift -- but to pin
+        the DEGRADED document the old code emitted, so the assertions below can
+        show the two are different and that only one of them survives overlay().
+
+        The four collapses, from the followups doc's own table:
+          quality 1-5     -> 2/3/4 via the three-value grade
+          verdict         -> false_positive if rejected else valid
+          player_name     -> the court slot, echoed back as a person's name
+          frames          -> only the 9 the compare window showed
+        """
+        labels = merged["labels"]
+        quality = labels["quality"]
+        if quality is None:
+            grade_quality = None
+        elif quality <= 2:
+            grade_quality = 2          # 1 and 2 both read as "work"
+        elif quality == 3:
+            grade_quality = 3
+        else:
+            grade_quality = 4          # 4 and 5 both read as "good"
+
+        rejected = (not merged["detection"]["verified"]
+                    or labels["verdict"] in ("false_positive", "duplicate"))
+
+        frames = json.loads(json.dumps(merged["frames"]))
+        contact_i = next(i for i, f in enumerate(frames)
+                         if f["offset_contact_ms"] == 0)
+        start = max(0, min(contact_i - 4, len(frames) - 9))
+
+        doc = json.loads(json.dumps(merged))
+        doc["labels"] = dict(labels,
+                             quality=grade_quality,
+                             verdict="false_positive" if rejected else "valid",
+                             player_name=labels["player_name"]
+                             or labels["player_slot"] or "unassigned")
+        doc["frames"] = frames[start:start + 9]
+        doc["edit"] = {"by": "reviewer", "at": "2026-08-16T18:30:00Z",
+                       "against": schema.doc_hash(self.metadata),
+                       "reviewed": True}
+        return doc
+
+    def test_the_old_projection_degrades_what_the_preserved_one_keeps(self):
+        """The cross-language check with teeth.
+
+        The previous version of this test fed a document to itself and compared
+        doc_hash, which EXCLUDES `edit` -- so the equality held for any input at
+        all, including a fully degraded one, and its label assertions only read
+        back values it had hardcoded twenty lines earlier.
+
+        This asserts the falsifiable thing instead: the document the old lossy
+        projection would have produced is DIFFERENT from the preserved one, and
+        only the preserved one survives overlay() with the human's labels
+        intact. If the projection ever regresses to the old behaviour, the
+        preserved document starts matching the lossy one and this fails.
+        """
+        preserved = self._preserving_edit(quality=5, verdict="duplicate",
+                                          player_name=None, stroke="backhand",
+                                          notes="shanked, keep for the reel")
         frames = json.loads(json.dumps(self.metadata["frames"]))
         frames[2]["stage"] = "setup"
         frames[46]["stage"] = "finish"
+        preserved["frames"] = frames
+
+        merged, warnings = self._write(preserved)
+        self.assertEqual(warnings, [])
+
+        lossy = self._lossy_projection(merged)
+
+        # 1. The two projections genuinely disagree -- on every field the
+        #    followups table names, so this cannot pass by accident.
+        self.assertNotEqual(schema.doc_hash(lossy), schema.doc_hash(preserved))
+        self.assertNotEqual(lossy["labels"]["quality"],
+                            preserved["labels"]["quality"])
+        self.assertNotEqual(lossy["labels"]["verdict"],
+                            preserved["labels"]["verdict"])
+        self.assertNotEqual(lossy["labels"]["player_name"],
+                            preserved["labels"]["player_name"])
+        self.assertNotEqual(len(lossy["frames"]), len(preserved["frames"]))
+
+        # 2. The lossy document is what actually destroys the human's work:
+        #    a non-null value wins in overlay(), so re-reading cannot undo it.
+        after_lossy, _ = self._write(lossy)
+        self.assertEqual(after_lossy["labels"]["quality"], 4)
+        self.assertEqual(after_lossy["labels"]["verdict"], "false_positive")
+        self.assertEqual(after_lossy["labels"]["player_name"], "left")
+        # The two far stage tags are gone -- they were outside the 9-frame slice.
+        surviving = {f["source_ms"]: f["stage"]
+                     for f in after_lossy["frames"] if f["stage"] is not None}
+        self.assertEqual(surviving, {})
+
+        # 3. The preserved document survives the same round trip intact.
+        again, warnings = self._write(preserved)
+        self.assertEqual(warnings, [])
+        self.assertEqual(again["labels"]["quality"], 5)
+        self.assertEqual(again["labels"]["verdict"], "duplicate")
+        self.assertIsNone(again["labels"]["player_name"])
+        self.assertEqual(again["labels"]["player_slot"], "left")
+        self.assertEqual(len(again["frames"]), 49)
+        self.assertEqual(
+            {f["source_ms"]: f["stage"]
+             for f in again["frames"] if f["stage"] is not None},
+            {frames[2]["source_ms"]: "setup",
+             frames[46]["source_ms"]: "finish"})
+
+    def test_a_stage_on_a_source_ms_metadata_lost_stays_on_disk(self):
+        """overlay() drops a frame whose source_ms metadata does not know and
+        WARNS, rather than failing -- deliberately, so re-extracting back at the
+        original --fps recovers the tag. That only holds if the app stops
+        deleting those entries from user-edit.json, which it did on any bare
+        page load: its projection is built from the MERGED document, where the
+        orphan is already gone.
+
+        This is the ETL half of the contract src/domain/etl-write.ts's
+        `orphanedFrames` upholds.
+        """
+        orphan_ms = self.metadata["frames"][24]["source_ms"] + 16
+        self.assertNotIn(orphan_ms,
+                         [f["source_ms"] for f in self.metadata["frames"]])
+
+        doc = self._preserving_edit()
+        frames = json.loads(json.dumps(self.metadata["frames"]))
+        # Inserted in source_ms order, not appended: schema.py:206 requires the
+        # list to be strictly increasing, which is exactly why the app's
+        # write-back sorts after re-attaching an orphan rather than pushing it
+        # onto the end.
+        frames.append({"file": "frames/frame_0099.jpg",
+                       "source_ms": orphan_ms, "clip_ms": 816,
+                       "offset_contact_ms": 16, "pose_score": None,
+                       "stage": "contact"})
+        frames.sort(key=lambda f: f["source_ms"])
         doc["frames"] = frames
+        self.assertEqual(schema.validate_swing(doc), [])
 
-        first, warnings = self._write(doc)
-        self.assertEqual(warnings, [])
+        merged, warnings = self._write(doc)
+        # Dropped from the merged view, and reported -- not silently ignored.
+        self.assertEqual(len(merged["frames"]), 49)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("source_ms=%d" % orphan_ms, warnings[0])
 
-        # The app's load-only write differs only in edit.at. Feed that back in.
-        second_edit = json.loads(json.dumps(doc))
-        second_edit["edit"]["at"] = "2026-08-16T18:30:00Z"
-        second, warnings = self._write(second_edit)
-        self.assertEqual(warnings, [])
-
-        self.assertEqual(schema.doc_hash(first), schema.doc_hash(second))
-        self.assertEqual({k: v for k, v in first.items() if k != "edit"},
-                         {k: v for k, v in second.items() if k != "edit"})
-        # Nothing degraded across the pass.
-        self.assertEqual(first["labels"]["quality"], 5)
-        self.assertEqual(first["labels"]["verdict"], "duplicate")
-        self.assertIsNone(first["labels"]["player_name"])
-        self.assertEqual(len(first["frames"]), 49)
+        # Still on disk, which is what makes it recoverable.
+        with open(os.path.join(self.tmp, "swing_001", "user-edit.json"),
+                  encoding="utf-8") as fh:
+            on_disk = json.load(fh)
+        self.assertEqual(
+            [f["stage"] for f in on_disk["frames"]
+             if f["source_ms"] == orphan_ms],
+            ["contact"])

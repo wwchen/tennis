@@ -334,6 +334,7 @@ describe('readSession', () => {
       entry.hash,
       'reviewer',
       new Date().toISOString(),
+      entry.edit as unknown as EtlSwingDoc | null,
     );
     writeFileSync(editPath, JSON.stringify(written, null, 1) + '\n');
     const after = readFileSync(editPath, 'utf-8');
@@ -346,6 +347,94 @@ describe('readSession', () => {
     // And a third load reads back exactly what the second one did.
     const reread = readSession(tmpDir)!.swings[0];
     expect(adaptSwing(reread.doc as unknown as EtlSwingDoc)).toEqual(clip);
+  });
+
+  it('returns the unmerged user-edit.json alongside the merged document', () => {
+    // `doc` is the merged view, which by design no longer contains a frame whose
+    // `source_ms` metadata does not carry. Write-back needs the raw edit to
+    // avoid deleting those, so the route has to hand both back.
+    const meta = JSON.parse(metaRaw()) as Record<string, unknown>;
+    const raw = {
+      labels: { ...(meta.labels as object), stroke: 'serve' },
+      frames: [{ source_ms: 999_999, stage: 'setup' }],
+      edit: { by: 'reviewer', at: 'now', reviewed: true },
+    };
+    writeFileSync(join(swingDir, 'user-edit.json'), JSON.stringify(raw));
+
+    const entry = readSession(tmpDir)!.swings[0];
+    expect(entry.edit).toEqual(raw);
+    // The merged view dropped it; the raw edit still has it.
+    expect((entry.doc.frames as { source_ms: number }[]).some((f) => f.source_ms === 999_999)).toBe(
+      false,
+    );
+  });
+
+  it('reports no previous edit as null rather than an empty object', () => {
+    // A swing that has never been reviewed. `toUserEdit` treats null as "nothing
+    // to preserve", and an `{}` here would read as an edit with no frames.
+    expect(readSession(tmpDir)!.swings[0].edit).toBeNull();
+  });
+
+  it('keeps a stage on a source_ms the ETL grid lost, across a bare reload', () => {
+    // C1 over the real transport, which is where it actually bit: `overlay()`
+    // drops such a frame from the merged view and WARNS, deliberately leaving it
+    // on disk so re-extracting at the original --fps recovers the tag. The app's
+    // load-time write-back then deleted it, with no user action at all.
+    const meta = JSON.parse(metaRaw()) as Record<string, unknown>;
+    const metaFrames = meta.frames as { source_ms: number }[];
+    // Between two real frames, so no --fps grid contains both.
+    const orphanMs = metaFrames[24].source_ms + 16;
+    expect(metaFrames.some((f) => f.source_ms === orphanMs)).toBe(false);
+
+    const firstPass = {
+      ...meta,
+      frames: [
+        ...metaFrames,
+        {
+          file: 'frames/frame_0099.jpg',
+          source_ms: orphanMs,
+          clip_ms: 816,
+          offset_contact_ms: 16,
+          pose_score: null,
+          stage: 'contact',
+        },
+      ].sort((a, b) => a.source_ms - b.source_ms),
+      edit: {
+        by: 'reviewer',
+        at: '2026-08-15T09:00:00Z',
+        against: 'sha256:6caa72ffd3c91439',
+        reviewed: true,
+      },
+    };
+    const editPath = join(swingDir, 'user-edit.json');
+    writeFileSync(editPath, JSON.stringify(firstPass, null, 1) + '\n');
+
+    // --- a bare page load, no user action ---
+    const entry = readSession(tmpDir)!.swings[0];
+    const clip = adaptSwing(entry.doc as unknown as EtlSwingDoc);
+    // The merged view carries 49 frames: the orphan is not visible to the UI.
+    expect(clip.frames).toHaveLength(49);
+
+    const written = toUserEdit(
+      clip,
+      entry.doc as unknown as EtlSwingDoc,
+      entry.hash,
+      'reviewer',
+      new Date().toISOString(),
+      entry.edit as unknown as EtlSwingDoc | null,
+    );
+    writeFileSync(editPath, JSON.stringify(written, null, 1) + '\n');
+
+    // The tag is still on disk, which is the whole point.
+    const onDisk = JSON.parse(readFileSync(editPath, 'utf-8')) as {
+      frames: { source_ms: number; stage: string | null }[];
+    };
+    expect(onDisk.frames.filter((f) => f.source_ms === orphanMs).map((f) => f.stage)).toEqual([
+      'contact',
+    ]);
+    expect(onDisk.frames).toHaveLength(50);
+    const ms = onDisk.frames.map((f) => f.source_ms);
+    expect(ms).toEqual([...ms].sort((a, b) => a - b));
   });
 });
 

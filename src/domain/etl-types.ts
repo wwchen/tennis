@@ -105,7 +105,19 @@ export interface SwingEntry {
   dir: string;
   /** `doc_hash` of the ETL-owned content, for `edit.against`. */
   hash: string;
+  /** The ETL's `metadata.json` with any `user-edit.json` overlaid. */
   doc: EtlSwingDoc;
+  /**
+   * The previous `user-edit.json` exactly as it sits on disk, unmerged, or null
+   * when this swing has never been reviewed.
+   *
+   * Needed because `doc` is the MERGED view, and `overlay()` drops frames whose
+   * `source_ms` is absent from `metadata.json` *from that view* while
+   * deliberately leaving them on disk — so re-running the ETL at the original
+   * `--fps` recovers a human's tags. Write-back has to carry those entries
+   * through, and the merged doc no longer knows they exist.
+   */
+  edit: EtlSwingDoc | null;
 }
 
 /** The whole `/api/session` response. */

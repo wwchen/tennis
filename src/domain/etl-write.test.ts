@@ -58,6 +58,110 @@ describe('toUserEdit', () => {
   });
 });
 
+describe('frames orphaned by a re-extraction', () => {
+  /**
+   * `overlay()` (schema.py:439) drops a frame whose `source_ms` metadata does
+   * not know about FROM THE MERGED VIEW, and warns — but deliberately leaves it
+   * ON DISK, so re-running the ETL back at the original `--fps` recovers
+   * whatever a human tagged there. `source` is that merged view, so a projection
+   * built only from it cannot see those entries; writing the result back deleted
+   * them permanently, from a bare page load with no user action.
+   */
+  const ORPHAN_MS = 6317; // between two real frames, so no --fps grid contains both
+
+  /** A previous `user-edit.json` carrying a stage the metadata cannot place. */
+  const prevEdit = (): EtlSwingDoc => ({
+    ...source,
+    frames: [
+      { ...source.frames[0] },
+      {
+        file: 'frames/frame_0099.jpg',
+        source_ms: ORPHAN_MS,
+        clip_ms: 816,
+        offset_contact_ms: 16,
+        pose_score: null,
+        stage: 'contact',
+      },
+    ],
+    edit: { by: 'wc', at: '2026-08-15T09:00:00Z', against: 'sha256:abc', reviewed: true },
+  });
+
+  it('survives a load-only write instead of being erased from disk', () => {
+    const disk = prevEdit();
+    // The merged doc the UI reads has no such frame — that is the whole problem.
+    expect(source.frames.some((f) => f.source_ms === ORPHAN_MS)).toBe(false);
+
+    const written = toUserEdit(adaptSwing(source), source, 'sha256:abc', 'wc', AT, disk);
+
+    const orphan = written.frames.find((f) => f.source_ms === ORPHAN_MS);
+    expect(orphan).toBeDefined();
+    expect(orphan?.stage).toBe('contact');
+    // Every real frame is still written too, so nothing is traded away for it.
+    expect(written.frames).toHaveLength(50);
+  });
+
+  it('keeps the frame list sorted by source_ms so the schema still accepts it', () => {
+    // schema.py:206 requires source_ms strictly increasing: overlay() joins on
+    // it, so an out-of-order or duplicated entry makes a human's stage
+    // ambiguous. Appending the orphan blindly would land it after frame 49.
+    const written = toUserEdit(adaptSwing(source), source, 'sha256:abc', 'wc', AT, prevEdit());
+    const ms = written.frames.map((f) => f.source_ms);
+    expect(ms).toEqual([...ms].sort((a, b) => a - b));
+    expect(new Set(ms).size).toBe(ms.length);
+  });
+
+  it('does not duplicate a frame the metadata does know about', () => {
+    // The first entry of `prevEdit` is a real frame. It has to come from
+    // `source` with the clip's current stage, not be carried through twice.
+    const written = toUserEdit(adaptSwing(source), source, 'sha256:abc', 'wc', AT, prevEdit());
+    const first = written.frames.filter((f) => f.source_ms === source.frames[0].source_ms);
+    expect(first).toHaveLength(1);
+    expect(written.frames).toHaveLength(50);
+  });
+
+  it('is a no-op when there is no previous edit on disk', () => {
+    const written = toUserEdit(adaptSwing(source), source, 'sha256:abc', 'wc', AT, null);
+    expect(written.frames).toHaveLength(49);
+    expect({ ...written, edit: null }).toEqual({ ...source, edit: null });
+  });
+
+  it('drops an orphan carrying no stage, which holds no human work', () => {
+    // An orphan's `file` names a still the current extraction did not write, and
+    // `session.validate_tree` flags a frame whose file is missing. A stage is the
+    // only thing on a frame a reviewer can author, so keeping a stage-less orphan
+    // would trade a silent data loss for a permanent validation complaint about
+    // nothing. `overlay()` ignores a null stage anyway.
+    const stageless: EtlSwingDoc = {
+      ...source,
+      frames: [
+        {
+          file: 'frames/frame_0099.jpg',
+          source_ms: ORPHAN_MS,
+          clip_ms: 816,
+          offset_contact_ms: 16,
+          pose_score: null,
+          stage: null,
+        },
+      ],
+    };
+    const written = toUserEdit(adaptSwing(source), source, 'sha256:abc', 'wc', AT, stageless);
+    expect(written.frames).toHaveLength(49);
+    expect(written.frames.some((f) => f.source_ms === ORPHAN_MS)).toBe(false);
+  });
+
+  it('still writes the reviewer’s own new tag alongside a preserved orphan', () => {
+    const clip = adaptSwing(source);
+    clip.frames[2] = { ...clip.frames[2], phase: 'setup' };
+    const written = toUserEdit(clip, source, 'sha256:abc', 'wc', AT, prevEdit());
+
+    const tagged = written.frames.filter((f) => f.stage !== null);
+    expect(tagged.map((f) => [f.source_ms, f.stage])).toEqual([
+      [source.frames[2].source_ms, 'setup'],
+      [ORPHAN_MS, 'contact'],
+    ]);
+  });
+});
+
 /** A source doc as it comes back from `readSession` with an edit overlaid. */
 const withLabels = (labels: Partial<EtlSwingDoc['labels']>): EtlSwingDoc => ({
   ...source,
@@ -115,6 +219,80 @@ describe('verdict round trip', () => {
   });
 });
 
+describe('an unverified swing’s reject state converges', () => {
+  /**
+   * The state machine that never settled. `detection.verified` is ETL-owned, so
+   * with `!verified` ORed in unconditionally an unverified swing ALWAYS read as
+   * rejected: "restore" wrote `valid`, the next load re-rejected it, and a
+   * subsequent "remove" wrote `valid` again — recording the reviewer's rejection
+   * as an acceptance, which is the opposite of what they clicked.
+   */
+  const unverified = (): EtlSwingDoc => ({
+    ...source,
+    detection: { ...source.detection, verified: false },
+    edit: null,
+  });
+
+  /** One page load: overlay the edit's labels onto the ETL doc, as `readSession` does. */
+  const reload = (metadata: EtlSwingDoc, written: EtlSwingDoc): EtlSwingDoc => ({
+    ...metadata,
+    labels: { ...metadata.labels, verdict: written.labels.verdict },
+    edit: written.edit,
+  });
+
+  it('restore → reload → remove records the rejection, not an acceptance', () => {
+    const disk = unverified();
+
+    // Load 1: the ETL rejected it and no human has said otherwise.
+    const first = adaptSwing(disk);
+    expect(first.rejected).toBe(true);
+
+    // The reviewer restores it. That is an explicit accept call.
+    const restored = toUserEdit({ ...first, rejected: false }, disk, 'sha256:abc', 'wc', AT);
+    expect(restored.labels.verdict).toBe('valid');
+
+    // Load 2: it must now read as NOT rejected, or the click was pointless.
+    const afterReload = adaptSwing(reload(disk, restored));
+    expect(afterReload.rejected).toBe(false);
+
+    // The reviewer changes their mind and removes it. This has to record a
+    // REJECTING verdict — writing `valid` here was the bug.
+    const removed = toUserEdit(
+      { ...afterReload, rejected: true },
+      reload(disk, restored),
+      'sha256:abc',
+      'wc',
+      AT,
+    );
+    expect(removed.labels.verdict).toBe('false_positive');
+    expect(adaptSwing(reload(disk, removed)).rejected).toBe(true);
+  });
+
+  it('does not oscillate: each state is a fixed point under a bare reload', () => {
+    const disk = unverified();
+    for (const verdict of ['valid', 'false_positive'] as const) {
+      const written: EtlSwingDoc = { ...disk, labels: { ...disk.labels, verdict } };
+      const clip = adaptSwing(written);
+      // A load-only write must not flip the verdict it just read.
+      const again = toUserEdit(clip, written, 'sha256:abc', 'wc', AT);
+      expect(again.labels.verdict, verdict).toBe(verdict);
+      expect(adaptSwing(again).rejected).toBe(clip.rejected);
+    }
+  });
+
+  it('leaves detection.verified alone throughout — it stays the ETL’s', () => {
+    const disk = unverified();
+    const restored = toUserEdit(
+      { ...adaptSwing(disk), rejected: false },
+      disk,
+      'sha256:abc',
+      'wc',
+      AT,
+    );
+    expect(restored.detection.verified).toBe(false);
+  });
+});
+
 describe('quality round trip', () => {
   it('leaves an untouched 5 as 5', () => {
     // gradeToQuality can only emit 2, 3 or 4, so projecting an untouched rating
@@ -134,6 +312,35 @@ describe('quality round trip', () => {
 
   it('leaves an untouched null null', () => {
     expect(toUserEdit(adaptSwing(source), source, 'sha256:abc', 'wc', AT).labels.quality).toBeNull();
+  });
+
+  it('does not collapse a grade the human merely re-affirmed', () => {
+    // Re-picking the chip already shown clears the rating (by design), and
+    // picking it again re-rates. `source` is the document the clip was READ
+    // from, so it still carries the 5 throughout — the round trip has to come
+    // back to 5, not to the collapsed 4.
+    for (const [quality, grade] of [
+      [5, 'good'],
+      [1, 'work'],
+    ] as const) {
+      const disk = withLabels({ quality });
+      const clip = adaptSwing(disk);
+      expect(clip.grade).toBe(grade);
+
+      // Click 1: clears. Click 2: re-affirms.
+      const cleared = toUserEdit({ ...clip, grade: null }, disk, 'sha256:abc', 'wc', AT);
+      expect(cleared.labels.quality, `cleared ${quality}`).toBeNull();
+      const reaffirmed = toUserEdit({ ...clip, grade }, disk, 'sha256:abc', 'wc', AT);
+      expect(reaffirmed.labels.quality, `re-affirmed ${quality}`).toBe(quality);
+    }
+  });
+
+  it('returns to the exact value after the grade is changed away and back', () => {
+    const disk = withLabels({ quality: 5 });
+    const clip = adaptSwing(disk);
+    expect(toUserEdit({ ...clip, grade: 'ok' }, disk, 'sha256:abc', 'wc', AT).labels.quality).toBe(3);
+    // Back to what is on disk: the 5 must come back, not 4.
+    expect(toUserEdit({ ...clip, grade: 'good' }, disk, 'sha256:abc', 'wc', AT).labels.quality).toBe(5);
   });
 
   it('collapses a grade the human actually set onto 2, 3 or 4', () => {
@@ -198,6 +405,28 @@ describe('notes round trip', () => {
     const noted = withLabels({ notes: 'late' });
     const cleared = { ...adaptSwing(noted), note: '' };
     expect(toUserEdit(cleared, noted, 'sha256:abc', 'wc', AT).labels.notes).toBeNull();
+  });
+
+  it('round-trips an on-disk empty string as an empty string, not null', () => {
+    // The one case `notesFor` exists for, and the only one where it differs from
+    // the old projection: the fixture has `notes: null` and `clip.note` is `''`,
+    // so every other test agrees either way. `adaptSwing` reads null as `''` for
+    // the textarea to bind, which makes `''` on the clip ambiguous — an on-disk
+    // `''` must not silently become null on a bare load.
+    const empty = withLabels({ notes: '' });
+    const clip = adaptSwing(empty);
+    expect(clip.note).toBe('');
+    expect(toUserEdit(clip, empty, 'sha256:abc', 'wc', AT).labels.notes).toBe('');
+  });
+
+  it('writes null when a human clears a real note, not an empty string', () => {
+    // The other side of the same ambiguity: here `''` IS a human action, and the
+    // schema's way to say "no note" is null.
+    const noted = withLabels({ notes: 'shanked' });
+    const cleared = { ...adaptSwing(noted), note: '' };
+    const written = toUserEdit(cleared, noted, 'sha256:abc', 'wc', AT);
+    expect(written.labels.notes).toBeNull();
+    expect(written.labels.notes).not.toBe('');
   });
 });
 
