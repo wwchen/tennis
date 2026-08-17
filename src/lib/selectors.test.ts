@@ -3,7 +3,9 @@ import { buildCompare, rosterOf, statsOf, strokesOf, visibleClips } from './sele
 import { SEED_NEXT_COMMENT_ID, seedClips, seedComments } from '@/domain/seed';
 import type { Doc } from '@/state/persistence';
 import type { Ui } from '@/state/store';
-import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
+import type { Clip } from '@/domain/types';
+import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES, FRAMES_PER_CLIP } from '@/domain/types';
+import { frameWindow } from '@/domain/window';
 
 const doc = (): Doc => ({
   clips: seedClips(),
@@ -112,6 +114,137 @@ describe('buildCompare', () => {
     const { rows, colLabels } = buildCompare([], 'contact', [], null);
     expect(rows).toEqual([]);
     expect(colLabels.length).toBeGreaterThan(0);
+  });
+});
+
+describe('buildCompare narrows real 49-frame clips', () => {
+  /** A `Clip` shaped like ETL output: every extracted frame, one anchor tag. */
+  const long = (id: string, anchorAt: number, length = 49): Clip => ({
+    id,
+    player: 'left',
+    stroke: null,
+    rejected: false,
+    duration: '0:03',
+    triaged: false,
+    grade: null,
+    note: '',
+    frames: Array.from({ length }, (_, i) => ({
+      i,
+      sourceMs: 5501 + i * 33,
+      phase: i === anchorAt ? ('contact' as const) : null,
+    })),
+  });
+
+  it('shows at most FRAMES_PER_CLIP cells per row, not all 49', () => {
+    // Without the window, 12 clips of 49 stills is a 588-tile grid — and the
+    // seed's 9-frame rows would be padded out to 49 columns wide.
+    const { rows, colLabels } = buildCompare([long('A', 24), long('B', 20)], 'contact', [], null);
+    for (const row of rows) {
+      expect(row.cells.filter((c) => c.real)).toHaveLength(FRAMES_PER_CLIP);
+      expect(row.cells).toHaveLength(colLabels.length);
+    }
+  });
+
+  it('aligns every anchor in the same column across clips with different anchors', () => {
+    const clips = [long('A', 24), long('B', 4), long('C', 46), long('D', 12)];
+    const { rows, colLabels } = buildCompare(clips, 'contact', [], null);
+    const anchorCol = colLabels.indexOf('CONTACT');
+    expect(anchorCol).toBeGreaterThanOrEqual(0);
+
+    for (const row of rows) {
+      const cell = row.cells[anchorCol];
+      expect(cell.real, `${row.clip.id} has no cell under CONTACT`).toBe(true);
+      if (cell.real) {
+        // `cell.frame` indexes the FULL frame list, so the anchor's real index
+        // comes back — not a position within the window.
+        expect(row.clip.frames[cell.frame].phase).toBe('contact');
+      }
+    }
+  });
+
+  it('keeps cell.frame a valid index into the full list, offset by the window', () => {
+    const { rows } = buildCompare([long('A', 24)], 'contact', [], null);
+    const frames = rows[0].cells.filter((c) => c.real).map((c) => (c.real ? c.frame : -1));
+    // Centred on 24: a 9-wide window is [20, 28].
+    expect(frames).toEqual([20, 21, 22, 23, 24, 25, 26, 27, 28]);
+    // The label follows the real index, so f21 is genuinely the 21st still.
+    const nums = rows[0].cells.filter((c) => c.real).map((c) => (c.real ? c.num : ''));
+    expect(nums[0]).toBe('f21');
+    expect(nums[8]).toBe('f29');
+  });
+
+  it('shifts the window inward rather than shortening it at either edge', () => {
+    const atStart = buildCompare([long('A', 1)], 'contact', [], null).rows[0];
+    const atEnd = buildCompare([long('B', 47)], 'contact', [], null).rows[0];
+    const real = (r: typeof atStart) => r.cells.filter((c) => c.real).map((c) => (c.real ? c.frame : -1));
+    expect(real(atStart)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(real(atEnd)).toEqual([40, 41, 42, 43, 44, 45, 46, 47, 48]);
+  });
+
+  it('anchors an untagged clip on the middle of its extraction', () => {
+    // The ETL centres extraction on contact, so the midpoint is the best guess
+    // at the same moment. A fixed 4 pinned every untagged real clip to its 5th
+    // still, ~750 ms early.
+    const untagged = long('U', -1);
+    const { rows } = buildCompare([untagged], 'contact', [], null);
+    const frames = rows[0].cells.filter((c) => c.real).map((c) => (c.real ? c.frame : -1));
+    expect(frames).toEqual([20, 21, 22, 23, 24, 25, 26, 27, 28]);
+  });
+
+  it('handles a short clip, and the 42- and 47-frame swings the real tree has', () => {
+    for (const length of [3, 42, 47]) {
+      const { rows, colLabels } = buildCompare([long('S', 24 % length, length)], 'contact', [], null);
+      const real = rows[0].cells.filter((c) => c.real);
+      expect(real).toHaveLength(Math.min(FRAMES_PER_CLIP, length));
+      expect(rows[0].cells).toHaveLength(colLabels.length);
+      for (const cell of real) {
+        if (cell.real) expect(rows[0].clip.frames[cell.frame]).toBeDefined();
+      }
+    }
+  });
+
+  it('renders the 9-frame seed exactly as it did before the window existed', () => {
+    // The seed is one full window wide, so windowing is the identity on it —
+    // which is what lets the pre-existing buildCompare tests still pass.
+    const d = doc();
+    const { rows } = buildCompare(visibleClips(d, ui()), 'contact', d.comments, null);
+    for (const row of rows) {
+      const frames = row.cells.filter((c) => c.real).map((c) => (c.real ? c.frame : -1));
+      expect(frames).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+  });
+});
+
+describe('frameWindow', () => {
+  it('centres a 9-wide window on the anchor', () => {
+    expect(frameWindow(49, 24)).toEqual({ start: 20, end: 29 });
+    expect(frameWindow(49, 25)).toEqual({ start: 21, end: 30 });
+  });
+
+  it('clamps to the list rather than returning a short window', () => {
+    expect(frameWindow(49, 0)).toEqual({ start: 0, end: 9 });
+    expect(frameWindow(49, 48)).toEqual({ start: 40, end: 49 });
+  });
+
+  it('returns the whole list when it is no wider than the window', () => {
+    expect(frameWindow(9, 4)).toEqual({ start: 0, end: 9 });
+    expect(frameWindow(3, 0)).toEqual({ start: 0, end: 3 });
+    expect(frameWindow(3, 2)).toEqual({ start: 0, end: 3 });
+  });
+
+  it('always contains its anchor', () => {
+    for (let n = 1; n <= 49; n++) {
+      for (let a = 0; a < n; a++) {
+        const { start, end } = frameWindow(n, a);
+        expect(a, `n=${n} anchor=${a}`).toBeGreaterThanOrEqual(start);
+        expect(a, `n=${n} anchor=${a}`).toBeLessThan(end);
+        expect(end - start).toBe(Math.min(FRAMES_PER_CLIP, n));
+      }
+    }
+  });
+
+  it('is empty for an empty list', () => {
+    expect(frameWindow(0, 0)).toEqual({ start: 0, end: 0 });
   });
 });
 

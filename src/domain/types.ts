@@ -25,7 +25,8 @@ export const UNTAGGED_STROKE = 'untagged';
 export type View = 'compare' | 'catalog' | 'detail';
 
 export interface Frame {
-  /** Index within the clip, 0-based. Rendered as `f01`…`f09`. */
+  /** Index within the clip, 0-based over EVERY frame the ETL extracted.
+   *  Rendered as `f01`…`f49`. */
   i: number;
   /** Milliseconds into the source video. The join key for `user-edit.json`;
    *  `i` is only a render index and shifts when sampling changes. */
@@ -83,5 +84,13 @@ export const ADD_PLAYER = '+ Add player…';
 /** Frames below this confidence are flagged for review and count as pending. */
 export const CONFIDENCE_FLOOR = 0.7;
 
-/** Every clip carries this many frames. */
+/**
+ * Width of the compare grid's window, in frames: how many stills of one clip
+ * the aligned view shows at once, centred on that clip's anchor.
+ *
+ * NOT a per-clip truth — a `Clip` carries every frame the ETL extracted (42-49
+ * on real footage). Narrowing happens in `buildCompare`, which is the only view
+ * that needs a fixed width, because it lays every clip on one shared timeline.
+ * The seed builds 9-frame clips so it renders as one full window.
+ */
 export const FRAMES_PER_CLIP = 9;

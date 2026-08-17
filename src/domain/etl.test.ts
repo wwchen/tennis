@@ -73,9 +73,24 @@ describe('adaptSwing', () => {
     // player_name is null in ETL output, so the court zone stands in.
     expect(clip.player).toBe('left');
     expect(clip.stroke).toBeNull();
-    expect(clip.frames).toHaveLength(FRAMES_PER_CLIP);
-    expect(clip.frames.map((f) => f.i)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(clip.frames[4].sourceMs).toBe(6301);
+    expect(clip.frames[24].sourceMs).toBe(6301);
+  });
+
+  it('carries EVERY extracted frame, not the compare grid’s window', () => {
+    // The old contract sampled to FRAMES_PER_CLIP here, which put 40 of the 49
+    // stills out of the UI's reach entirely: a reviewer could not tag setup or
+    // finish at their real moments, and write-back dropped the 40 it never saw.
+    const clip = adaptSwing(fixture);
+    expect(clip.frames).toHaveLength(fixture.frames.length);
+    expect(clip.frames).toHaveLength(49);
+    // `i` is a contiguous render index over the full list, in source order.
+    expect(clip.frames.map((f) => f.i)).toEqual(fixture.frames.map((_, i) => i));
+    expect(clip.frames.map((f) => f.sourceMs)).toEqual(
+      fixture.frames.map((f) => f.source_ms),
+    );
+    // The extremes of the +/-800 ms extraction are now reachable.
+    expect(clip.frames[0].sourceMs).toBe(5501);
+    expect(clip.frames[48].sourceMs).toBe(7101);
   });
 
   it('reports a verified, unreviewed swing as neither rejected nor triaged', () => {
