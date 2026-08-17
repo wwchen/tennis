@@ -1,6 +1,8 @@
 # Wiring the ETL schema to the review UI
 
-**Status:** approved design, not yet implemented
+**Status:** implemented. Known gaps and their resolutions are tracked in
+[`2026-08-16-etl-ui-schema-seam-followups.md`](2026-08-16-etl-ui-schema-seam-followups.md);
+this document has been corrected where the follow-up work changed the design.
 **Date:** 2026-08-16
 
 ## Problem
@@ -19,7 +21,7 @@ Measured against one real session (`IMG_0304.MOV`, 42 swings):
 
 | | ETL `SwingDoc` | App `Clip` |
 |---|---|---|
-| frames per swing | 42–49 | `FRAMES_PER_CLIP = 9`, fixed |
+| frames per swing | 42–49 | `FRAMES_PER_CLIP = 9`, fixed (now the compare-grid window; a `Clip` carries all 42–49) |
 | frame identity | `source_ms` | `i`, an array index |
 | strokes | `forehand backhand volley serve overhead other` | `Forehand Backhand Serve Volley Slice` |
 | stages | `setup contact finish other` | `setup contact finish` |
@@ -111,14 +113,25 @@ fixture without a server or a browser.
 | `grade` | `labels.quality` | 1–5 -> `work`/`ok`/`good`, see below |
 | `note` | `labels.notes ?? ''` | |
 | `duration` | `trim.source_end_ms - trim.source_start_ms` | formatted `m:ss` |
-| `frames[]` | sampled from `frames[]` | see "Frame sampling" |
+| `frames[]` | every frame in `frames[]`, in source order | see "Frame identity and sampling" |
 
 `quality` (1–5) to `grade` (3 values) is lossy in both directions. Mapping:
-1–2 -> `work`, 3 -> `ok`, 4–5 -> `good`; writing back emits 2/3/4. A swing whose
-quality was 1 and is not re-rated therefore round-trips to 2. This is accepted:
-the alternative is widening the app's rating vocabulary, which is a design
-change, not a plumbing one. The lossiness is recorded here so it is not
+1–2 -> `work`, 3 -> `ok`, 4–5 -> `good`; writing back emits 2/3/4. A swing
+**a human re-rates** whose quality was 1 therefore round-trips to 2. This is
+accepted: the alternative is widening the app's rating vocabulary, which is a
+design change, not a plumbing one. The lossiness is recorded here so it is not
 rediscovered as a bug.
+
+A rating a human has *not* touched is written back unchanged — a 5 stays 5, a 1
+stays 1. Applying a lossy projection to a value nobody edited is degradation, not
+a mapping, and because a non-null value wins in `overlay()` it could not be undone
+by re-reading. `toUserEdit` therefore compares the clip against the document it
+was read from and writes each label back verbatim unless the reviewer changed it.
+The same rule preserves `verdict` (`duplicate`, `unclear` and `null` all survive an
+untouched load), `notes`, per-frame `stage` (including `other`), and `player_name`
+(which stays `null` on a swing nobody has named, rather than being filled in with
+the court slot — a slot is a court zone, not a person, on the write path as well as
+the read path). See §1–§4 of the follow-ups companion for what this replaced.
 
 ## Frame identity and sampling
 
@@ -128,36 +141,48 @@ rediscovered as a bug.
 forbids — after any `--fps` change a human's contact label would land on a
 different moment.
 
-The compare grid samples 9 frames per swing. Real swings carry 42–49 stills at
-~33 ms, spanning ±800 ms around contact; a 42-row by ~90-column grid would need
-virtualization and horizontal scrolling, and would lose the at-a-glance
-comparison the view exists for.
+**A `Clip` carries every frame the ETL extracted.** `adaptSwing` does no
+narrowing: `i` is a contiguous `0..n-1` render index over the full list and
+`sourceMs` carries the real identity. This is the one place the two frame
+vocabularies coexist, and it is why write-back joins on `sourceMs`.
 
-Sampling rule: pick the frames nearest `offset_contact_ms` of
-`[-4,-3,-2,-1,0,+1,+2,+3,+4] x step`, where `step` is a stride in milliseconds.
-`step` defaults to the frame interval (~33 ms) so the window is the tightest
-±4 frames around contact. Contact therefore always lands in the middle column,
-which is what `buildCompare` aligns on.
+Narrowing is the **compare grid's** concern alone. Real swings carry 42–49 stills
+at ~33 ms, spanning ±800 ms around contact; a 42-row by ~90-column grid would need
+virtualization and horizontal scrolling, and would lose the at-a-glance comparison
+the view exists for. So `buildCompare` shows at most `FRAMES_PER_CLIP` cells per
+row, windowed around that row's own anchor. The detail view, filmstrip and frame
+inspector read the full list — which is what makes a reviewer able to tag setup or
+finish at their real moments anywhere in the ±800 ms span.
 
-Two edge cases the rule must state explicitly, or two implementations would
-differ:
+Window rule (`frameWindow`, `src/domain/window.ts` — one definition, used by both
+`buildCompare` and `sampleFrames`): a **contiguous** run of `min(width, n)` frames
+centred on the anchor index, shifted inward at either end rather than shortened.
+Two properties follow, and both matter:
 
-- **Deduplication.** "Nearest" can select the same frame for two targets when a
-  swing is sparse. Selected frames are de-duplicated by `source_ms`, so a clip
-  may yield fewer than 9. `buildCompare` already pads rows to a common width, so
-  a short row is a layout case that works today.
-- **Contact must be exact.** The `0` target resolves to the frame whose
-  `offset_contact_ms` is closest to zero, which for real output is exactly `0`.
-  It is never dropped by deduplication: it is selected first, and the other
-  eight targets are resolved around it.
+- **The anchor is always inside the window.** That is what lets `buildCompare`
+  align every row's anchor in one column.
+- **Every row is the same width, even at the edges.** A clip whose contact sits at
+  frame 1 or frame 47 still contributes 9 cells, so the grid does not develop
+  ragged rows on the swings nearest the ends of their extraction.
 
-`i` is reassigned `0..n-1` over the sampled list so it stays a contiguous render
-index, while `sourceMs` carries the real identity. This is the one place the two
-frame vocabularies coexist, and it is why write-back joins on `sourceMs`.
+Contiguity is deliberate: the grid labels its columns by offset from the anchor
+(−2, −1, CONTACT, +1, …), which is only meaningful if neighbouring cells are
+neighbouring stills. An earlier stride-based rule that resolved
+`[-4..+4] x step` against `offset_contact_ms` could pick the same frame twice on a
+sparse swing and yield short rows; a contiguous slice of a list the schema already
+requires to be strictly increasing cannot.
 
-`FRAMES_PER_CLIP` stays 9 but is recommented: it is the compare-window width,
-not a per-clip truth. The detail view reads the full frame list, so density is
-preserved where a human relabels contact.
+`cell.frame` remains an index into the clip's **full** frame list, not a position
+within the window, so clicking a cell selects the real still and write-back lands
+on the right `source_ms`.
+
+An untagged clip anchors on the middle of its extraction rather than a fixed index,
+because the ETL centres extraction on contact — so the midpoint is the best
+available guess at the moment the tagged clips are aligned on.
+
+`FRAMES_PER_CLIP` stays 9 and its comment now says explicitly that it is the
+compare-window width, not a per-clip truth. The seed builds 9-frame clips, so
+windowing is the identity on it and the seeded view renders exactly as before.
 
 ## Unlabelled strokes
 
@@ -261,8 +286,15 @@ On edit, the app `PUT`s a complete `SwingDoc` to the middleware, which writes
   the edit side regardless, but writing them keeps the file a valid standalone
   `SwingDoc`.
 - `frames[]` carries `source_ms` and `stage`; the join happens on `source_ms`.
-  Only the 9 sampled frames are written, so a swing edited in the compare view
-  leaves the other 40 frames' stages untouched rather than nulling them.
+  Every frame the clip carries is written, which for an ETL-loaded clip is all
+  42–49 — so a stage tagged anywhere in the span survives, not just one inside the
+  compare window. A frame the clip does *not* carry is omitted entirely rather than
+  written with a null stage, so it keeps whatever stage it had.
+- **The projection is a fixed point.** A page load followed by no user action
+  writes back bytes identical to what is already on disk apart from `edit.at`.
+  This is what makes a *second* review pass over the same tree safe, and it is why
+  every field above is written from the source unless the reviewer changed it.
+  Verified over the real 42-swing tree; see §1 of the follow-ups companion.
 - `edit` is `{by, at, against, reviewed}`. `against` is the `doc_hash` of the
   metadata the app read, so a later `overlay()` can report that a human reviewed
   a stale ETL output. The app cannot compute the Python hash itself, so
@@ -278,7 +310,9 @@ round trip gets checked by the tool that owns the schema.
 | Unit | How |
 |---|---|
 | read adapter | vitest against a real captured `metadata.json` committed as a fixture — not a hand-written object, so it stays honest about what the ETL actually emits |
-| sampling | contact lands in the middle column; a 42-frame and a 49-frame swing both yield 9 |
+| frame carry-through | `adaptSwing` on the real fixture yields all 49 frames, and a stage tagged on any of them survives write-back |
+| windowing | the anchor lands in the same column for every row; a 42-, 47- and 49-frame swing all yield 9 cells; `cell.frame` still indexes the full list |
+| round-trip fixed point | read a rich `user-edit.json`, write it straight back, and the bytes match apart from `edit.at` — checked per field, end to end over the transport, at the store's write-back effect, and from the ETL side by `overlay()` |
 | enum mapping | every ETL stroke and stage maps to something renderable; `null` stroke stays `null` |
 | write adapter | output passes `schema.validate_swing` — asserted by running the Python validator over what the adapter produced, not by a TS mirror of the rules |
 | round trip | `tennisproc validate` and `tennisproc show` over an `out/` tree the app has written; `show` must display the app's labels |
@@ -318,7 +352,8 @@ needs to be cut short, the earlier steps still have standalone value.
 | Risk | Mitigation |
 |---|---|
 | Thumbnails look wrong (stub-pose crops) | documented above; framing is an ETL data problem, verified separately when pose can run |
-| `quality` <-> `grade` is lossy | mapping fixed and documented; no silent re-rating |
-| Sampling hides frames a reviewer needs | detail view reads all 42–49; sampling only narrows the compare grid |
+| `quality` <-> `grade` is lossy | mapping fixed and documented; applies only to a grade a human set, so no silent re-rating |
+| Sampling hides frames a reviewer needs | a `Clip` carries all 42–49 and the detail view renders them; windowing only narrows the compare grid |
+| Write-back degrades a previous pass's labels | the projection is a fixed point: an untouched field is written back from the source verbatim, so a bare load rewrites the file byte-identically |
 | Dev-only transport reads as "done" | fallback to seed is explicit, and this section is the record that production transport is unbuilt |
 | Write-back corrupts ETL output | middleware refuses to write anything but `user-edit.json`, only inside `<session>/swings/swing_NNN`, and never through a symlink at the target; ETL only ever writes `metadata.json` |
