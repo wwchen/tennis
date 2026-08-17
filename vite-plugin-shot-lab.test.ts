@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { adaptSwing } from '@/domain/etl';
+import { toUserEdit } from '@/domain/etl-write';
 import type { EtlSwingDoc } from '@/domain/etl-types';
 import { docHash, overlayEdit, readSession, resolveWriteTarget, safeJoin } from './vite-plugin-shot-lab';
 
@@ -278,6 +279,73 @@ describe('readSession', () => {
     writeFileSync(join(swingDir, 'user-edit.json'), '{not json');
     const doc = readSession(tmpDir)!.swings[0].doc;
     expect(adaptSwing(doc as unknown as EtlSwingDoc).triaged).toBe(false);
+  });
+
+  it('rewrites a reviewer’s own user-edit.json byte-for-byte on a bare reload', () => {
+    // The end-to-end form of the §1 regression, over the real transport: read
+    // the tree the way /api/session does, run the read adapter, run the
+    // load-time write-back projection, and write it back the way the PUT route
+    // does. A second review pass over the same tree is only safe if the bytes
+    // that land are the bytes that were already there.
+    const meta = JSON.parse(metaRaw()) as Record<string, unknown>;
+    const frames = (meta.frames as { source_ms: number; stage: string | null }[]).map((f, i) => {
+      // Two tags well outside the old 9-frame window, at either end.
+      if (i === 2) return { ...f, stage: 'setup' };
+      if (i === 46) return { ...f, stage: 'finish' };
+      return f;
+    });
+    const firstPass = {
+      ...meta,
+      labels: {
+        ...(meta.labels as object),
+        quality: 5,
+        verdict: 'duplicate',
+        player_name: null,
+        stroke: 'backhand',
+        notes: 'shanked, keep for the reel',
+      },
+      frames,
+      edit: {
+        by: 'reviewer',
+        at: '2026-08-15T09:00:00Z',
+        against: 'sha256:6caa72ffd3c91439',
+        reviewed: true,
+      },
+    };
+    // Exactly how the PUT route serialises.
+    const editPath = join(swingDir, 'user-edit.json');
+    writeFileSync(editPath, JSON.stringify(firstPass, null, 1) + '\n');
+    const before = readFileSync(editPath, 'utf-8');
+
+    // --- a bare page load, no user action ---
+    const entry = readSession(tmpDir)!.swings[0];
+    const clip = adaptSwing(entry.doc as unknown as EtlSwingDoc);
+    // Everything the reviewer wrote survived the read.
+    expect(clip.frames).toHaveLength(49);
+    expect(clip.grade).toBe('good');
+    expect(clip.rejected).toBe(true);
+    expect(clip.player).toBe('left');
+    expect(clip.frames[2].phase).toBe('setup');
+    expect(clip.frames[46].phase).toBe('finish');
+
+    const written = toUserEdit(
+      clip,
+      entry.doc as unknown as EtlSwingDoc,
+      entry.hash,
+      'reviewer',
+      new Date().toISOString(),
+    );
+    writeFileSync(editPath, JSON.stringify(written, null, 1) + '\n');
+    const after = readFileSync(editPath, 'utf-8');
+
+    // Byte-identical apart from edit.at, which is the timestamp of this write.
+    const strip = (s: string) => s.replace(/"at": "[^"]*"/, '"at": "<at>"');
+    expect(strip(after)).toBe(strip(before));
+    expect(after).not.toBe(before);
+
+    // And a third load reads back exactly what the second one did.
+    const reread = readSession(tmpDir)!.swings[0];
+    expect(adaptSwing(reread.doc as unknown as EtlSwingDoc)).toEqual(clip);
   });
 });
 
