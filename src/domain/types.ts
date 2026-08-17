@@ -31,6 +31,15 @@ export interface Frame {
   /** Milliseconds into the source video. The join key for `user-edit.json`;
    *  `i` is only a render index and shifts when sampling changes. */
   sourceMs: number;
+  /**
+   * Milliseconds from this frame to the detector's contact moment, signed:
+   * negative before contact, positive after, and exactly 0 ON contact.
+   *
+   * The ETL's own answer to "where is contact", carried through so the compare
+   * grid can align on it. Absent on seeded clips, which have no detector — the
+   * grid falls back to the frame list's midpoint there.
+   */
+  offsetContactMs?: number;
   phase: Phase | null;
   /**
    * Classifier confidence, 0–1. Below CONFIDENCE_FLOOR the frame is flagged.

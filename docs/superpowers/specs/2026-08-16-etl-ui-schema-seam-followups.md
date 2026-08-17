@@ -4,17 +4,21 @@ Companion to [`2026-08-16-etl-ui-schema-seam-design.md`](2026-08-16-etl-ui-schem
 Everything here was found by review, verified by running it, and deliberately
 deferred rather than rushed in unreviewed. Ordered by what to fix first.
 
-§1–§4 are **fixed**. They are kept below, struck through, because the reasoning is
-what makes the current design legible — and because §1 in particular is the kind
-of bug that only appears when four individually-harmless mappings compose. §5 and
-§6 remain open.
+§1–§4 are **fixed**, and §7–§9 below record a later adversarial review that found
+§1's "a second pass is safe" claim was still **too strong** — three further
+destructive paths survived it, all now fixed. They are kept struck through where
+fixed, because the reasoning is what makes the current design legible — and
+because §1 in particular is the kind of bug that only appears when four
+individually-harmless mappings compose. §5, §6 and §11 remain open.
 
 ## ~~1. Write-back fires on page load and degrades existing labels~~ (blocking a second review pass)
 
-**FIXED.** The load-time write-back still fires — that was never the defect — but
-the projection is now a fixed point, so what it writes is byte-identical to what
-is already on disk apart from `edit.at`. A second review pass over the same tree
-is safe.
+**FIXED**, but the original claim here was too strong — see §7–§9. The load-time
+write-back still fires — that was never the defect — but the projection is now a
+fixed point, so what it writes is byte-identical to what is already on disk apart
+from `edit.at`. A second review pass over the same tree is safe *for documents
+this app version wrote*; §7 was the case where it was not (a document whose frame
+grid came from a different `--fps`).
 
 Verified over the real 42-swing `IMG_0304` tree: a rich first pass (stage tags on
 frames 3 and 45, grades, strokes, notes, names, some rejections), then two bare
@@ -153,6 +157,130 @@ wording or compare the resolved parent against the request path.
   unused; `Clip.conf` is optional and read nowhere.
 - **Untagged-state opacity** is redundant with the literal "untagged" text and
   conveys nothing to a screen reader.
+
+## ~~7. A bare load permanently destroyed stage tags `overlay()` preserves on purpose~~
+
+**FIXED.** The most serious of the three findings that refuted §1's "a second pass
+is safe" claim, because it destroyed a human's work with **no user action at all**.
+
+`overlay()` (`tennisproc/schema.py:439`) drops a frame whose `source_ms` is absent
+from `metadata.json` **from the merged view** and warns — deliberately, leaving it
+**on disk**, so re-running the ETL back at the original `--fps` recovers whatever a
+human tagged there. `toUserEdit` built its frame list by filtering `source.frames`,
+but `source` **is** that merged view, so the orphan was already gone from it; the
+load-time write-back then wrote the filtered list back and erased it from disk
+permanently. Directly contrary to `tennisproc/README.md`'s "stable keys, never
+array indices" doctrine.
+
+The fix needs the previous **unmerged** `user-edit.json`, which the merged doc can
+no longer describe, so `SwingEntry` grew an `edit` field: the dev middleware
+already reads that file and now returns it alongside `doc`. `toUserEdit` takes it
+as an optional last argument and re-attaches any entry whose `source_ms` the
+metadata does not know, then sorts by `source_ms` (`schema.py:206` requires the
+list strictly increasing). `etl.ts` and `etl-write.ts` stay pure.
+
+Only orphans carrying a **stage** are kept. An orphan's `file` names a still the
+current extraction never wrote, and `session.validate_tree` reports a frame whose
+file is missing, so preserving a stage-less orphan would trade a silent data loss
+for a permanent validation complaint about an entry holding no human work. A stage
+is the only thing on a frame a reviewer can author, and `overlay()` ignores a null
+stage anyway.
+
+Verified on the real tree: a tag on `source_ms=6317` (between two real frames, so
+no `--fps` grid contains both) survives a load-only write; the ETL then reports the
+file valid, warns exactly once, and the tag is still on disk. Separately, a full
+42-swing review pass followed by two bare reloads leaves all 42 files
+byte-identical apart from `edit.at`, with `validate_tree` reporting **85 documents,
+0 problems**, 0 overlay warnings, and all 84 stage tags intact.
+
+## ~~8. An unverified swing's reject state never converged~~
+
+**FIXED.** `isRejected` ORed in `!detection.verified`, which is ETL-owned and the
+app cannot clear — so an unverified swing *always* read as rejected: "restore"
+wrote `valid`, the next load re-rejected it, and a subsequent "remove" wrote
+`valid` **again**, filing the reviewer's rejection as an acceptance.
+
+A human's verdict is now authoritative over `detection.verified` for display, so
+the two can disagree and the machine settles. The truth table is in the comment on
+`isRejected` (`src/domain/etl.ts`); the load-bearing rows are `valid` +
+`verified: false` → **not** rejected (the row that converges) and `null` +
+`verified: false` → **still** rejected (the ETL's own meaning, preserved).
+
+## ~~9. The compare grid misaligned CONTACT on real data~~
+
+**FIXED.** `anchorIndex` fell back to the frame-list midpoint for a clip with no
+anchor tag — and every real ETL frame ships `stage: null`, so **all 42 swings took
+that path**. The midpoint is not contact: `render.py` truncates extraction at the
+video boundaries, so a swing near either end of the source is not centred on it.
+Measured on the sample tree: swing_041 off by 1 frame, swing_042 off by 4
+(~133 ms), silently, with nothing on screen to indicate it.
+
+`Frame` now carries `offsetContactMs`, and the `contact` anchor uses
+`offsetContactMs === 0` — the ETL's own answer, already in the data. A human's tag
+still wins over it. The midpoint survives only as the last resort, for
+`setup`/`finish` (which have no ETL equivalent) and for seeded clips (no detector).
+Verified over all 42 real swings: every CONTACT column is the true contact frame,
+and all 42 rows align in one column.
+
+Also fixed alongside, both consequences of the frame list growing from 9 to ~49:
+the detail scrubber is clamped to [0, 100] (observed `width: 117%`), and the clock
+formats as `m:ss` from real frame timing rather than `0:0${frame/4}`, which
+rendered `0:010`–`0:012` for frames 38-49. Both live in `src/components/playback.ts`
+so `DetailView.tsx` keeps exporting only its component. `openDetail` also resets
+`ui.sel` when the detail target changes, so opening a different clip no longer
+ghost-highlights a frame index carried over from the previous one.
+
+## ~~10. Two tests asserted nothing~~
+
+**FIXED.** Both were found by the same review, and both passed against code that
+had the defect they claimed to cover.
+
+`tests/test_app_writeback.py`'s "fixed point" test never called the TypeScript
+projection: it fed a document to itself, and `schema.doc_hash` **excludes** `edit`,
+so the hash equality was a tautology — it passed verbatim on a fully degraded
+document (confirmed: quality 4, verdict `false_positive`, `player_name: "left"`,
+9 frames). Its label assertions only read back values it had hardcoded twenty lines
+earlier. It is replaced by a falsifiable cross-language check: the document the
+**old lossy projection** would have produced must differ from the preserved one on
+every field the §1 table names, only the lossy one loses the human's labels through
+`overlay()`, and only the preserved one survives with all 49 frames and both far
+stage tags. A companion test pins the ETL half of §7's contract.
+
+Two neighbouring tests derived their cases from the constant under test
+(`for verdict in schema.VERDICTS`), so shrinking the vocabulary back to the old
+lossy set still passed. They now also assert `"duplicate" in schema.VERDICTS` and
+`1 in schema.QUALITY` explicitly.
+
+`notesFor` had **zero** coverage — deleting it entirely caused 0 failures, because
+the fixture has `notes: null` and `clip.note` is `''`, where old and new agree. The
+case it exists for is an on-disk `notes: ''`, which must round-trip as `''` rather
+than collapsing to null; that and the converse (a human clearing a real note writes
+`null`) are now asserted.
+
+## 11. Still open, found by the same review
+
+Recorded rather than fixed, to keep this pass reviewable. None destroys data
+without a user action.
+
+- **`edit.by` and `edit.against` are not preserved** (I4). `by` is hardcoded
+  `"reviewer"`, overwriting a real name; `against` is rewritten to the current
+  hash, erasing the stale-review marker `overlay()` warns on. Both are
+  counterexamples to "byte-identical apart from `edit.at`" for a file written by
+  another tool or reviewer.
+- **`undoRemove` invents a verdict** (M1/I1). A round-trip toggle rewrites the
+  verdict it read: `duplicate` → restore → remove lands on `false_positive`, and
+  `null` → remove → restore lands on `valid` — an accept call no human made,
+  reachable in two clicks.
+- **Duplicate `source_ms` in an incoming edit** (M2) is not rejected on the read
+  path, though `schema.py:206` forbids it, so a hand-edited file can make a stage
+  ambiguous.
+- **Non-string `tags`** (I3) are echoed by spread with no validation, so
+  `toUserEdit` can emit a document `validate_swing` rejects.
+- **The detail filmstrip renders 0 of ~49 images** — `DetailView` builds its cell
+  without `imageUrl`. Pre-existing, and a design question (the filmstrip may be
+  intended as a painted index rather than a contact sheet) rather than a bug fix,
+  so deliberately untouched. It does falsify the earlier report's claim that the
+  detail view lazily requests up to 49 stills.
 
 ## Environmental limits, not code defects
 

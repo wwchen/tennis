@@ -164,7 +164,16 @@ export function reducer(state: State, action: Action): State {
     case 'clearSelection':
       return ui(state, { sel: null });
     case 'openDetail':
-      return ui(state, { view: 'detail', detail: action.clip });
+      // A selection belongs to one clip. Carrying it to a different clip ghost-
+      // highlighted a frame nobody clicked, and `App.tsx` indexes
+      // `selClip.frames[ui.sel.frame]` — a stale index from a longer clip reads
+      // as undefined. A selection already on the target clip is kept, so
+      // clicking a frame and then opening its clip lands on that frame.
+      return ui(state, {
+        view: 'detail',
+        detail: action.clip,
+        sel: state.ui.sel?.clip === action.clip ? state.ui.sel : null,
+      });
     case 'closeDetail':
       return ui(state, { view: 'compare', detail: null });
     case 'togglePlay':
@@ -334,6 +343,9 @@ export function useShotLab() {
           entry.hash,
           'reviewer',
           '', // placeholder; we'll replace it below
+          // The previous on-disk edit, so frame entries `overlay()` dropped from
+          // the merged view survive rather than being erased from disk.
+          entry.edit,
         );
         const { edit, ...rest } = docWithoutTimestamp;
         const payload = JSON.stringify(rest);
