@@ -2,6 +2,8 @@ import { useEffect, useMemo, useReducer } from 'react';
 import type { Clip, Grade, Phase, Selection, Stroke, View } from '@/domain/types';
 import { ADD_PLAYER, ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
 import { SEED_NEXT_COMMENT_ID, SEED_REMOVED_STACK, seedClips, seedComments } from '@/domain/seed';
+import type { SwingEntry } from '@/domain/etl-types';
+import { toUserEdit } from '@/domain/etl-write';
 import type { Doc } from './persistence';
 import { loadDoc, saveDoc } from './persistence';
 import { loadEtlClips } from './etl-source';
@@ -31,10 +33,14 @@ export interface Ui {
 export interface State {
   doc: Doc;
   ui: Ui;
+  /** ETL source docs, for write-back. Not persisted — they are not coaching data. */
+  entries: SwingEntry[];
+  /** Session name from the ETL tree. Not persisted. */
+  session: string | null;
 }
 
 export type Action =
-  | { type: 'hydrate'; clips: Clip[] }
+  | { type: 'hydrate'; clips: Clip[]; entries: SwingEntry[]; session: string }
   | { type: 'setView'; view: View }
   | { type: 'setPlayerFilter'; value: string }
   | { type: 'setStrokeFilter'; value: string }
@@ -95,7 +101,12 @@ const initialUi = (): Ui => ({
   newPlayer: '',
 });
 
-export const initialState = (): State => ({ doc: loadDoc() ?? freshDoc(), ui: initialUi() });
+export const initialState = (): State => ({
+  doc: loadDoc() ?? freshDoc(),
+  ui: initialUi(),
+  entries: [],
+  session: null,
+});
 
 /** Patches one clip in place, leaving every other clip's identity untouched. */
 const patchClip = (
@@ -121,6 +132,8 @@ export function reducer(state: State, action: Action): State {
         ...state,
         doc: { ...doc, clips: action.clips, comments: [], removedStack: [] },
         ui: { ...state.ui, sel: null, detail: null, draft: '' },
+        entries: action.entries,
+        session: action.session,
       };
     case 'setView':
       return ui(state, { view: action.view });
@@ -285,8 +298,10 @@ export function useShotLab() {
 
   useEffect(() => {
     let live = true;
-    void loadEtlClips().then((clips) => {
-      if (live && clips !== null) dispatch({ type: 'hydrate', clips });
+    void loadEtlClips().then((payload) => {
+      if (live && payload !== null) {
+        dispatch({ type: 'hydrate', clips: payload.clips, entries: payload.entries, session: payload.session });
+      }
     });
     return () => {
       live = false;
@@ -296,6 +311,26 @@ export function useShotLab() {
   useEffect(() => {
     saveDoc(state.doc);
   }, [state.doc]);
+
+  useEffect(() => {
+    if (state.session === null) return;
+    const timer = setTimeout(() => {
+      for (const entry of state.entries) {
+        const clip = state.doc.clips.find((c) => c.id === entry.doc.id);
+        if (clip === undefined || !clip.triaged) continue;
+        void fetch(`/api/swings/${state.session}/${entry.dir}/user-edit`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(
+            toUserEdit(clip, entry.doc, entry.hash, 'reviewer', new Date().toISOString()),
+          ),
+        }).catch(() => {
+          // Dev-only route; a static build has nowhere to write.
+        });
+      }
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [state.doc.clips, state.entries, state.session]);
 
   return useMemo(() => ({ state, dispatch }), [state]);
 }

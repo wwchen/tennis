@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import type { Plugin, ViteDevServer } from 'vite';
 
@@ -122,6 +122,44 @@ export default function shotLab(): Plugin {
         }
         res.setHeader('Content-Type', MIME[extname(full).toLowerCase()] ?? 'application/octet-stream');
         res.end(readFileSync(full));
+      });
+
+      server.middlewares.use('/api/swings', (req, res) => {
+        if (req.method !== 'PUT') {
+          res.statusCode = 405;
+          res.end();
+          return;
+        }
+        // `/<session>/<swings/swing_NNN>/user-edit`
+        const rel = decodeURIComponent((req.url ?? '').split('?')[0]).replace(/^\/+/, '');
+        const suffix = '/user-edit';
+        if (!rel.endsWith(suffix)) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+        const dir = safeJoin(OUT_ROOT(), rel.slice(0, -suffix.length));
+        if (dir === null || !existsSync(dir)) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          try {
+            const doc = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as unknown;
+            // The one writable filename. Everything else in the tree is the
+            // ETL's, so a bug here cannot reach metadata.json.
+            writeFileSync(join(dir, WRITABLE), JSON.stringify(doc, null, 1) + '\n');
+            res.statusCode = 204;
+            res.end();
+          } catch {
+            res.statusCode = 400;
+            res.end('{"error":"bad document"}');
+          }
+        });
       });
     },
   };

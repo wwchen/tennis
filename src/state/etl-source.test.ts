@@ -17,10 +17,12 @@ describe('loadEtlClips', () => {
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(payload) }),
     );
-    const clips = await loadEtlClips();
-    expect(clips).not.toBeNull();
-    expect(clips).toHaveLength(1);
-    expect(clips?.[0].id).toBe('IMG_0304/swing_001');
+    const result = await loadEtlClips();
+    expect(result).not.toBeNull();
+    expect(result?.clips).toHaveLength(1);
+    expect(result?.clips[0].id).toBe('IMG_0304/swing_001');
+    expect(result?.session).toBe('IMG_0304');
+    expect(result?.entries).toHaveLength(1);
   });
 
   it('returns null when there is no out/ tree, so the seed stands', async () => {
