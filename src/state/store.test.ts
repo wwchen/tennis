@@ -1,8 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Action, State } from './store';
-import { initialState, reducer } from './store';
+import { initialState, reducer, useShotLab } from './store';
 import { loadDoc, saveDoc } from './persistence';
 import { ADD_PLAYER } from '@/domain/types';
+import type { SwingEntry } from '@/domain/etl-types';
+import realSwing from '@/domain/__fixtures__/swing-real.json';
+import * as etlSource from './etl-source';
 
 /** Applies a sequence of actions so a test reads as the user's clicks. */
 const run = (state: State, ...actions: Action[]): State => actions.reduce(reducer, state);
@@ -149,5 +153,82 @@ describe('persistence', () => {
   it('discards a doc written by an incompatible version', () => {
     localStorage.setItem('shot-lab.doc', JSON.stringify({ v: 999, clips: [] }));
     expect(loadDoc()).toBeNull();
+  });
+});
+
+describe('write-back deduplication', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    // Prevent the initial ETL load from interfering
+    vi.spyOn(etlSource, 'loadEtlClips').mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('sends each triaged clip once, not on every effect run', async () => {
+    const entries: SwingEntry[] = [
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never },
+      { dir: 'swings/swing_002', hash: 'sha256:def', doc: realSwing as never },
+    ];
+
+    const { result, rerender } = renderHook(() => useShotLab());
+
+    // Hydrate with two triaged clips
+    act(() => {
+      result.current.dispatch({
+        type: 'hydrate',
+        clips: [
+          { ...result.current.state.doc.clips[0], id: 'IMG_0304/swing_001', triaged: true, grade: 'good' },
+          { ...result.current.state.doc.clips[1], id: 'IMG_0304/swing_002', triaged: true, grade: 'ok' },
+        ],
+        entries,
+        session: 'IMG_0304',
+      });
+    });
+
+    // Wait for debounced write
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 1000 });
+
+    // Force another render WITHOUT changing clip data
+    rerender();
+
+    // Wait to ensure no new PUTs
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    // Still only 2 calls — dedup prevented redundant writes
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends again when clip content actually changes', async () => {
+    const entries: SwingEntry[] = [
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never },
+    ];
+
+    const { result } = renderHook(() => useShotLab());
+
+    act(() => {
+      result.current.dispatch({
+        type: 'hydrate',
+        clips: [{ ...result.current.state.doc.clips[0], id: 'IMG_0304/swing_001', triaged: true, grade: 'good' }],
+        entries,
+        session: 'IMG_0304',
+      });
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+
+    // Change the note
+    act(() => {
+      result.current.dispatch({ type: 'setNote', clip: 'IMG_0304/swing_001', note: 'late contact' });
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 1000 });
   });
 });
