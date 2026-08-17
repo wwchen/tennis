@@ -133,6 +133,15 @@ untouched load), `notes`, per-frame `stage` (including `other`), and `player_nam
 the court slot — a slot is a court zone, not a person, on the write path as well as
 the read path). See §1–§4 of the follow-ups companion for what this replaced.
 
+Because that reference is the document on disk rather than a page-load snapshot,
+"untouched" also covers a rating merely **re-affirmed**: re-picking the chip already
+shown clears the rating, and picking it again writes the source's exact value back
+(a 5 returns as 5, not 4). A deliberate clear does write `null` — that is a real
+human action, not degradation — so a rating cleared, *reloaded*, and only then set
+again is a genuinely new call and takes the 2/3/4 mapping above. That last sequence
+is the one path by which a hand-set 5 can still become a 4, and it requires the
+reviewer to clear the rating and come back to it in a later session.
+
 ## Frame identity and sampling
 
 `Frame` gains `sourceMs: number`. `i` remains the render and selection index;

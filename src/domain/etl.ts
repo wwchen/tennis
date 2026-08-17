@@ -39,16 +39,41 @@ export function sampleFrames(frames: EtlFrame[], contactMs: number): EtlFrame[] 
 }
 
 /**
- * Whether the ETL's own output already calls this clip unusable.
+ * Whether this clip reads as removed.
  *
  * Shared with `etl-write.ts`: write-back has to tell a verdict the reviewer set
  * from the one it read, and it can only do that against the same rule the read
  * adapter applied.
+ *
+ * `detection.verified` is ETL-owned — the app cannot clear it — so a plain OR
+ * with it never converges: an unverified swing always read as rejected, so
+ * "restore" wrote `valid`, the next load re-rejected it, and a subsequent
+ * "remove" wrote `valid` again, recording the reviewer's rejection as an accept
+ * call. A human's verdict therefore has to be able to disagree with `verified`:
+ *
+ *   verdict            verified   rejected   why
+ *   -----------------  ---------  ---------  --------------------------------
+ *   false_positive     any        yes        an explicit rejecting call
+ *   duplicate          any        yes        an explicit rejecting call
+ *   valid              true       no         accepted, and the ETL agrees
+ *   valid              FALSE      no         a human overrode the detector;
+ *                                            this is the row that converges
+ *   unclear            true       no         not a rejection, so nothing to
+ *                                            override `verified` with
+ *   unclear            false      yes        `unclear` is not an accept call
+ *   null               true       no         untouched, and the ETL is happy
+ *   null               false      yes        the ETL's own rejection stands,
+ *                                            with no human call against it
+ *
+ * So: a rejecting verdict always rejects, `valid` always accepts, and anything
+ * that is not a call either way defers to `detection.verified`.
  */
-export const isRejected = (doc: EtlSwingDoc): boolean =>
-  !doc.detection.verified ||
-  doc.labels.verdict === 'false_positive' ||
-  doc.labels.verdict === 'duplicate';
+export const isRejected = (doc: EtlSwingDoc): boolean => {
+  const { verdict } = doc.labels;
+  if (verdict === 'false_positive' || verdict === 'duplicate') return true;
+  if (verdict === 'valid') return false;
+  return !doc.detection.verified;
+};
 
 /**
  * The name `adaptSwing` puts on a clip.
@@ -108,6 +133,9 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
   const frames: Frame[] = doc.frames.map((f, i) => ({
     i,
     sourceMs: f.source_ms,
+    // The detector's contact moment, carried so `buildCompare` can align on the
+    // real contact frame rather than guessing at the midpoint of the extraction.
+    offsetContactMs: f.offset_contact_ms,
     phase: stageToPhase(f.stage),
     ...(mediaBase === undefined ? {} : { imageUrl: `${mediaBase}/${f.file}` }),
   }));

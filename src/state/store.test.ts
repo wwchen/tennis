@@ -154,6 +154,40 @@ describe('reducer', () => {
     );
     expect(s.ui.draft).toBe('');
   });
+
+  describe('openDetail and the selection', () => {
+    it('drops a selection belonging to a different clip', () => {
+      // A selection is (clip, frame). Carrying it across clips ghost-highlighted
+      // a frame nobody clicked, and `App.tsx` indexes
+      // `selClip.frames[ui.sel.frame]` — a stale index from a 49-frame clip is
+      // undefined on a shorter one. Unreachable at 9 frames each, live at 42-49.
+      let s = initialState();
+      s = run(s, { type: 'select', clip: 'SL-002', frame: 8 });
+      expect(s.ui.sel).toEqual({ clip: 'SL-002', frame: 8 });
+
+      s = run(s, { type: 'openDetail', clip: 'SL-004' });
+      expect(s.ui.detail).toBe('SL-004');
+      expect(s.ui.sel).toBeNull();
+    });
+
+    it('keeps a selection already on the clip being opened', () => {
+      // Clicking a frame and then opening its own clip should land on that
+      // frame, so the reset has to be conditional rather than unconditional.
+      let s = initialState();
+      s = run(
+        s,
+        { type: 'select', clip: 'SL-004', frame: 3 },
+        { type: 'openDetail', clip: 'SL-004' },
+      );
+      expect(s.ui.sel).toEqual({ clip: 'SL-004', frame: 3 });
+    });
+
+    it('leaves a null selection null', () => {
+      const s = run(initialState(), { type: 'clearSelection' }, { type: 'openDetail', clip: 'SL-001' });
+      expect(s.ui.sel).toBeNull();
+      expect(s.ui.view).toBe('detail');
+    });
+  });
 });
 
 describe('persistence', () => {
@@ -197,8 +231,8 @@ describe('write-back deduplication', () => {
 
   it('sends each triaged clip once, not on every effect run', async () => {
     const entries: SwingEntry[] = [
-      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never },
-      { dir: 'swings/swing_002', hash: 'sha256:def', doc: realSwing as never },
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never, edit: null },
+      { dir: 'swings/swing_002', hash: 'sha256:def', doc: realSwing as never, edit: null },
     ];
 
     const { result, rerender } = renderHook(() => useShotLab());
@@ -237,7 +271,7 @@ describe('write-back deduplication', () => {
 
   it('sends again when clip content actually changes', async () => {
     const entries: SwingEntry[] = [
-      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never },
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never, edit: null },
     ];
 
     const { result } = renderHook(() => useShotLab());
@@ -282,7 +316,7 @@ describe('write-back deduplication', () => {
       edit: { by: 'reviewer', at: '2026-08-15T09:00:00Z', against: 'sha256:abc', reviewed: true },
     };
     const entries: SwingEntry[] = [
-      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: onDisk },
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: onDisk, edit: onDisk },
     ];
 
     const { result } = renderHook(() => useShotLab());
@@ -309,13 +343,70 @@ describe('write-back deduplication', () => {
     expect({ ...sent.edit, at: '' }).toEqual({ ...onDisk.edit, at: '' });
   });
 
+  it('preserves a stage the ETL grid no longer knows about, through the whole stack', async () => {
+    // C1 end to end. `overlay()` drops a frame whose `source_ms` metadata does
+    // not carry FROM THE MERGED VIEW and leaves it on disk, so re-extracting at
+    // the original --fps recovers the tag. `entry.doc` is that merged view, so a
+    // bare page load used to PUT a document without the orphan and delete it
+    // permanently — no user action required.
+    const base = realSwing as unknown as EtlSwingDoc;
+    const editBlock = {
+      by: 'reviewer',
+      at: '2026-08-15T09:00:00Z',
+      against: 'sha256:abc',
+      reviewed: true,
+    };
+    // `overlayEdit` carries the edit block onto the merged doc, which is what
+    // makes `adaptSwing` derive `triaged: true` and the write-back fire at all.
+    const merged: EtlSwingDoc = { ...base, edit: editBlock };
+    const ORPHAN_MS = merged.frames[24].source_ms + 16;
+    const diskEdit: EtlSwingDoc = {
+      ...base,
+      frames: [
+        ...base.frames,
+        {
+          file: 'frames/frame_0099.jpg',
+          source_ms: ORPHAN_MS,
+          clip_ms: 816,
+          offset_contact_ms: 16,
+          pose_score: null,
+          stage: 'contact',
+        },
+      ],
+      edit: editBlock,
+    };
+    const entries: SwingEntry[] = [
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: merged, edit: diskEdit },
+    ];
+
+    const { result } = renderHook(() => useShotLab());
+    act(() => {
+      result.current.dispatch({
+        type: 'hydrate',
+        clips: [adaptSwing(merged)],
+        entries,
+        session: 'IMG_0304',
+      });
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+
+    const sent = JSON.parse((fetchMock.mock.calls[0] as [string, { body: string }])[1].body) as EtlSwingDoc;
+    const orphan = sent.frames.find((f) => f.source_ms === ORPHAN_MS);
+    expect(orphan?.stage).toBe('contact');
+    expect(sent.frames).toHaveLength(50);
+    // Still strictly increasing, so schema.py:206 accepts what we wrote.
+    const ms = sent.frames.map((f) => f.source_ms);
+    expect(ms).toEqual([...ms].sort((a, b) => a - b));
+  });
+
   it('retries after a rejected write instead of caching it as sent', async () => {
     // `fetch` resolves for 4xx/5xx, so caching without checking `res.ok` retired
     // the label permanently on a 404 or a 400.
     fetchMock.mockResolvedValue({ ok: false, status: 404 });
 
     const entries: SwingEntry[] = [
-      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never },
+      { dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing as never, edit: null },
     ];
 
     const { result, rerender } = renderHook(() => useShotLab());

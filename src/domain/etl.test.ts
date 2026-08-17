@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import realSwing from './__fixtures__/swing-real.json';
 import type { EtlSwingDoc } from './etl-types';
-import { adaptSwing, qualityToGrade, sampleFrames, stageToPhase, strokeToApp } from './etl';
+import {
+  adaptSwing,
+  isRejected,
+  qualityToGrade,
+  sampleFrames,
+  stageToPhase,
+  strokeToApp,
+} from './etl';
 import { FRAMES_PER_CLIP } from './types';
 
 const fixture = realSwing as unknown as EtlSwingDoc;
@@ -118,6 +125,52 @@ describe('adaptSwing', () => {
       labels: { ...fixture.labels, verdict: 'duplicate' },
     };
     expect(adaptSwing(dupe).rejected).toBe(true);
+  });
+
+  describe('isRejected lets a human verdict disagree with detection.verified', () => {
+    /**
+     * `detection` is ETL-owned and the app cannot clear it, so ORing
+     * `!verified` in unconditionally never converged: an unverified swing always
+     * read as rejected, "restore" wrote `valid`, the next load re-rejected it,
+     * and a subsequent "remove" wrote `valid` AGAIN — filing the reviewer's
+     * rejection as an acceptance.
+     */
+    const doc = (verified: boolean, verdict: EtlSwingDoc['labels']['verdict']): EtlSwingDoc => ({
+      ...fixture,
+      detection: { ...fixture.detection, verified },
+      labels: { ...fixture.labels, verdict },
+    });
+
+    it('matches the documented truth table exactly', () => {
+      const table: [boolean, EtlSwingDoc['labels']['verdict'], boolean][] = [
+        // verified, verdict, rejected
+        [true, 'false_positive', true],
+        [false, 'false_positive', true],
+        [true, 'duplicate', true],
+        [false, 'duplicate', true],
+        [true, 'valid', false],
+        // The row that makes the state machine converge: a human's accept call
+        // overrides the detector.
+        [false, 'valid', false],
+        [true, 'unclear', false],
+        [false, 'unclear', true],
+        [true, null, false],
+        // The ETL's own rejection, with no human call against it, must stand.
+        [false, null, true],
+      ];
+      for (const [verified, verdict, rejected] of table) {
+        expect(
+          isRejected(doc(verified, verdict)),
+          `verified=${String(verified)} verdict=${String(verdict)}`,
+        ).toBe(rejected);
+      }
+    });
+
+    it('still rejects an unverified swing no human has judged', () => {
+      // The ETL's meaning is preserved: this is the case `verified: false` exists
+      // to express, and it must not be softened by the fix above.
+      expect(adaptSwing(doc(false, null)).rejected).toBe(true);
+    });
   });
 
   it('treats an existing edit as triaged', () => {

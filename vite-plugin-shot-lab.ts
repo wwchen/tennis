@@ -316,8 +316,15 @@ function readSession(root: string) {
       // which ETL output was reviewed, so hashing the merged document would
       // make it self-referential and every review would read as stale.
       const hash = docHash(raw);
-      const doc = overlayEdit(metadata, readJson(join(swingsDir, dir, WRITABLE)));
-      return [{ dir: `swings/${dir}`, hash, doc }];
+      const userEdit = readJson(join(swingsDir, dir, WRITABLE));
+      const doc = overlayEdit(metadata, userEdit);
+      // The unmerged edit goes back too. `overlayEdit` drops frames whose
+      // `source_ms` metadata does not know about — matching `overlay()`, which
+      // does that on purpose so an `--fps` change is recoverable rather than
+      // destructive. Those entries exist only here, so write-back needs this to
+      // avoid erasing them from disk on a bare load.
+      const edit = isObject(userEdit) ? userEdit : null;
+      return [{ dir: `swings/${dir}`, hash, doc, edit }];
     });
 
   return { session, swings };

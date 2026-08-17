@@ -30,6 +30,7 @@ export function toUserEdit(
   hash: string,
   by: string,
   at: string,
+  prevEdit: EtlSwingDoc | null = null,
 ): EtlSwingDoc {
   const phaseBySourceMs = new Map(clip.frames.map((f) => [f.sourceMs, f.phase]));
 
@@ -37,9 +38,13 @@ export function toUserEdit(
   // carry is left out entirely, so it keeps whatever stage it already had —
   // reachable now only for a clip restored from an older localStorage doc,
   // since `adaptSwing` carries the full list.
-  const frames: EtlFrame[] = source.frames
+  const written: EtlFrame[] = source.frames
     .filter((f) => phaseBySourceMs.has(f.source_ms))
     .map((f) => ({ ...f, stage: stageFor(phaseBySourceMs.get(f.source_ms) ?? null, f.stage) }));
+
+  const frames = [...orphanedFrames(source, prevEdit), ...written].sort(
+    (a, b) => a.source_ms - b.source_ms,
+  );
 
   return {
     ...source,
@@ -55,6 +60,44 @@ export function toUserEdit(
     frames,
     edit: { by, at, against: hash, reviewed: true },
   };
+}
+
+/**
+ * Frame entries the previous `user-edit.json` carries that `metadata.json` has
+ * no matching `source_ms` for.
+ *
+ * `overlay()` (`schema.py:439`) drops these from the MERGED view and warns —
+ * deliberately, and it leaves them ON DISK, so re-extracting back at the
+ * original `--fps` recovers whatever a human tagged there. `source` here is that
+ * merged view, so a projection built only from it cannot see them; writing the
+ * result back deleted them permanently, from a bare page load with no user
+ * action. That is exactly the failure the ETL's "stable keys, never array
+ * indices" doctrine exists to prevent.
+ *
+ * Only entries with a `source_ms` the metadata does not know are carried: one
+ * the metadata does know is regenerated from `source` above, with the clip's
+ * current stage on it.
+ *
+ * And only entries carrying a `stage`. An orphan's `file` points at a still the
+ * current extraction did not write, and `session.validate_tree` reports a frame
+ * whose file is missing — so carrying a stage-less orphan would trade a silent
+ * data loss for a permanent validation complaint about an entry holding no human
+ * work at all. A stage is the only thing on a frame a reviewer can author, so
+ * that is exactly the set worth keeping. `overlay()` ignores a null stage
+ * regardless (`schema.py:444`), so nothing is lost by dropping them.
+ */
+function orphanedFrames(source: EtlSwingDoc, prevEdit: EtlSwingDoc | null): EtlFrame[] {
+  // `prevEdit` crosses the wire from the dev middleware, so treat a missing
+  // value and a missing `frames` list the same as "no previous edit".
+  if (prevEdit === null || prevEdit === undefined || !Array.isArray(prevEdit.frames)) return [];
+  const known = new Set(source.frames.map((f) => f.source_ms));
+  return prevEdit.frames.filter(
+    (f) =>
+      typeof f?.source_ms === 'number' &&
+      !known.has(f.source_ms) &&
+      f.stage !== null &&
+      f.stage !== undefined,
+  );
 }
 
 const strokeToEtl = (s: Clip['stroke']): EtlStroke | null =>

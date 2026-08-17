@@ -6,6 +6,7 @@ import { STROKES, UNTAGGED_STROKE } from '@/domain/types';
 import { strokeHue } from '@/domain/grades';
 import { Button, ICONS, Icon, Select, Tag, Textarea, valueOf } from '@/lds';
 import { FrameTile, GradeChips, Mono } from './shared';
+import { elapsedLabel, scrubberPercent } from './playback';
 
 export function DetailView({
   clip,
@@ -24,8 +25,8 @@ export function DetailView({
   dispatch: Dispatch<Action>;
 }) {
   const frameNum = (selectedFrame ?? 0) + 1;
-  const progress = `${Math.round((frameNum / clip.frames.length) * 100)}%`;
-  const elapsed = `0:0${Math.max(1, Math.round(frameNum / 4))}`;
+  const progress = `${scrubberPercent(frameNum, clip.frames.length)}%`;
+  const elapsed = elapsedLabel(clip, selectedFrame ?? 0);
 
   return (
     <div style={{ padding: '18px 24px 60px', display: 'flex', flexDirection: 'column', gap: 16 }}>
