@@ -180,7 +180,7 @@ def _check_labels(c, labels, path):
                 c.add("%s.tags[%d]" % (path, i), "expected string")
 
 
-def _check_frames(c, frames, path):
+def _check_frames(c, frames, path, has_pose):
     if not isinstance(frames, list):
         c.add(path, "expected list, got %s" % type(frames).__name__)
         return
@@ -198,11 +198,13 @@ def _check_frames(c, frames, path):
         c.field(frame, "clip_ms", where, _INT)
         c.field(frame, "offset_contact_ms", where, _INT)
         # Always optional, even when `measurements` is present. The frame
-        # span is deliberately wider than the pose window -- a human needs
-        # dense stills either side of contact, but pose is only decoded near
-        # it -- so the outer frames have no score to carry. Requiring one
-        # here made every default `run` fail validation after writing the
-        # clip and all its JPEGs.
+        # span is deliberately wider than the pose window (+/-0.80s extracted
+        # vs +/-0.40s decoded at the defaults) -- a human needs dense stills
+        # either side of contact, but pose is only decoded near it -- so the
+        # outer frames have no score to carry. Requiring one here made every
+        # default `run` fail validation after writing the clip and all its
+        # JPEGs. `has_pose` is enforced across the list below instead, frame
+        # by frame being the wrong granularity.
         c.field(frame, "pose_score", where, _NUM, optional=True)
         c.field(frame, "stage", where, (str,), optional=True, enum=STAGES)
         # Strictly increasing: overlay() joins on source_ms, so a duplicate
@@ -215,6 +217,13 @@ def _check_frames(c, frames, path):
                       "must increase: %d after %d" % (ms, prev_ms))
         if ms is not None:
             prev_ms = ms
+
+    # Non-null measurements assert pose ran, so *some* frame must carry a
+    # score. All-null means the two blocks disagree about what happened.
+    if has_pose and all(f.get("pose_score") is None
+                        for f in frames if isinstance(f, dict)):
+        c.add("%s.pose_score" % path,
+              "no frame has a score, but measurements is not null")
 
 
 def _check_measurements(c, m, path):
@@ -267,11 +276,14 @@ def validate_swing(doc):
         _check_labels(c, labels, "labels")
 
     # measurements is null when pose was unavailable. Frame pose_score is
-    # *not* tied to it: pose is decoded over a narrower window than the frame
-    # span, so even a fully measured swing has scoreless frames at the edges.
+    # *not* tied to it per frame: pose is decoded over a narrower window than
+    # the frame span, so even a fully measured swing has scoreless frames at
+    # the edges. The two are only linked across the list, which is what
+    # `has_pose` carries into _check_frames.
+    has_pose = doc.get("measurements") is not None
     if "measurements" not in doc:
         c.add("measurements", "missing")
-    elif doc["measurements"] is not None:
+    elif has_pose:
         if not isinstance(doc["measurements"], dict):
             c.add("measurements", "expected object or null")
         else:
@@ -280,7 +292,7 @@ def validate_swing(doc):
     if "frames" not in doc:
         c.add("frames", "missing")
     else:
-        _check_frames(c, doc["frames"], "frames")
+        _check_frames(c, doc["frames"], "frames", has_pose)
 
     if "edit" not in doc:
         c.add("edit", "missing (use null in ETL output)")

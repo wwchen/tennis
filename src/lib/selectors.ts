@@ -1,4 +1,4 @@
-import type { Clip, Comment, Phase } from '@/domain/types';
+import type { Clip, Comment, Phase, Stroke } from '@/domain/types';
 import {
   ALL_PLAYERS,
   ALL_RATINGS,
@@ -6,6 +6,7 @@ import {
   CONFIDENCE_FLOOR,
   FRAMES_PER_CLIP,
 } from '@/domain/types';
+import { frameWindow } from '@/domain/window';
 import { gradeOf } from '@/domain/grades';
 import type { Doc } from '@/state/persistence';
 import type { Ui } from '@/state/store';
@@ -20,14 +21,16 @@ export type Cell =
       real: true;
       key: string;
       clip: string;
+      /** Index into the clip's FULL frame list, not into `cells`. */
       frame: number;
-      /** Frame label, `f01`…`f09`. */
+      /** Frame label, `f01`…`f49`. */
       num: string;
       phase: Phase | null;
       /** Classifier is unsure about this frame. */
       flagged: boolean;
       pinCount: number;
       selected: boolean;
+      imageUrl?: string;
     };
 
 export interface Row {
@@ -54,9 +57,30 @@ export function visibleClips(doc: Doc, ui: Ui): Clip[] {
   );
 }
 
-/** Index of the clip's anchor frame, or the midpoint when it carries no tag. */
-const anchorIndex = (clip: Clip, anchor: Phase): number =>
-  clip.frames.find((f) => f.phase === anchor)?.i ?? 4;
+/**
+ * Index of the clip's anchor frame.
+ *
+ * A human's tag wins — that is the whole point of tagging. Failing that, and for
+ * the `contact` anchor only, the ETL already knows: `offsetContactMs === 0` is
+ * exactly the detector's contact frame. Every real ETL frame ships with
+ * `stage: null`, so this is the path all 42 real swings take.
+ *
+ * The midpoint is the last resort, for `setup`/`finish` (which have no ETL
+ * equivalent) and for seeded clips (which have no detector). It is only ever an
+ * approximation of contact: `render.py` truncates extraction at the video
+ * boundaries, so a swing near either end of the source is not centred on contact
+ * at all — measured off by 1 frame on swing_041 and 4 frames (~133 ms) on
+ * swing_042 of the sample tree, with nothing on screen to say so.
+ */
+const anchorIndex = (clip: Clip, anchor: Phase): number => {
+  const tagged = clip.frames.find((f) => f.phase === anchor);
+  if (tagged !== undefined) return tagged.i;
+  if (anchor === 'contact') {
+    const contact = clip.frames.find((f) => f.offsetContactMs === 0);
+    if (contact !== undefined) return contact.i;
+  }
+  return Math.floor((clip.frames.length - 1) / 2);
+};
 
 /**
  * Lays every visible clip out on one timeline, shifted so all their anchor
@@ -64,6 +88,14 @@ const anchorIndex = (clip: Clip, anchor: Phase): number =>
  * lead padding; one whose contact is at frame 3 gets three pad cells in front.
  * Columns are then labelled by their offset from the anchor (−2, −1, CONTACT,
  * +1, …), which is what makes two swings comparable at a glance.
+ *
+ * Each row shows at most `FRAMES_PER_CLIP` of its clip's frames, windowed around
+ * that clip's anchor by `frameWindow` — the same definition `sampleFrames` uses.
+ * The narrowing lives here rather than in `adaptSwing` because this is the only
+ * view that needs a bounded width: 12 clips of 49 stills is a 588-tile grid
+ * nobody can read, while the detail view wants every frame. `cell.frame` stays
+ * an index into the clip's FULL frame list, so a click still selects the real
+ * still.
  */
 export function buildCompare(
   clips: Clip[],
@@ -72,17 +104,24 @@ export function buildCompare(
   sel: { clip: string; frame: number } | null,
 ): { rows: Row[]; colLabels: string[] } {
   const anchors = clips.map((c) => anchorIndex(c, anchor));
+  const windows = clips.map((c, i) => frameWindow(c.frames.length, anchors[i]));
+  // Lead and tail are measured within the window, not the whole clip: the
+  // columns either side of the anchor are the ones the grid actually renders.
+  const leads = anchors.map((a, i) => a - windows[i].start);
   // Floors of 4 and FRAMES_PER_CLIP keep the grid a stable width when the
   // filters leave only one or two clips on screen.
-  const maxLead = Math.max(4, ...anchors);
-  const maxTail = Math.max(FRAMES_PER_CLIP, ...clips.map((c, i) => c.frames.length - anchors[i]));
+  const maxLead = Math.max(4, ...leads);
+  const maxTail = Math.max(
+    FRAMES_PER_CLIP,
+    ...clips.map((_, i) => windows[i].end - anchors[i]),
+  );
   const total = maxLead + maxTail;
 
   const rows: Row[] = clips.map((clip, i) => {
-    const lead = maxLead - anchors[i];
+    const lead = maxLead - leads[i];
     const cells: Cell[] = [];
     for (let k = 0; k < lead; k++) cells.push({ real: false, key: `${clip.id}:lead:${k}` });
-    for (const f of clip.frames) {
+    for (const f of clip.frames.slice(windows[i].start, windows[i].end)) {
       cells.push({
         real: true,
         key: `${clip.id}:${f.i}`,
@@ -90,7 +129,8 @@ export function buildCompare(
         frame: f.i,
         num: `f${String(f.i + 1).padStart(2, '0')}`,
         phase: f.phase,
-        flagged: f.conf < CONFIDENCE_FLOOR,
+        imageUrl: f.imageUrl,
+        flagged: f.conf !== undefined && f.conf < CONFIDENCE_FLOOR,
         pinCount: pinsFor(comments, clip.id, f.i).length,
         selected: sel?.clip === clip.id && sel.frame === f.i,
       });
@@ -115,7 +155,7 @@ export const rosterOf = (doc: Doc): string[] =>
   Array.from(new Set([...doc.clips.map((c) => c.player), ...doc.extraPlayers]));
 
 export const strokesOf = (doc: Doc): string[] =>
-  Array.from(new Set(doc.clips.map((c) => c.stroke)));
+  Array.from(new Set(doc.clips.map((c) => c.stroke).filter((s): s is Stroke => s !== null)));
 
 export interface Stats {
   visible: number;

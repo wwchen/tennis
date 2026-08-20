@@ -19,10 +19,12 @@ const STROKE_HUES: Record<string, Hue> = {
   Backhand: 'blue',
   Serve: 'violet',
   Volley: 'pink',
-  Slice: 'yellow',
+  Overhead: 'orange',
+  Other: 'gray',
 };
 
-export const strokeHue = (stroke: string): Hue => STROKE_HUES[stroke] ?? 'gray';
+export const strokeHue = (stroke: string | null): Hue =>
+  stroke === null ? 'gray' : STROKE_HUES[stroke] ?? 'gray';
 
 /** Badge colour for each phase, matching the palette tokens the tiles use. */
 export const PHASE_BADGE: Record<Phase, string> = {

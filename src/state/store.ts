@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useReducer } from 'react';
-import type { Grade, Phase, Selection, Stroke, View } from '@/domain/types';
+import { useEffect, useMemo, useReducer, useRef } from 'react';
+import type { Clip, Grade, Phase, Selection, Stroke, View } from '@/domain/types';
 import { ADD_PLAYER, ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
 import { SEED_NEXT_COMMENT_ID, SEED_REMOVED_STACK, seedClips, seedComments } from '@/domain/seed';
+import type { SwingEntry } from '@/domain/etl-types';
+import type { SkippedSwing } from '@/domain/etl';
+import { toUserEdit } from '@/domain/etl-write';
 import type { Doc } from './persistence';
 import { loadDoc, saveDoc } from './persistence';
+import { loadEtlClips } from './etl-source';
 
 /** Everything that is a view preference rather than coaching data. */
 export interface Ui {
@@ -30,9 +34,22 @@ export interface Ui {
 export interface State {
   doc: Doc;
   ui: Ui;
+  /** ETL source docs, for write-back. Not persisted — they are not coaching data. */
+  entries: SwingEntry[];
+  /** Session name from the ETL tree. Not persisted. */
+  session: string | null;
+  /**
+   * Swings in the tree the read path could not adapt. Surfaced in the header,
+   * because a session silently short of some of its swings is indistinguishable
+   * from a complete one.
+   */
+  skipped: SkippedSwing[];
 }
 
 export type Action =
+  // `skipped` is optional so a test hydrating a clean session need not say
+  // "nothing was skipped" — absent means none.
+  | { type: 'hydrate'; clips: Clip[]; entries: SwingEntry[]; session: string; skipped?: SkippedSwing[] }
   | { type: 'setView'; view: View }
   | { type: 'setPlayerFilter'; value: string }
   | { type: 'setStrokeFilter'; value: string }
@@ -93,7 +110,13 @@ const initialUi = (): Ui => ({
   newPlayer: '',
 });
 
-export const initialState = (): State => ({ doc: loadDoc() ?? freshDoc(), ui: initialUi() });
+export const initialState = (): State => ({
+  doc: loadDoc() ?? freshDoc(),
+  ui: initialUi(),
+  entries: [],
+  session: null,
+  skipped: [],
+});
 
 /** Patches one clip in place, leaving every other clip's identity untouched. */
 const patchClip = (
@@ -111,6 +134,18 @@ export function reducer(state: State, action: Action): State {
   const { doc } = state;
 
   switch (action.type) {
+    case 'hydrate':
+      // Replaces the seed wholesale. Comments are seeded scratch data pinned to
+      // seed clip ids, so they go too rather than dangle on ids that no longer
+      // exist.
+      return {
+        ...state,
+        doc: { ...doc, clips: action.clips, comments: [], removedStack: [] },
+        ui: { ...state.ui, sel: null, detail: null, draft: '' },
+        entries: action.entries,
+        session: action.session,
+        skipped: action.skipped ?? [],
+      };
     case 'setView':
       return ui(state, { view: action.view });
     case 'setPlayerFilter':
@@ -140,7 +175,16 @@ export function reducer(state: State, action: Action): State {
     case 'clearSelection':
       return ui(state, { sel: null });
     case 'openDetail':
-      return ui(state, { view: 'detail', detail: action.clip });
+      // A selection belongs to one clip. Carrying it to a different clip ghost-
+      // highlighted a frame nobody clicked, and `App.tsx` indexes
+      // `selClip.frames[ui.sel.frame]` — a stale index from a longer clip reads
+      // as undefined. A selection already on the target clip is kept, so
+      // clicking a frame and then opening its clip lands on that frame.
+      return ui(state, {
+        view: 'detail',
+        detail: action.clip,
+        sel: state.ui.sel?.clip === action.clip ? state.ui.sel : null,
+      });
     case 'closeDetail':
       return ui(state, { view: 'compare', detail: null });
     case 'togglePlay':
@@ -178,7 +222,12 @@ export function reducer(state: State, action: Action): State {
       };
 
     case 'setNote':
-      return { ...state, doc: patchClip(doc, action.clip, (c) => ({ ...c, note: action.note })) };
+      // `triaged` gates write-back, so a note that does not set it is written
+      // to localStorage and never reaches user-edit.json.
+      return {
+        ...state,
+        doc: patchClip(doc, action.clip, (c) => ({ ...c, note: action.note, triaged: true })),
+      };
 
     case 'toggleReject': {
       const target = doc.clips.find((c) => c.id === action.clip);
@@ -187,7 +236,9 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         doc: {
-          ...patchClip(doc, action.clip, (c) => ({ ...c, rejected })),
+          // Rejecting is a human verdict like any other, and gates write-back
+          // the same way; see `setNote`.
+          ...patchClip(doc, action.clip, (c) => ({ ...c, rejected, triaged: true })),
           removedStack: rejected
             ? [...doc.removedStack, action.clip]
             : doc.removedStack.filter((id) => id !== action.clip),
@@ -269,12 +320,95 @@ export function reducer(state: State, action: Action): State {
   }
 }
 
+/**
+ * Who `edit.by` names for a write this app's user authored.
+ *
+ * There is no sign-in, so the app genuinely cannot know a name — this stands in
+ * for one, and is deliberately the only place it is written. It is used ONLY for
+ * a write that records a real change: a load-time write-back over a file another
+ * reviewer or tool wrote carries that file's own `by` through instead, because
+ * replacing `"coach-ana"` with this destroys attribution nobody asked to change.
+ * See `editFor` in `src/domain/etl-write.ts`.
+ */
+const REVIEWER = 'reviewer';
+
 export function useShotLab() {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
+  const lastSentRef = useRef<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    let live = true;
+    void loadEtlClips().then((payload) => {
+      if (live && payload !== null) {
+        dispatch({
+          type: 'hydrate',
+          clips: payload.clips,
+          entries: payload.entries,
+          session: payload.session,
+          skipped: payload.skipped,
+        });
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     saveDoc(state.doc);
   }, [state.doc]);
+
+  useEffect(() => {
+    if (state.session === null) return;
+    const timer = setTimeout(() => {
+      for (const entry of state.entries) {
+        const clip = state.doc.clips.find((c) => c.id === entry.doc.id);
+        if (clip === undefined || !clip.triaged) continue;
+
+        // Build the doc without the volatile timestamp so we can compare
+        const docWithoutTimestamp = toUserEdit(
+          clip,
+          entry.doc,
+          entry.hash,
+          REVIEWER,
+          '', // placeholder; we'll replace it below
+          // The previous on-disk edit, so frame entries `overlay()` dropped from
+          // the merged view survive rather than being erased from disk, and so
+          // `edit.by`/`edit.against` survive a write this reviewer did not author.
+          entry.edit,
+        );
+        const { edit, ...rest } = docWithoutTimestamp;
+        // `edit.at` is the only volatile field — it is this write's own clock, so
+        // including it would defeat the cache entirely and re-PUT every clip on
+        // every effect run. The rest of `edit` is part of the payload's identity:
+        // `by` and `against` are carried over from the previous file when the
+        // human changed nothing, so they can differ between two documents whose
+        // `labels` and `frames` agree, and a cache that ignored them could retire
+        // a write that does change attribution.
+        const payload = JSON.stringify({ ...rest, edit: { ...edit, at: '' } });
+
+        // Skip if this exact payload was already sent
+        if (lastSentRef.current.get(entry.dir) === payload) continue;
+
+        // Now stamp the real timestamp and send
+        const finalDoc = { ...docWithoutTimestamp, edit: { ...edit, at: new Date().toISOString() } };
+        void fetch(`/api/swings/${state.session}/${entry.dir}/user-edit`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(finalDoc),
+        })
+          .then((res) => {
+            // `fetch` resolves for 4xx/5xx too. Caching a rejected payload as
+            // sent would retire that label permanently.
+            if (res.ok) lastSentRef.current.set(entry.dir, payload);
+          })
+          .catch(() => {
+            // Dev-only route; a static build has nowhere to write.
+          });
+      }
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [state.doc.clips, state.entries, state.session]);
 
   return useMemo(() => ({ state, dispatch }), [state]);
 }

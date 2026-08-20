@@ -1,0 +1,158 @@
+/**
+ * TypeScript mirror of the shapes `tennisproc` writes. Field names are
+ * snake_case because these describe JSON on disk, not app values — the
+ * boundary where they become camelCase is `etl.ts`.
+ *
+ * Enums are duplicated from `tennisproc/schema.py`, which owns them. Keep in
+ * step with STAGES / STROKES / VERDICTS / PLAYER_SLOTS / QUALITY there.
+ */
+
+/**
+ * The vocabularies as runtime arrays, not just types.
+ *
+ * `user-edit.json` can be hand-edited or written by another tool, so a value
+ * arriving on the read path is only *claimed* to be a member — the types above
+ * describe what `tennisproc` writes, not what the app might be handed. Write-back
+ * has to be able to check membership before echoing a value back
+ * (`sanitiseLabels` in `etl-write.ts`), and that needs the list at runtime.
+ *
+ * Each type is derived from its array so the two cannot drift apart here; they
+ * still have to be kept in step with STAGES / STROKES / VERDICTS / PLAYER_SLOTS
+ * / QUALITY in `tennisproc/schema.py`, which owns them.
+ */
+export const ETL_STAGES = ['setup', 'contact', 'finish', 'other'] as const;
+export type EtlStage = (typeof ETL_STAGES)[number];
+
+export const ETL_STROKES = [
+  'forehand',
+  'backhand',
+  'volley',
+  'serve',
+  'overhead',
+  'other',
+] as const;
+export type EtlStroke = (typeof ETL_STROKES)[number];
+
+export const ETL_VERDICTS = ['valid', 'false_positive', 'duplicate', 'unclear'] as const;
+export type EtlVerdict = (typeof ETL_VERDICTS)[number];
+
+export const ETL_PLAYER_SLOTS = ['left', 'right', 'near', 'far'] as const;
+export type EtlPlayerSlot = (typeof ETL_PLAYER_SLOTS)[number];
+
+export const ETL_QUALITY = [1, 2, 3, 4, 5] as const;
+export type EtlQuality = (typeof ETL_QUALITY)[number];
+
+export interface EtlFrame {
+  file: string;
+  source_ms: number;
+  clip_ms: number;
+  offset_contact_ms: number;
+  /** Null on frames outside the pose window — normal, not an error. */
+  pose_score: number | null;
+  stage: EtlStage | null;
+}
+
+export interface EtlLabels {
+  /** Optional in schema.py:165 — can be null. */
+  player_slot: EtlPlayerSlot | null;
+  player_name: string | null;
+  stroke: EtlStroke | null;
+  quality: EtlQuality | null;
+  verdict: EtlVerdict | null;
+  tags: string[];
+  notes: string | null;
+}
+
+export interface EtlTrim {
+  file: string;
+  source_start_ms: number;
+  source_end_ms: number;
+  encoded_start_ms: number;
+  width: number;
+  height: number;
+}
+
+export interface EtlDetection {
+  method: string;
+  contact_ms: number;
+  onset_peak: number | null;
+  verified: boolean;
+  reject_reason: string | null;
+}
+
+export interface EtlEdit {
+  by: string;
+  at: string;
+  /**
+   * `doc_hash` of the ETL output this review was made against, so `overlay()` can
+   * warn when the clip has been re-rendered since (`schema.py:419`).
+   *
+   * `null`, not absent, when there is nothing to record: `optional=True` in
+   * `_Check.field` means "null is allowed", and `field()` reports `missing`
+   * *before* it consults `optional` — so `against: null` validates and an absent
+   * `against` does not. Optional here in the TS sense only because a document
+   * read off disk may genuinely lack the key.
+   */
+  against?: string | null;
+  reviewed: boolean;
+}
+
+export interface EtlSwingDoc {
+  schema: 'tennis.swing/1';
+  id: string;
+  source: Record<string, unknown>;
+  trim: EtlTrim;
+  crop: Record<string, unknown>;
+  detection: EtlDetection;
+  labels: EtlLabels;
+  frames: EtlFrame[];
+  measurements: Record<string, unknown> | null;
+  edit: EtlEdit | null;
+}
+
+export interface EtlSwingRef {
+  id: string;
+  dir: string;
+  contact_ms: number;
+  duration_ms: number;
+  /** Optional in schema.py:356-357 — can be null. */
+  player_slot: EtlPlayerSlot | null;
+  frame_count: number;
+  verified: boolean;
+  reviewed: boolean;
+}
+
+export interface EtlSessionDoc {
+  schema: 'tennis.session/1';
+  source: { name: string; [k: string]: unknown };
+  settings: Record<string, unknown>;
+  detection: Record<string, unknown>;
+  players: Record<string, unknown>;
+  swings: EtlSwingRef[];
+}
+
+/** One swing as `/api/session` returns it: the doc, where it lives, and its hash. */
+export interface SwingEntry {
+  dir: string;
+  /** `doc_hash` of the ETL-owned content, for `edit.against`. */
+  hash: string;
+  /** The ETL's `metadata.json` with any `user-edit.json` overlaid. */
+  doc: EtlSwingDoc;
+  /**
+   * The previous `user-edit.json` exactly as it sits on disk, unmerged, or null
+   * when this swing has never been reviewed.
+   *
+   * Needed because `doc` is the MERGED view, and `overlay()` drops frames whose
+   * `source_ms` is absent from `metadata.json` *from that view* while
+   * deliberately leaving them on disk — so re-running the ETL at the original
+   * `--fps` recovers a human's tags. Write-back has to carry those entries
+   * through, and the merged doc no longer knows they exist.
+   */
+  edit: EtlSwingDoc | null;
+}
+
+/** The whole `/api/session` response. */
+export interface SessionPayload {
+  session: string;
+  swings: SwingEntry[];
+}
