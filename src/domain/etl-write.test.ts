@@ -757,10 +757,11 @@ describe('labels a foreign or hand-edited file can make invalid', () => {
 
   it('sanitises a NON-STRING stroke if one ever reaches the write path', () => {
     // Split from the case above because `adaptSwing` cannot hand this one over:
-    // `strokeToApp` calls `.charAt` and throws, so `loadEtlClips` catches and the
-    // whole session reads as absent. That read-path gap is recorded in the
-    // follow-ups rather than fixed here — but `toUserEdit` is also called
-    // directly (the middleware test does), so it still must not emit `stroke: 7`.
+    // `strokeToApp` calls `.charAt` and throws. That throw is deliberate and
+    // stays — `adaptSession` now catches it per swing, so the cost is that one
+    // swing rather than the whole session (see `adaptSession` in `etl.ts`). But
+    // `toUserEdit` is also called directly (the middleware test does), so it
+    // still must not emit `stroke: 7`.
     const doc = withRawLabels({ stroke: 7 });
     expect(() => adaptSwing(doc)).toThrow();
     const written = toUserEdit(adaptSwing(source), doc, 'sha256:abc', 'wc', AT);

@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import type { Cell } from '@/lib/selectors';
 import type { Clip, Grade, Phase, Stroke } from '@/domain/types';
+import type { SkippedSwing } from '@/domain/etl';
 import { ADD_PLAYER, STROKES, UNTAGGED_STROKE } from '@/domain/types';
 import { GRADE_ORDER, GRADES, PHASE_BADGE, strokeHue } from '@/domain/grades';
 import { Select, Tag, valueOf } from '@/lds';
@@ -33,6 +34,27 @@ export function Mono({
     >
       {children}
     </span>
+  );
+}
+
+/**
+ * "N swings could not be read", in the header beside the clip count.
+ *
+ * The visible half of per-swing read isolation. Skipping a malformed document
+ * instead of dropping the session is only an improvement if the reviewer is told
+ * the session is short — otherwise 41 of 42 swings still presents as complete,
+ * which is the same silence in a smaller size. The dirs and reasons go in the
+ * `title`: a reviewer cannot act on them, but whoever owns the tree can.
+ */
+export function SkippedBanner({ skipped }: { skipped: SkippedSwing[] }) {
+  if (skipped.length === 0) return null;
+  return (
+    <Mono
+      color="var(--yellow-300)"
+      title={skipped.map((s) => `${s.dir}: ${s.reason}`).join('\n')}
+    >
+      {skipped.length} {skipped.length === 1 ? 'swing' : 'swings'} could not be read
+    </Mono>
   );
 }
 

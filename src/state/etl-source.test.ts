@@ -35,7 +35,39 @@ describe('loadEtlClips', () => {
     expect(await loadEtlClips()).toBeNull();
   });
 
-  it('returns null when the payload has corrupt metadata', async () => {
+  it('reports nothing skipped for a wholly readable session', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(payload) }),
+    );
+    expect((await loadEtlClips())?.skipped).toEqual([]);
+  });
+
+  it('keeps the readable swings when one document is corrupt', async () => {
+    // The whole point of the fix: a session is not all-or-nothing. This used to
+    // return null, which is the "there is no out/ tree" signal — so the seed
+    // stood in for 41 perfectly good swings.
+    const mixed = {
+      session: 'IMG_0304',
+      swings: [
+        { dir: 'swings/swing_001', hash: 'sha256:abc', doc: { id: 'broken' } },
+        { dir: 'swings/swing_002', hash: 'sha256:def', doc: realSwing },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(mixed) }),
+    );
+    const result = await loadEtlClips();
+    expect(result?.clips).toHaveLength(1);
+    expect(result?.entries.map((e) => e.dir)).toEqual(['swings/swing_002']);
+    expect(result?.skipped.map((s) => s.dir)).toEqual(['swings/swing_001']);
+  });
+
+  it('does NOT fall back to the seed when every document is corrupt', async () => {
+    // A tree that exists but is entirely unreadable is a failure, not the
+    // absence of a tree. Returning null here would show seed data as though it
+    // were the session — the exact silence this fix removes.
     const corruptPayload = {
       session: 'IMG_0304',
       swings: [{ dir: 'swings/swing_001', hash: 'sha256:abc', doc: { id: 'broken' } }],
@@ -44,6 +76,9 @@ describe('loadEtlClips', () => {
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(corruptPayload) }),
     );
-    expect(await loadEtlClips()).toBeNull();
+    const result = await loadEtlClips();
+    expect(result).not.toBeNull();
+    expect(result?.clips).toEqual([]);
+    expect(result?.skipped).toHaveLength(1);
   });
 });

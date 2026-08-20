@@ -9,9 +9,11 @@ deferred rather than rushed in unreviewed. Ordered by what to fix first.
 destructive paths survived it, all now fixed. They are kept struck through where
 fixed, because the reasoning is what makes the current design legible — and
 because §1 in particular is the kind of bug that only appears when four
-individually-harmless mappings compose. §12 then fixed two of §11's five bullets —
+individually-harmless mappings compose. §12 then fixed two of §11's six bullets —
 the two that, like §1, let a write with no user action overwrite something only a
-human should change. §5, §6 and the remaining three §11 bullets are still open.
+human should change — and §13 fixed a third, the one where the READ path failed
+whole-session on a single bad document. §5, §6 and the remaining three §11 bullets
+are still open.
 
 ## ~~1. Write-back fires on page load and degrades existing labels~~ (blocking a second review pass)
 
@@ -286,15 +288,12 @@ The first and fourth bullets are now **fixed** (§12). The rest remain open.
   intended as a painted index rather than a contact sheet) rather than a bug fix,
   so deliberately untouched. It does falsify the earlier report's claim that the
   detail view lazily requests up to 49 stills.
-- **A malformed `metadata.json` makes a whole session read as absent.** Found
+- ~~**A malformed `metadata.json` makes a whole session read as absent.** Found
   while hardening the write path (§12). `strokeToApp` calls `.charAt` on
   `labels.stroke`, so a non-string value throws inside `adaptSwing`, and
   `loadEtlClips` catches everything and returns `null` — which is the "there is no
   tree" signal. One malformed swing therefore silently drops all 42, and the
-  reviewer sees the seed with no indication why. The write path is now hardened
-  against this class of value; the read path still fails whole-session rather than
-  per-swing. Fix as: adapt swings individually, skip the ones that throw, and
-  surface a count.
+  reviewer sees the seed with no indication why.~~ **FIXED** — see §13.
 
 ## 12. Attribution, staleness, and label validity (§11 bullets 1 and 4)
 
@@ -383,6 +382,45 @@ malformed `user-edit.json` planted: `by` and `against` survived a bare load,
 `tags` was repaired to `['reel']`, the reviewer's real `quality: 5` and notes were
 untouched, `session.validate_tree` reported **0 problems across 44 documents**,
 and the stale-edit warning still fired — the signal the fix exists to protect.
+
+## 13. One malformed swing no longer costs the whole session (§11 bullet 6)
+
+**FIXED.** `adaptSession` was a `.map`, so a throw anywhere in it was a throw for
+the entire payload — and the only thing that catches it, `loadEtlClips`, returns
+`null` for *every* failure. `null` is also the signal that means "there is no
+`out/` tree", which the caller answers by keeping the seed. So one swing with a
+non-string `stroke` (legal in no schema, but `overlay()` merges `labels` out of
+`user-edit.json` field by field with no validation) dropped all 42 real swings and
+put twelve fixture clips on screen in their place, silently.
+
+Two halves, and the second is the load-bearing one:
+
+- **Per-swing isolation.** `adaptSession` now loops, adapting each swing in its
+  own `try`, and returns `{ clips, entries, skipped }`. A bad document costs its
+  own swing. `entries` — the write-back loop's work list — is filtered to match,
+  so a swing with no clip can never become a PUT target. The entry's `dir` is read
+  *before* the `try`, because `swings` is JSON off disk and reporting the failure
+  must not throw a second time inside the catch.
+- **The count reaches the human.** `loadEtlClips` no longer conflates "unreadable"
+  with "absent": a tree whose documents all fail now returns zero clips and a
+  report, not `null`. `skipped` rides through `hydrate` into `State`, and
+  `SkippedBanner` renders "N swings could not be read" in the header, with each
+  `dir` and reason in its `title`. Without this half the fix would be a smaller
+  version of the same bug — 41 of 42 swings still reading as a complete session.
+
+`adaptSwing` still throws, deliberately. It is the boundary that knows what a
+document must look like; making it return a partial clip instead would push
+malformed values downstream into the write path, which is the class of defect §12
+was about.
+
+### Verified
+
+13 new vitest cases (202 passing, up from 189), each watched failing first — the
+banner's three against a renamed export, so the failure was the missing component
+and not the module-resolution error a worktree produces. Covered: a malformed
+swing between two good ones, a malformed swing first (media base must not shift
+with the index), an all-malformed session, `entries` filtering, and an entry that
+is not an object at all.
 
 ## Environmental limits, not code defects
 

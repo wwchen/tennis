@@ -645,3 +645,37 @@ describe('the dedup cache and the preserved edit block', () => {
     expect(second.edit?.against).toBe('sha256:CURRENT');
   });
 });
+
+describe('the unreadable-swing report reaches the UI', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('carries what the loader skipped into state, so it can be shown', async () => {
+    // Without this the count dies inside `loadEtlClips` and the reviewer reads a
+    // 41-swing session as though it were the whole 42.
+    const skipped = [{ dir: 'swings/swing_007', reason: 'stroke.charAt is not a function' }];
+    vi.spyOn(etlSource, 'loadEtlClips').mockResolvedValue({
+      clips: [adaptSwing(realSwing as unknown as EtlSwingDoc)],
+      entries: [],
+      session: 'IMG_0304',
+      skipped,
+    });
+    const { result } = renderHook(() => useShotLab());
+    await waitFor(() => expect(result.current.state.session).toBe('IMG_0304'));
+    expect(result.current.state.skipped).toEqual(skipped);
+  });
+
+  it('starts with nothing skipped, and a hydrate reporting none leaves it empty', () => {
+    expect(initialState().skipped).toEqual([]);
+    const hydrated = reducer(initialState(), {
+      type: 'hydrate',
+      clips: [],
+      entries: [],
+      session: 'IMG_0304',
+    });
+    expect(hydrated.skipped).toEqual([]);
+  });
+});

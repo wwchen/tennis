@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import realSwing from './__fixtures__/swing-real.json';
-import type { EtlSwingDoc } from './etl-types';
+import type { EtlSwingDoc, SessionPayload, SwingEntry } from './etl-types';
 import {
+  adaptSession,
   adaptSwing,
   isRejected,
   qualityToGrade,
@@ -194,5 +195,89 @@ describe('adaptSwing', () => {
       labels: { ...fixture.labels, player_name: null, player_slot: null },
     };
     expect(adaptSwing(noPlayer).player).toBe('unassigned');
+  });
+});
+
+describe('adaptSession isolates a swing it cannot read', () => {
+  /**
+   * The failure this covers: `adaptSwing` throws on a value the ETL's types
+   * forbid but `overlay()` will happily merge in from a hand-edited
+   * `user-edit.json`, and `loadEtlClips` used to catch that for the WHOLE
+   * payload — returning the same `null` that means "there is no out/ tree". One
+   * bad swing therefore dropped all 42 and the reviewer saw seed data with no
+   * indication anything had failed.
+   */
+  const entry = (dir: string, doc: unknown): SwingEntry => ({
+    dir,
+    hash: 'sha256:abc',
+    doc: doc as EtlSwingDoc,
+    edit: null,
+  });
+  const readable = (dir: string, id: string) => entry(dir, { ...fixture, id });
+  /** A non-string stroke: `strokeToApp` calls `.charAt`, so `adaptSwing` throws. */
+  const malformed = (dir: string) =>
+    entry(dir, { ...fixture, labels: { ...fixture.labels, stroke: 7 } });
+
+  const payloadOf = (swings: SwingEntry[]): SessionPayload => ({ session: 'IMG_0304', swings });
+
+  it('keeps every readable swing and names the one it could not read', () => {
+    const { clips, skipped } = adaptSession(
+      payloadOf([
+        readable('swings/swing_001', 'IMG_0304/swing_001'),
+        malformed('swings/swing_002'),
+        readable('swings/swing_003', 'IMG_0304/swing_003'),
+      ]),
+    );
+    expect(clips.map((c) => c.id)).toEqual(['IMG_0304/swing_001', 'IMG_0304/swing_003']);
+    expect(skipped.map((s) => s.dir)).toEqual(['swings/swing_002']);
+    // The adapter's own message, so a dev can tell which field was wrong.
+    expect(skipped[0].reason).not.toBe('');
+  });
+
+  it('drops a skipped swing from entries, so write-back can never target it', () => {
+    // `entries` is the write-back loop's work list. Leaving a swing there whose
+    // doc the app could not read would invite a PUT built from no clip at all.
+    const { entries } = adaptSession(
+      payloadOf([malformed('swings/swing_001'), readable('swings/swing_002', 'ok')]),
+    );
+    expect(entries.map((e) => e.dir)).toEqual(['swings/swing_002']);
+  });
+
+  it('reports an all-malformed session as zero clips rather than as no tree', () => {
+    // The distinction the bug erased: "nothing loaded because the tree is
+    // absent" is normal and silent; "nothing loaded because every document was
+    // unreadable" is a failure a human has to be told about.
+    const { clips, skipped } = adaptSession(
+      payloadOf([malformed('swings/swing_001'), malformed('swings/swing_002')]),
+    );
+    expect(clips).toEqual([]);
+    expect(skipped.map((s) => s.dir)).toEqual(['swings/swing_001', 'swings/swing_002']);
+  });
+
+  it('still points a surviving clip’s frames at its own media directory', () => {
+    // Skipping must not shift the media base: the URL is built per entry, not
+    // from an index into the original list.
+    const { clips } = adaptSession(
+      payloadOf([malformed('swings/swing_001'), readable('swings/swing_002', 'ok')]),
+    );
+    expect(clips[0].frames[0].imageUrl).toBe(
+      `/api/media/IMG_0304/swings/swing_002/${fixture.frames[0].file}`,
+    );
+  });
+
+  it('reports no skips for a wholly readable session', () => {
+    const { clips, skipped } = adaptSession(payloadOf([readable('swings/swing_001', 'ok')]));
+    expect(clips).toHaveLength(1);
+    expect(skipped).toEqual([]);
+  });
+
+  it('survives an entry that is not an object at all', () => {
+    // `/api/session` is JSON off disk, so `swings` can contain anything. Reading
+    // `dir` for the report must not throw a second time inside the catch.
+    const { clips, skipped } = adaptSession(
+      payloadOf([null as unknown as SwingEntry, readable('swings/swing_002', 'ok')]),
+    );
+    expect(clips.map((c) => c.id)).toEqual(['ok']);
+    expect(skipped).toHaveLength(1);
   });
 });
