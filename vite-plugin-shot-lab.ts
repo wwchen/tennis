@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -364,6 +368,50 @@ function resolveWriteTarget(
   return { target };
 }
 
+/**
+ * One media file, resolved and read through a SINGLE open descriptor.
+ *
+ * The route used to consult the path three times — `safeJoin`'s `existsSync` and
+ * `realpathSync`, then `statSync(full).isFile()`, then `readFileSync(full)` — so
+ * nothing tied the thing it checked to the thing it read. Between the stat and
+ * the read the name could be repointed at a directory, a device, or a file
+ * outside the tree, and the containment check had already passed
+ * (CodeQL js/file-system-race, high).
+ *
+ * Opening first closes that window: `fstatSync` and the read both address the
+ * inode the descriptor holds, whatever the path means by then. `O_NOFOLLOW` is
+ * safe *because* `safeJoin` returns a realpath — its final component is not a
+ * symlink, so refusing one can only mean the name was swapped after the check.
+ *
+ * The residual window is `safeJoin`'s own: containment is decided from a path,
+ * and only a path. That is inherent to checking a tree by name, and this
+ * middleware is dev-only.
+ */
+export function readMedia(root: string, rel: string): { body: Buffer; type: string } | null {
+  const full = safeJoin(root, rel);
+  if (full === null) return null;
+
+  let fd: number;
+  try {
+    fd = openSync(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    // Gone, unreadable, a dangling or freshly-planted symlink.
+    return null;
+  }
+  try {
+    // A directory opens happily on Linux; only the descriptor can say what it is.
+    if (!fstatSync(fd).isFile()) return null;
+    return {
+      body: readFileSync(fd),
+      type: MIME[extname(full).toLowerCase()] ?? 'application/octet-stream',
+    };
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export default function shotLab(): Plugin {
   return {
     name: 'shot-lab-etl',
@@ -388,14 +436,14 @@ export default function shotLab(): Plugin {
 
       server.middlewares.use('/api/media', (req, res) => {
         const rel = decodeURIComponent((req.url ?? '').split('?')[0]).replace(/^\/+/, '');
-        const full = safeJoin(OUT_ROOT(), rel);
-        if (full === null || !existsSync(full) || !statSync(full).isFile()) {
+        const media = readMedia(OUT_ROOT(), rel);
+        if (media === null) {
           res.statusCode = 404;
           res.end();
           return;
         }
-        res.setHeader('Content-Type', MIME[extname(full).toLowerCase()] ?? 'application/octet-stream');
-        res.end(readFileSync(full));
+        res.setHeader('Content-Type', media.type);
+        res.end(media.body);
       });
 
       server.middlewares.use('/api/swings', (req, res) => {

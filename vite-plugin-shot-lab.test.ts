@@ -4,7 +4,14 @@ import { join } from 'node:path';
 import { adaptSwing } from '@/domain/etl';
 import { toUserEdit } from '@/domain/etl-write';
 import type { EtlSwingDoc } from '@/domain/etl-types';
-import { docHash, overlayEdit, readSession, resolveWriteTarget, safeJoin } from './vite-plugin-shot-lab';
+import {
+  docHash,
+  overlayEdit,
+  readMedia,
+  readSession,
+  resolveWriteTarget,
+  safeJoin,
+} from './vite-plugin-shot-lab';
 
 const FIXTURE = join(process.cwd(), 'src', 'domain', '__fixtures__', 'swing-real.json');
 
@@ -499,5 +506,57 @@ describe('resolveWriteTarget', () => {
     expect(resolveWriteTarget(tmpDir, 'IMG_0304/swings/swing_001/user-edit')).toHaveProperty(
       'target',
     );
+  });
+});
+
+describe('readMedia', () => {
+  /**
+   * The media route consulted the path three times — `safeJoin`'s `existsSync`
+   * and `realpathSync`, then `statSync`, then `readFileSync` — so what it
+   * checked and what it read were not provably the same file
+   * (CodeQL js/file-system-race, high). `readMedia` opens once and validates the
+   * descriptor, so the stat and the read refer to one inode.
+   */
+  const tmpDir = join(process.cwd(), '.test-tmp-media');
+  const root = join(tmpDir, 'out');
+
+  beforeEach(() => {
+    mkdirSync(join(root, 'IMG_0304', 'frames'), { recursive: true });
+    writeFileSync(join(root, 'IMG_0304', 'frames', 'frame_0001.jpg'), 'jpeg-bytes');
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('serves a real file with the extension’s content type', () => {
+    const got = readMedia(root, 'IMG_0304/frames/frame_0001.jpg');
+    expect(got).not.toBeNull();
+    expect(got?.body.toString()).toBe('jpeg-bytes');
+    expect(got?.type).toBe('image/jpeg');
+  });
+
+  it('falls back to octet-stream for an unknown extension', () => {
+    writeFileSync(join(root, 'IMG_0304', 'notes.xyz'), 'x');
+    expect(readMedia(root, 'IMG_0304/notes.xyz')?.type).toBe('application/octet-stream');
+  });
+
+  it('returns null for a file that is not there', () => {
+    expect(readMedia(root, 'IMG_0304/frames/nope.jpg')).toBeNull();
+  });
+
+  it('returns null for a directory, rather than trying to read it', () => {
+    expect(readMedia(root, 'IMG_0304/frames')).toBeNull();
+  });
+
+  it('returns null for a path escaping the root', () => {
+    writeFileSync(join(tmpDir, 'outside.jpg'), 'secret');
+    expect(readMedia(root, '../outside.jpg')).toBeNull();
+  });
+
+  it('returns null for a symlink pointing outside the root', () => {
+    writeFileSync(join(tmpDir, 'outside.jpg'), 'secret');
+    symlinkSync(join(tmpDir, 'outside.jpg'), join(root, 'IMG_0304', 'escape.jpg'));
+    expect(readMedia(root, 'IMG_0304/escape.jpg')).toBeNull();
   });
 });
