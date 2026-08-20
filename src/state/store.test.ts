@@ -34,6 +34,22 @@ describe('reducer', () => {
     expect(clip(s, 'SL-001').grade).toBe('work');
   });
 
+  it('marks an explicitly cleared rating as triaged', () => {
+    const base = initialState();
+    const state: State = {
+      ...base,
+      doc: {
+        ...base.doc,
+        clips: base.doc.clips.map((c) =>
+          c.id === 'SL-001' ? { ...c, grade: 'good', triaged: false } : c,
+        ),
+      },
+    };
+    const cleared = run(state, { type: 'clearGrade', clip: 'SL-001' });
+    expect(clip(cleared, 'SL-001').grade).toBeNull();
+    expect(clip(cleared, 'SL-001').triaged).toBe(true);
+  });
+
   it('removes and restores a clip through the undo stack', () => {
     let s = initialState();
     expect(s.doc.removedStack).toEqual(['SL-011']);

@@ -4,7 +4,14 @@ import { join } from 'node:path';
 import { adaptSwing } from '@/domain/etl';
 import { toUserEdit } from '@/domain/etl-write';
 import type { EtlSwingDoc } from '@/domain/etl-types';
-import { docHash, overlayEdit, readSession, resolveWriteTarget, safeJoin } from './vite-plugin-shot-lab';
+import {
+  docHash,
+  isWritableSwingDoc,
+  overlayEdit,
+  readSession,
+  resolveWriteTarget,
+  safeJoin,
+} from './vite-plugin-shot-lab';
 
 const FIXTURE = join(process.cwd(), 'src', 'domain', '__fixtures__', 'swing-real.json');
 
@@ -499,5 +506,25 @@ describe('resolveWriteTarget', () => {
     expect(resolveWriteTarget(tmpDir, 'IMG_0304/swings/swing_001/user-edit')).toHaveProperty(
       'target',
     );
+  });
+});
+
+describe('isWritableSwingDoc', () => {
+  it('accepts the real reviewed fixture', () => {
+    const doc = JSON.parse(readFileSync(FIXTURE, 'utf-8')) as Record<string, unknown>;
+    doc.edit = { by: 'reviewer', at: '2026-08-19T00:00:00Z', reviewed: true };
+    expect(isWritableSwingDoc(doc)).toBe(true);
+  });
+
+  it('rejects malformed labels before they can poison hydration', () => {
+    const doc = JSON.parse(readFileSync(FIXTURE, 'utf-8')) as Record<string, unknown>;
+    doc.edit = { by: 'reviewer', at: '2026-08-19T00:00:00Z', reviewed: true };
+    (doc.labels as Record<string, unknown>).stroke = 42;
+    expect(isWritableSwingDoc(doc)).toBe(false);
+  });
+
+  it('rejects a document without the review stamp', () => {
+    const doc = JSON.parse(readFileSync(FIXTURE, 'utf-8')) as Record<string, unknown>;
+    expect(isWritableSwingDoc(doc)).toBe(false);
   });
 });

@@ -191,7 +191,10 @@ export function reducer(state: State, action: Action): State {
         })),
       };
     case 'clearGrade':
-      return { ...state, doc: patchClip(doc, action.clip, (c) => ({ ...c, grade: null })) };
+      return {
+        ...state,
+        doc: patchClip(doc, action.clip, (c) => ({ ...c, grade: null, triaged: true })),
+      };
 
     case 'setClipStroke':
       return {

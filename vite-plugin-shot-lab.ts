@@ -43,8 +43,84 @@ const MIME: Record<string, string> = {
 
 type Json = Record<string, unknown>;
 
+const STAGES = new Set(['setup', 'contact', 'finish', 'other']);
+const STROKES = new Set(['forehand', 'backhand', 'volley', 'serve', 'overhead', 'other']);
+const VERDICTS = new Set(['valid', 'false_positive', 'duplicate', 'unclear']);
+const PLAYER_SLOTS = new Set(['left', 'right', 'near', 'far']);
+
 const isObject = (value: unknown): value is Json =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isNullableString = (value: unknown): value is string | null =>
+  value === null || typeof value === 'string';
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+/** Runtime guard for the document accepted by the write-only dev endpoint. */
+function isWritableSwingDoc(value: unknown): value is Json {
+  if (!isObject(value) || value.schema !== 'tennis.swing/1' || typeof value.id !== 'string') {
+    return false;
+  }
+  for (const block of ['source', 'trim', 'crop', 'detection'] as const) {
+    if (!isObject(value[block])) return false;
+  }
+  if (value.measurements !== null && !isObject(value.measurements)) return false;
+
+  const labels = value.labels;
+  if (!isObject(labels)) return false;
+  if (
+    !(labels.player_slot === null ||
+      (typeof labels.player_slot === 'string' && PLAYER_SLOTS.has(labels.player_slot)))
+  )
+    return false;
+  if (!isNullableString(labels.player_name)) return false;
+  if (
+    !(labels.stroke === null ||
+      (typeof labels.stroke === 'string' && STROKES.has(labels.stroke)))
+  )
+    return false;
+  const quality = labels.quality;
+  if (
+    !(
+      quality === null ||
+      (typeof quality === 'number' &&
+        Number.isInteger(quality) &&
+        quality >= 1 &&
+        quality <= 5)
+    )
+  )
+    return false;
+  if (
+    !(labels.verdict === null ||
+      (typeof labels.verdict === 'string' && VERDICTS.has(labels.verdict)))
+  )
+    return false;
+  if (!Array.isArray(labels.tags) || !labels.tags.every((tag) => typeof tag === 'string')) return false;
+  if (!isNullableString(labels.notes)) return false;
+
+  if (!Array.isArray(value.frames) || value.frames.length === 0) return false;
+  if (!value.frames.every((frame) => {
+    if (!isObject(frame)) return false;
+    return (
+      isFiniteNumber(frame.source_ms) &&
+      isFiniteNumber(frame.clip_ms) &&
+      isFiniteNumber(frame.offset_contact_ms) &&
+      typeof frame.file === 'string' &&
+      (frame.pose_score === null || isFiniteNumber(frame.pose_score)) &&
+      (frame.stage === null || (typeof frame.stage === 'string' && STAGES.has(frame.stage)))
+    );
+  })) return false;
+
+  const edit = value.edit;
+  return (
+    isObject(edit) &&
+    typeof edit.by === 'string' &&
+    typeof edit.at === 'string' &&
+    (edit.against === undefined || typeof edit.against === 'string') &&
+    typeof edit.reviewed === 'boolean'
+  );
+}
 
 /**
  * Resolves a request path inside the output root, or returns null.
@@ -421,6 +497,11 @@ export default function shotLab(): Plugin {
         req.on('end', () => {
           try {
             const doc = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as unknown;
+            if (!isWritableSwingDoc(doc)) {
+              res.statusCode = 400;
+              res.end('{"error":"invalid swing document"}');
+              return;
+            }
             writeFileSync(target, JSON.stringify(doc, null, 1) + '\n');
             res.statusCode = 204;
             res.end();
@@ -434,4 +515,12 @@ export default function shotLab(): Plugin {
   };
 }
 
-export { docHash, overlayEdit, readSession, resolveWriteTarget, safeJoin, WRITABLE };
+export {
+  docHash,
+  isWritableSwingDoc,
+  overlayEdit,
+  readSession,
+  resolveWriteTarget,
+  safeJoin,
+  WRITABLE,
+};
