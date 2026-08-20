@@ -675,8 +675,10 @@ def _session_doc(swing_metadata):
         "schema": schema.SESSION_SCHEMA,
         "source": swing_metadata["source"],
         "settings": {},
-        "detection": {"candidates": 1, "verified": 1, "rejected": 0,
-                      "reject_histogram": {}},
+        # `rendered` is separate from `verified` — it counts what --limit
+        # actually wrote. This tree has the one swing, verified and written.
+        "detection": {"candidates": 1, "verified": 1, "rendered": 1,
+                      "rejected": 0, "reject_histogram": {}},
         "players": {"mode": "side", "count": 1,
                     "zones": [{"slot": swing_metadata["labels"]["player_slot"],
                                "swings": 1}]},
