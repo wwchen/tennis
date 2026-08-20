@@ -1,5 +1,21 @@
-import type { EtlFrame, EtlStage, EtlStroke, EtlSwingDoc, EtlVerdict } from './etl-types';
-import { isRejected, playerOf, qualityToGrade, stageToPhase } from './etl';
+import type {
+  EtlEdit,
+  EtlFrame,
+  EtlLabels,
+  EtlPlayerSlot,
+  EtlStage,
+  EtlStroke,
+  EtlSwingDoc,
+  EtlVerdict,
+} from './etl-types';
+import {
+  ETL_PLAYER_SLOTS,
+  ETL_QUALITY,
+  ETL_STAGES,
+  ETL_STROKES,
+  ETL_VERDICTS,
+} from './etl-types';
+import { isRejected, playerOf, qualityToGrade, stageToPhase, strokeToApp } from './etl';
 import type { Clip, Grade, Phase } from './types';
 
 /**
@@ -23,6 +39,10 @@ import type { Clip, Grade, Phase } from './types';
  * deliberately: it needs no extra field on `Clip`, keeps the comparison against
  * what is on disk *now* rather than at page load, and cannot end up persisted
  * into localStorage as if it were coaching data.
+ *
+ * `by` and `at` describe *this* write; `hash` is the `doc_hash` of the ETL
+ * metadata the clip was read from, and becomes `edit.against` only when the
+ * write records real human work — see `editFor`.
  */
 export function toUserEdit(
   clip: Clip,
@@ -46,20 +66,184 @@ export function toUserEdit(
     (a, b) => a.source_ms - b.source_ms,
   );
 
+  // Every human-authorable field, projected. Each `*For` below answers the same
+  // question — "does the clip disagree with what the read adapter would have
+  // derived from `source`?" — so this object IS the record of what changed, and
+  // `changedFromSource` reads the answer off it rather than tracking it twice.
+  const projected: EtlLabels = {
+    ...source.labels,
+    player_name: playerNameFor(clip, source),
+    stroke: strokeFor(clip, source),
+    quality: qualityFor(clip, source),
+    // A human calling a clip bad is a verdict; `detection` stays the ETL's.
+    verdict: verdictFor(clip, source),
+    notes: notesFor(clip, source),
+  };
+
   return {
     ...source,
-    labels: {
-      ...source.labels,
-      player_name: playerNameFor(clip, source),
-      stroke: strokeToEtl(clip.stroke),
-      quality: qualityFor(clip, source),
-      // A human calling a clip bad is a verdict; `detection` stays the ETL's.
-      verdict: verdictFor(clip, source),
-      notes: notesFor(clip, source),
-    },
+    // Sanitised on the way out, AFTER `changedFromSource` has read the raw
+    // projection: repairing a malformed file is not a review, so it must not
+    // register as a human edit and re-stamp `edit.by`.
+    labels: sanitiseLabels(projected),
     frames,
-    edit: { by, at, against: hash, reviewed: true },
+    edit: editFor(changedFromSource(clip, projected, source), prevEdit, hash, by, at),
   };
+}
+
+/**
+ * The `edit` block to write.
+ *
+ * `by` is attribution and `against` is a staleness marker, and neither belongs
+ * to this app unless this app's user actually did something:
+ *
+ *   - **The human changed nothing.** The write is the load-time write-back
+ *     firing on a document some other reviewer or tool authored. Stamping `by`
+ *     with the current reviewer launders the attribution, and stamping `against`
+ *     with the current hash erases the one signal that says the clip was
+ *     re-rendered since it was reviewed — `overlay()` warns "stale edit:
+ *     reviewed against X but metadata is Y" (`schema.py:419`) precisely so a
+ *     reviewer learns that. Overwriting it makes a genuinely stale review
+ *     silently claim to be current, which is worse than the stale review.
+ *     So both are carried through from the previous file verbatim.
+ *
+ *   - **The human changed something.** The labels on disk are now this
+ *     reviewer's work, reviewed against the metadata they were looking at, so
+ *     `by` and `against` are this write's own.
+ *
+ * `at` is always this write's timestamp either way: it records when the file was
+ * written, and it is the one field the fixed-point property exempts.
+ *
+ * `reviewed` is always true — the write-back effect only fires for a triaged
+ * clip, and `adaptSwing` derives `triaged` from `reviewed === true`.
+ */
+function editFor(
+  changed: boolean,
+  prevEdit: EtlSwingDoc | null,
+  hash: string,
+  by: string,
+  at: string,
+): EtlEdit {
+  const prior = prevEdit?.edit ?? null;
+  // A previous `by` that is not a string is not attribution, and echoing it
+  // would emit a document `_check_edit` rejects.
+  if (changed || prior === null || typeof prior.by !== 'string') {
+    return { by, at, against: hash, reviewed: true };
+  }
+  // `optional=True` in `_Check.field` means "null is allowed", NOT "the key may
+  // be absent" — `field()` reports `missing` before it ever looks at `optional`.
+  // So `against: null` is valid and an ABSENT `against` is not: the key is always
+  // written, carrying the previous value or an explicit null when there was none.
+  return {
+    by: prior.by,
+    at,
+    against: typeof prior.against === 'string' ? prior.against : null,
+    reviewed: true,
+  };
+}
+
+/**
+ * Whether this projection records a human changing something.
+ *
+ * Derived from the projection rather than from a flag threaded down from the UI.
+ * Each `*For` helper below already decides, field by field, whether the clip
+ * disagrees with what the read adapter would have derived from `source` — that is
+ * the same question — and each returns `source`'s own value verbatim when it does
+ * not. So "the human changed nothing" is exactly "every projected field is
+ * identical to the one it came from", and that identity is what the fixed-point
+ * tests already pin. A separate flag would be a second, independent answer to the
+ * same question, free to drift: the projection preserving a label while the flag
+ * claims a human edited it, or the reverse.
+ *
+ * Frames are compared through `stageToPhase` — `adaptSwing`'s own read — rather
+ * than against the written stage, because a *sanitised* stage differs from the
+ * source without any human involvement, and repair is not review.
+ *
+ * `tags` is excluded for the same reason: nothing in the app can edit it, so a
+ * difference there is only `sanitiseLabels` at work. `player_slot` is excluded
+ * because it is not human-authorable at all.
+ *
+ * Frames re-attached by `orphanedFrames` are excluded too — carrying an entry
+ * through is preservation, not authorship.
+ */
+function changedFromSource(clip: Clip, projected: EtlLabels, source: EtlSwingDoc): boolean {
+  const before = source.labels;
+  if (
+    projected.player_name !== before.player_name ||
+    projected.stroke !== before.stroke ||
+    projected.quality !== before.quality ||
+    projected.verdict !== before.verdict ||
+    projected.notes !== before.notes
+  ) {
+    return true;
+  }
+  // Joined on source_ms, never index: a clip restored from an older localStorage
+  // doc need not carry every frame `source` has.
+  const stageBySourceMs = new Map(source.frames.map((f) => [f.source_ms, f.stage]));
+  return clip.frames.some(
+    (f) =>
+      stageBySourceMs.has(f.sourceMs) &&
+      f.phase !== stageToPhase(stageBySourceMs.get(f.sourceMs) ?? null),
+  );
+}
+
+/**
+ * The `labels` block, forced into something `validate_swing` accepts.
+ *
+ * Everything above answers "what did the human mean"; this answers the separate
+ * question "is what we are about to write even legal". They are separate because
+ * `source` is not trustworthy: it came out of `overlay()`, which lifts `labels`
+ * out of `user-edit.json` field by field with **no validation at all**
+ * (`schema.py:424`), and the app spreads `...source.labels` so anything it did not
+ * project is echoed straight back. A hand-edited or foreign file could therefore
+ * make `toUserEdit` emit a document the ETL's own validator rejects — the app
+ * writing a file the pipeline cannot read.
+ *
+ * A value outside its vocabulary becomes `null`, which is what "the ETL has no
+ * label here" already means and the one value every label field accepts. It is not
+ * coerced towards a legal member: `stroke: "Backhand"` might plausibly mean
+ * `backhand`, but `quality: 9` and `verdict: "nope"` have no defensible reading,
+ * and inventing one records a call no human made — the same class of bug as §1.
+ */
+function sanitiseLabels(labels: EtlLabels): EtlLabels {
+  return {
+    ...labels,
+    player_slot: isMember(ETL_PLAYER_SLOTS, labels.player_slot)
+      ? labels.player_slot
+      : (null as EtlPlayerSlot | null),
+    player_name: typeof labels.player_name === 'string' ? labels.player_name : null,
+    stroke: isMember(ETL_STROKES, labels.stroke) ? labels.stroke : null,
+    // `_is` rejects a bool for an integer field and a float is not an `int`, so
+    // membership in QUALITY is the whole check — `true` and `4.0` both fail it.
+    quality: isMember(ETL_QUALITY, labels.quality) ? labels.quality : null,
+    verdict: isMember(ETL_VERDICTS, labels.verdict) ? labels.verdict : null,
+    tags: sanitiseTags(labels.tags),
+    notes: typeof labels.notes === 'string' ? labels.notes : null,
+  };
+}
+
+/**
+ * `tags`, as a string array.
+ *
+ * `schema.py:172` requires a list and `schema.py:178` requires every member to be
+ * a string, so `tags: "backhand"` and `tags: [1, null]` both make the document
+ * invalid. Nothing in this app can author a tag, so every value here is something
+ * another tool or a hand edit put on disk.
+ *
+ * A non-string entry is DROPPED rather than coerced. `String(1)` invents the tag
+ * `"1"`, which nobody wrote and which then wins in `overlay()` (a non-empty list
+ * replaces the metadata's) — a fabricated label is worse than a missing one. The
+ * valid entries around it are kept, because they are real human work and the
+ * whole point is to lose as little of it as possible.
+ *
+ * A non-array `tags` (or an absent one) becomes `[]`: there is no honest way to
+ * read `"backhand"` as a list, and `[]` is what the ETL writes for "no tags".
+ * Note `[]` is also the one value `overlay()` treats as "no opinion" (`if value:`),
+ * so it cannot erase a `tags` list `metadata.json` carries.
+ */
+function sanitiseTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  return tags.filter((t): t is string => typeof t === 'string');
 }
 
 /**
@@ -95,13 +279,43 @@ function orphanedFrames(source: EtlSwingDoc, prevEdit: EtlSwingDoc | null): EtlF
     (f) =>
       typeof f?.source_ms === 'number' &&
       !known.has(f.source_ms) &&
-      f.stage !== null &&
-      f.stage !== undefined,
+      // A stage outside STAGES is not human work worth carrying, and echoing it
+      // would emit a document `schema.py:207` rejects. Same rule as `stageFor`.
+      isMember(ETL_STAGES, f.stage),
   );
 }
 
-const strokeToEtl = (s: Clip['stroke']): EtlStroke | null =>
-  s === null ? null : (s.toLowerCase() as EtlStroke);
+/**
+ * Whether a value read off a `user-edit.json` is really a member of one of the
+ * ETL's vocabularies.
+ *
+ * `EtlSwingDoc` describes what `tennisproc` writes. What actually arrives on the
+ * read path has been through `overlay()`, which pulls `labels` and `frames[].stage`
+ * out of `user-edit.json` field by field with no validation at all — so a value
+ * the types call an `EtlStroke` may be any JSON at all, and the cast has to be
+ * checked before it is echoed back.
+ */
+const isMember = <T extends string | number>(vocab: readonly T[], value: unknown): value is T =>
+  vocab.includes(value as T);
+
+/**
+ * The stroke to write back.
+ *
+ * Same rule as every other field here: a stroke the clip still agrees with is
+ * written back verbatim rather than round-tripped through case folding. Without
+ * that, a `Stroke` whose casing does not survive `strokeToApp` → `toLowerCase`
+ * exactly reads as an edit the human never made, which under `editFor` would
+ * launder `edit.by` on a bare load.
+ *
+ * `strokeToApp` calls `.charAt`, so it is only reached for a string — a
+ * non-string `stroke` on disk cannot be "unchanged" in any useful sense, and
+ * `sanitiseLabels` nulls it on the way out regardless.
+ */
+const strokeFor = (clip: Clip, source: EtlSwingDoc): EtlStroke | null => {
+  const before = source.labels.stroke;
+  if (typeof before === 'string' && clip.stroke === strokeToApp(before)) return before;
+  return clip.stroke === null ? null : (clip.stroke.toLowerCase() as EtlStroke);
+};
 
 /** Inverse of `qualityToGrade`, and lossy the same way: `work` writes 2. */
 const gradeToQuality = (g: Grade | null): 2 | 3 | 4 | null => {
@@ -155,8 +369,14 @@ const verdictFor = (clip: Clip, source: EtlSwingDoc): EtlVerdict | null => {
  * else here: if the clip still agrees with the source, the source's own stage is
  * written rather than the folded value.
  */
-const stageFor = (phase: Phase | null, stage: EtlStage | null): EtlStage | null =>
-  phase === stageToPhase(stage) ? stage : phase;
+const stageFor = (phase: Phase | null, stage: EtlStage | null): EtlStage | null => {
+  // A stage outside STAGES cannot be "the source's own stage, preserved" — it is
+  // a value `schema.py:207` rejects, so echoing it would emit a document the ETL
+  // cannot read. `stageToPhase` only folds `null` and `other`, so `'wobble'`
+  // reaches the clip as a phase, compares equal, and used to round-trip.
+  if (!isMember(ETL_STAGES, stage)) return isMember(ETL_STAGES, phase) ? phase : null;
+  return phase === stageToPhase(stage) ? stage : phase;
+};
 
 /**
  * The note to write back.

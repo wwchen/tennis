@@ -528,3 +528,326 @@ describe('load-only round trip is a fixed point', () => {
     expect({ ...written, edit: null }).toEqual({ ...source, edit: null });
   });
 });
+
+describe('edit.by and edit.against on a file this reviewer did not author', () => {
+  /**
+   * `by` is attribution and `against` is a staleness marker. Neither belongs to
+   * this app unless this app's user actually did something.
+   *
+   * `against` records WHICH ETL OUTPUT was reviewed, so `overlay()` can warn
+   * "stale edit: reviewed against X but metadata is Y" (`schema.py:419`) — that is
+   * how a reviewer learns the clip was re-rendered since they looked at it.
+   * Stamping it with the current hash on a bare load erases exactly that signal:
+   * a genuinely stale review silently starts claiming to be current.
+   */
+  const foreign = (): EtlSwingDoc => ({
+    ...source,
+    labels: { ...source.labels, stroke: 'backhand', quality: 5, notes: 'wrist lag' },
+    // Reviewed against an OLDER render than the one on disk now.
+    edit: { by: 'coach-ana', at: '2026-08-10T09:00:00Z', against: 'sha256:OLD', reviewed: true },
+  });
+
+  it('preserves another reviewer’s name on a load-only write', () => {
+    const disk = foreign();
+    const written = toUserEdit(adaptSwing(disk), disk, 'sha256:CURRENT', 'reviewer', AT, disk);
+    expect(written.edit?.by).toBe('coach-ana');
+  });
+
+  it('preserves the stale-review marker rather than laundering it to current', () => {
+    const disk = foreign();
+    const written = toUserEdit(adaptSwing(disk), disk, 'sha256:CURRENT', 'reviewer', AT, disk);
+    // The whole point: `overlay()` must still be able to warn.
+    expect(written.edit?.against).toBe('sha256:OLD');
+    expect(written.edit?.against).not.toBe('sha256:CURRENT');
+  });
+
+  it('still stamps `at`, the one field the fixed point exempts', () => {
+    const disk = foreign();
+    const written = toUserEdit(adaptSwing(disk), disk, 'sha256:CURRENT', 'reviewer', AT, disk);
+    expect(written.edit).toEqual({
+      by: 'coach-ana',
+      at: AT,
+      against: 'sha256:OLD',
+      reviewed: true,
+    });
+  });
+
+  it('takes the write as its own once the human changes a label', () => {
+    // Now the labels on disk ARE this reviewer's work, reviewed against the
+    // metadata they were looking at.
+    const disk = foreign();
+    const edited = { ...adaptSwing(disk), note: 'shanked it' };
+    const written = toUserEdit(edited, disk, 'sha256:CURRENT', 'reviewer', AT, disk);
+    expect(written.edit).toEqual({
+      by: 'reviewer',
+      at: AT,
+      against: 'sha256:CURRENT',
+      reviewed: true,
+    });
+  });
+
+  it('takes the write as its own for a stage tag, not just a label', () => {
+    const disk = foreign();
+    const clip = adaptSwing(disk);
+    clip.frames[2] = { ...clip.frames[2], phase: 'setup' };
+    const written = toUserEdit(clip, disk, 'sha256:CURRENT', 'reviewer', AT, disk);
+    expect(written.edit?.by).toBe('reviewer');
+    expect(written.edit?.against).toBe('sha256:CURRENT');
+  });
+
+  it('takes the write as its own for a rejection, which sets no label directly', () => {
+    const disk = foreign();
+    const removed = { ...adaptSwing(disk), rejected: true };
+    const written = toUserEdit(removed, disk, 'sha256:CURRENT', 'reviewer', AT, disk);
+    expect(written.labels.verdict).toBe('false_positive');
+    expect(written.edit?.by).toBe('reviewer');
+    expect(written.edit?.against).toBe('sha256:CURRENT');
+  });
+
+  it('claims a first review of a never-reviewed swing', () => {
+    // No previous file, so there is no attribution to preserve. `triaged` came
+    // from somewhere other than an `edit` block, so this write is the first one.
+    const clip = { ...adaptSwing(source), grade: 'good' as const };
+    const written = toUserEdit(clip, source, 'sha256:CURRENT', 'reviewer', AT, null);
+    expect(written.edit).toEqual({
+      by: 'reviewer',
+      at: AT,
+      against: 'sha256:CURRENT',
+      reviewed: true,
+    });
+  });
+
+  it('writes `against: null`, not an absent key, when the previous file had none', () => {
+    // `optional=True` in `_Check.field` means "null is allowed", NOT "the key may
+    // be absent": `field()` reports `missing` before it ever consults `optional`.
+    // So `against: null` validates and an ABSENT `against` does not — pinned on
+    // the Python side by `test_an_absent_against_is_missing_but_null_is_legal`.
+    // The value is still not invented; it is just recorded as an explicit null.
+    const noAgainst: EtlSwingDoc = {
+      ...source,
+      labels: { ...source.labels, stroke: 'serve' },
+      edit: { by: 'some-tool', at: '2026-08-10T09:00:00Z', reviewed: true },
+    };
+    const written = toUserEdit(
+      adaptSwing(noAgainst),
+      noAgainst,
+      'sha256:CURRENT',
+      'reviewer',
+      AT,
+      noAgainst,
+    );
+    expect(written.edit).toEqual({ by: 'some-tool', at: AT, against: null, reviewed: true });
+    // The key is present — that is the part `validate_swing` insists on.
+    expect('against' in (written.edit ?? {})).toBe(true);
+    // And crucially NOT the current hash, which would fake a fresh review.
+    expect(written.edit?.against).not.toBe('sha256:CURRENT');
+  });
+
+  it('does not echo a non-string `by`, which would emit an invalid document', () => {
+    // `_check_edit` requires a string. A hand-edited file is not a reason to
+    // write one the ETL cannot read.
+    const junk = {
+      ...source,
+      edit: { by: 42, at: '2026-08-10T09:00:00Z', against: 'sha256:OLD', reviewed: true },
+    } as unknown as EtlSwingDoc;
+    const written = toUserEdit(adaptSwing(junk), junk, 'sha256:CURRENT', 'reviewer', AT, junk);
+    expect(written.edit?.by).toBe('reviewer');
+    expect(written.edit?.against).toBe('sha256:CURRENT');
+  });
+
+  it('preserves through a REPEATED load-only write, not just the first', () => {
+    // The property that matters over a whole review session: `against` must not
+    // decay to the current hash after two or three passes.
+    const disk = foreign();
+    let doc = disk;
+    for (let i = 0; i < 3; i++) {
+      doc = toUserEdit(adaptSwing(doc), doc, 'sha256:CURRENT', 'reviewer', AT, doc);
+    }
+    expect(doc.edit?.by).toBe('coach-ana');
+    expect(doc.edit?.against).toBe('sha256:OLD');
+  });
+});
+
+describe('labels a foreign or hand-edited file can make invalid', () => {
+  /**
+   * `toUserEdit` must never emit a document `validate_swing` rejects — otherwise
+   * the app writes a file its own pipeline cannot read.
+   *
+   * The exposure is `...source.labels`. `source` came out of `overlay()`, which
+   * lifts `labels` out of `user-edit.json` field by field with NO validation
+   * (`schema.py:424`), so any field the projection does not compute is echoed
+   * straight back — whatever it is.
+   *
+   * The Python half of this contract is `TestSanitisedLabels` in
+   * `tests/test_app_writeback.py`, which runs the real `schema.validate_swing`
+   * over these documents. `schema.py` is the judge; these pin the projection.
+   */
+  // The cast is the point: these are values `EtlLabels` says cannot occur, and
+  // `overlay()` will hand them over anyway.
+  const withRawLabels = (labels: Record<string, unknown>): EtlSwingDoc => ({
+    ...source,
+    labels: { ...source.labels, ...(labels as Partial<EtlSwingDoc['labels']>) },
+  });
+
+  const writtenFrom = (labels: Record<string, unknown>) => {
+    const doc = withRawLabels(labels);
+    return toUserEdit(adaptSwing(doc), doc, 'sha256:abc', 'wc', AT);
+  };
+
+  it('drops a non-string tag and keeps the valid ones around it', () => {
+    // schema.py:178 requires every tag be a string. Dropping rather than
+    // coercing: String(1) invents the tag "1" that nobody wrote, and a non-empty
+    // list then WINS in overlay() — a fabricated label is worse than a missing one.
+    expect(writtenFrom({ tags: ['reel', 1, null, 'drill', true] }).labels.tags).toEqual([
+      'reel',
+      'drill',
+    ]);
+  });
+
+  it('turns a `tags` that is not a list at all into an empty list', () => {
+    // schema.py:172 requires a list. There is no honest way to read the string
+    // "backhand" as one — and `[]` is the one value overlay() treats as "no
+    // opinion" (`if value:`), so it cannot erase a list metadata.json carries.
+    expect(writtenFrom({ tags: 'backhand' }).labels.tags).toEqual([]);
+    expect(writtenFrom({ tags: 42 }).labels.tags).toEqual([]);
+    expect(writtenFrom({ tags: null }).labels.tags).toEqual([]);
+    expect(writtenFrom({ tags: { reel: true } }).labels.tags).toEqual([]);
+  });
+
+  it('emits a list when `tags` is absent entirely', () => {
+    // schema.py:171 reports a MISSING tags key, so echoing the absence is also
+    // invalid. `{...source.labels}` cannot conjure a key that was never there.
+    const doc: EtlSwingDoc = { ...source, labels: { ...source.labels } };
+    delete (doc.labels as unknown as Record<string, unknown>).tags;
+    const written = toUserEdit(adaptSwing(doc), doc, 'sha256:abc', 'wc', AT);
+    expect(written.labels.tags).toEqual([]);
+    expect('tags' in written.labels).toBe(true);
+  });
+
+  it('leaves a legitimate tags list exactly as it found it', () => {
+    // Nothing in the app can author a tag, so sanitising must not become an
+    // excuse to rewrite one.
+    const tags = ['reel', 'drill', ''];
+    expect(writtenFrom({ tags }).labels.tags).toEqual(tags);
+  });
+
+  it('does not count repairing `tags` as a human edit', () => {
+    // Otherwise the repair itself would launder `edit.by` — the Fix 1 bug,
+    // reintroduced through the Fix 2 code path.
+    const doc = withRawLabels({ tags: [1, null] });
+    const prev: EtlSwingDoc = {
+      ...doc,
+      edit: { by: 'coach-ana', at: '2026-08-10T09:00:00Z', against: 'sha256:OLD', reviewed: true },
+    };
+    const written = toUserEdit(adaptSwing(doc), doc, 'sha256:CURRENT', 'reviewer', AT, prev);
+    expect(written.labels.tags).toEqual([]);
+    expect(written.edit?.by).toBe('coach-ana');
+    expect(written.edit?.against).toBe('sha256:OLD');
+  });
+
+  it('nulls a stroke outside STROKES rather than echoing it', () => {
+    // Same spread, same exposure — and `stroke` is the one that survives the read
+    // path INVISIBLY: `strokeToApp('slice')` is 'Slice', `strokeFor` compares that
+    // back and they agree, so the illegal value was written straight out again.
+    // Not coerced towards a member: "Backhand" might plausibly mean `backhand`,
+    // but guessing records a call no human made.
+    expect(writtenFrom({ stroke: 'Backhand' }).labels.stroke).toBeNull();
+    expect(writtenFrom({ stroke: 'slice' }).labels.stroke).toBeNull();
+  });
+
+  it('sanitises a NON-STRING stroke if one ever reaches the write path', () => {
+    // Split from the case above because `adaptSwing` cannot hand this one over:
+    // `strokeToApp` calls `.charAt` and throws, so `loadEtlClips` catches and the
+    // whole session reads as absent. That read-path gap is recorded in the
+    // follow-ups rather than fixed here — but `toUserEdit` is also called
+    // directly (the middleware test does), so it still must not emit `stroke: 7`.
+    const doc = withRawLabels({ stroke: 7 });
+    expect(() => adaptSwing(doc)).toThrow();
+    const written = toUserEdit(adaptSwing(source), doc, 'sha256:abc', 'wc', AT);
+    expect(written.labels.stroke).toBeNull();
+  });
+
+  it('nulls a verdict outside VERDICTS rather than echoing it', () => {
+    expect(writtenFrom({ verdict: 'nope' }).labels.verdict).toBeNull();
+    expect(writtenFrom({ verdict: false }).labels.verdict).toBeNull();
+  });
+
+  it('nulls a quality outside 1-5, including a float and a bool', () => {
+    // schema.py's `_is` refuses a bool for an integer field, and 4.0 is not an
+    // int — so membership in QUALITY is the whole check.
+    expect(writtenFrom({ quality: 9 }).labels.quality).toBeNull();
+    expect(writtenFrom({ quality: 0 }).labels.quality).toBeNull();
+    expect(writtenFrom({ quality: 3.5 }).labels.quality).toBeNull();
+    expect(writtenFrom({ quality: '4' }).labels.quality).toBeNull();
+    expect(writtenFrom({ quality: true }).labels.quality).toBeNull();
+  });
+
+  it('keeps every legal quality, so sanitising is not a second lossy mapping', () => {
+    // The §2 regression, guarded from the other side: 1 and 5 are exactly the
+    // values the old projection collapsed.
+    for (const q of [1, 2, 3, 4, 5]) {
+      expect(writtenFrom({ quality: q }).labels.quality).toBe(q);
+    }
+  });
+
+  it('nulls a player_slot outside PLAYER_SLOTS', () => {
+    expect(writtenFrom({ player_slot: 'middle' }).labels.player_slot).toBeNull();
+    expect(writtenFrom({ player_slot: 'left' }).labels.player_slot).toBe('left');
+  });
+
+  it('nulls a non-string player_name and notes', () => {
+    expect(writtenFrom({ player_name: 12 }).labels.player_name).toBeNull();
+    expect(writtenFrom({ notes: ['a', 'b'] }).labels.notes).toBeNull();
+  });
+
+  it('nulls a frame stage outside STAGES rather than round-tripping it', () => {
+    // The subtle one. `stageToPhase` only folds `null` and `other`, so 'wobble'
+    // reaches the clip AS a phase, compares equal to itself in `stageFor`, and
+    // used to be written straight back — invalid per schema.py:207.
+    const frames = source.frames.map((f, i) => (i === 3 ? { ...f, stage: 'wobble' } : f));
+    const doc = { ...source, frames } as unknown as EtlSwingDoc;
+    const written = toUserEdit(adaptSwing(doc), doc, 'sha256:abc', 'wc', AT);
+    expect(written.frames[3].stage).toBeNull();
+  });
+
+  it('drops an orphaned frame whose stage is outside STAGES', () => {
+    // `orphanedFrames` carries an entry through by `source_ms` alone; an illegal
+    // stage on it is not human work worth emitting an invalid document for.
+    const junkOrphan = {
+      ...source,
+      frames: [
+        {
+          file: 'frames/frame_0099.jpg',
+          source_ms: 6317,
+          clip_ms: 816,
+          offset_contact_ms: 16,
+          pose_score: null,
+          stage: 'wobble',
+        },
+      ],
+    } as unknown as EtlSwingDoc;
+    const written = toUserEdit(adaptSwing(source), source, 'sha256:abc', 'wc', AT, junkOrphan);
+    expect(written.frames).toHaveLength(49);
+    expect(written.frames.some((f) => f.source_ms === 6317)).toBe(false);
+  });
+
+  it('sanitises everything at once without dropping the reviewer’s real work', () => {
+    const doc = withRawLabels({
+      tags: ['reel', 1],
+      stroke: 'slice',
+      quality: 9,
+      verdict: 'nope',
+    });
+    const clip = { ...adaptSwing(doc), note: 'real human note' };
+    const written = toUserEdit(clip, doc, 'sha256:abc', 'wc', AT);
+    expect(written.labels).toEqual({
+      player_slot: 'left',
+      player_name: null,
+      stroke: null,
+      quality: null,
+      verdict: null,
+      tags: ['reel'],
+      notes: 'real human note',
+    });
+  });
+});

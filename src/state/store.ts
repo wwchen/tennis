@@ -309,6 +309,18 @@ export function reducer(state: State, action: Action): State {
   }
 }
 
+/**
+ * Who `edit.by` names for a write this app's user authored.
+ *
+ * There is no sign-in, so the app genuinely cannot know a name — this stands in
+ * for one, and is deliberately the only place it is written. It is used ONLY for
+ * a write that records a real change: a load-time write-back over a file another
+ * reviewer or tool wrote carries that file's own `by` through instead, because
+ * replacing `"coach-ana"` with this destroys attribution nobody asked to change.
+ * See `editFor` in `src/domain/etl-write.ts`.
+ */
+const REVIEWER = 'reviewer';
+
 export function useShotLab() {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
   const lastSentRef = useRef<Map<string, string>>(new Map());
@@ -341,14 +353,22 @@ export function useShotLab() {
           clip,
           entry.doc,
           entry.hash,
-          'reviewer',
+          REVIEWER,
           '', // placeholder; we'll replace it below
           // The previous on-disk edit, so frame entries `overlay()` dropped from
-          // the merged view survive rather than being erased from disk.
+          // the merged view survive rather than being erased from disk, and so
+          // `edit.by`/`edit.against` survive a write this reviewer did not author.
           entry.edit,
         );
         const { edit, ...rest } = docWithoutTimestamp;
-        const payload = JSON.stringify(rest);
+        // `edit.at` is the only volatile field — it is this write's own clock, so
+        // including it would defeat the cache entirely and re-PUT every clip on
+        // every effect run. The rest of `edit` is part of the payload's identity:
+        // `by` and `against` are carried over from the previous file when the
+        // human changed nothing, so they can differ between two documents whose
+        // `labels` and `frames` agree, and a cache that ignored them could retire
+        // a write that does change attribution.
+        const payload = JSON.stringify({ ...rest, edit: { ...edit, at: '' } });
 
         // Skip if this exact payload was already sent
         if (lastSentRef.current.get(entry.dir) === payload) continue;

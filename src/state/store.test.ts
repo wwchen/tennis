@@ -436,3 +436,212 @@ describe('write-back deduplication', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 2000 });
   });
 });
+
+describe('attribution and staleness through the whole write-back effect', () => {
+  /**
+   * The store-level half of the `edit.by` / `edit.against` fix. `store.ts` used to
+   * hardcode `'reviewer'` and always pass `entry.hash`, so the load-time
+   * write-back — which fires with no human action at all — rewrote both.
+   */
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(etlSource, 'loadEtlClips').mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** A `user-edit.json` another reviewer wrote, against an OLDER render. */
+  const foreignEdit = {
+    by: 'coach-ana',
+    at: '2026-08-10T09:00:00Z',
+    against: 'sha256:OLD',
+    reviewed: true,
+  };
+
+  const onDisk = (): EtlSwingDoc => ({
+    ...(realSwing as unknown as EtlSwingDoc),
+    labels: {
+      ...(realSwing as unknown as EtlSwingDoc).labels,
+      stroke: 'backhand' as const,
+      quality: 5 as const,
+      notes: 'wrist lag',
+    },
+    edit: foreignEdit,
+  });
+
+  /** Hydrates one previously-reviewed swing and returns the single PUT body. */
+  const loadAndCapture = async (doc: EtlSwingDoc) => {
+    const entries: SwingEntry[] = [
+      { dir: 'swings/swing_001', hash: 'sha256:CURRENT', doc, edit: doc },
+    ];
+    const hook = renderHook(() => useShotLab());
+    act(() => {
+      hook.result.current.dispatch({
+        type: 'hydrate',
+        clips: [adaptSwing(doc)],
+        entries,
+        session: 'IMG_0304',
+      });
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    const sent = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, { body: string }])[1].body,
+    ) as EtlSwingDoc;
+    return { hook, sent };
+  };
+
+  it('a bare page load does not launder another reviewer’s name to "reviewer"', async () => {
+    const { sent } = await loadAndCapture(onDisk());
+    expect(sent.edit?.by).toBe('coach-ana');
+  });
+
+  it('a bare page load does not erase the stale-review marker', async () => {
+    // `entry.hash` is 'sha256:CURRENT' — the render on disk NOW — while the file
+    // says it was reviewed against 'sha256:OLD'. That difference is the only thing
+    // that makes `overlay()` warn, and it has to survive a load with no user action.
+    const { sent } = await loadAndCapture(onDisk());
+    expect(sent.edit?.against).toBe('sha256:OLD');
+  });
+
+  it('stamps this reviewer once the human actually edits something', async () => {
+    const { hook } = await loadAndCapture(onDisk());
+    act(() => {
+      hook.result.current.dispatch({
+        type: 'setNote',
+        clip: 'IMG_0304/swing_001',
+        note: 'shanked it',
+      });
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    const sent = JSON.parse(
+      (fetchMock.mock.calls[1] as [string, { body: string }])[1].body,
+    ) as EtlSwingDoc;
+    expect(sent.labels.notes).toBe('shanked it');
+    // Now the labels on disk ARE this reviewer's, reviewed against this render.
+    expect(sent.edit?.by).toBe('reviewer');
+    expect(sent.edit?.against).toBe('sha256:CURRENT');
+  });
+
+  it('still writes nothing new on a bare reload, so dedup is not broken', async () => {
+    // The property §1 established, which preserving `by`/`against` must not cost:
+    // the cache compares the payload with `edit.at` blanked, and `by`/`against`
+    // are now part of that payload — so they have to be STABLE across two
+    // load-only projections, not just correct on the first.
+    const { hook } = await loadAndCapture(onDisk());
+
+    // Re-run the effect for real without changing anything: `setNote` to the
+    // note that is already there rebuilds the clips array, changing the dep's
+    // identity while leaving the payload identical.
+    const sameNote = clip(hook.result.current.state, 'IMG_0304/swing_001').note;
+    act(() => {
+      hook.result.current.dispatch({
+        type: 'setNote',
+        clip: 'IMG_0304/swing_001',
+        note: sameNote,
+      });
+    });
+    hook.rerender();
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send a document with a non-string tag the ETL would reject', async () => {
+    // Fix 2 through the real effect. `overlay()` lifts `tags` out of
+    // `user-edit.json` with no validation, so this is what a hand edit hands over.
+    const junk = {
+      ...onDisk(),
+      labels: { ...onDisk().labels, tags: ['reel', 1, null] },
+    } as unknown as EtlSwingDoc;
+    const { sent } = await loadAndCapture(junk);
+    expect(sent.labels.tags).toEqual(['reel']);
+    // And repairing it is not a review, so attribution still survives.
+    expect(sent.edit?.by).toBe('coach-ana');
+  });
+});
+
+describe('the dedup cache and the preserved edit block', () => {
+  /**
+   * The cache key used to strip `edit` off entirely. That was sound while `edit`
+   * was a pure function of the payload — `by` was a constant and `against` was
+   * always `entry.hash`.
+   *
+   * It is no longer. `by`/`against` now depend on whether the human changed
+   * anything, and SANITISING can collapse two projections that disagree about
+   * that onto the same `labels`: an illegal `quality: 9` on disk is written as
+   * `null` whether it was preserved verbatim (no human action) or replaced by a
+   * reviewer clearing the rating. Same payload, different attribution — so a key
+   * that ignored `edit` suppressed the PUT that records the human's own call.
+   *
+   * `edit.at` is still excluded: it is this write's clock, so including it would
+   * defeat the cache entirely.
+   */
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(etlSource, 'loadEtlClips').mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('sends the attribution change even when the sanitised labels are identical', async () => {
+    // `quality: 9` is outside QUALITY, so `sanitiseLabels` writes null either way.
+    const disk = {
+      ...(realSwing as unknown as EtlSwingDoc),
+      labels: { ...(realSwing as unknown as EtlSwingDoc).labels, quality: 9 },
+      edit: { by: 'coach-ana', at: '2026-08-10T09:00:00Z', against: 'sha256:OLD', reviewed: true },
+    } as unknown as EtlSwingDoc;
+    const entries: SwingEntry[] = [
+      { dir: 'swings/swing_001', hash: 'sha256:CURRENT', doc: disk, edit: disk },
+    ];
+
+    const { result } = renderHook(() => useShotLab());
+    act(() => {
+      result.current.dispatch({
+        type: 'hydrate',
+        clips: [adaptSwing(disk)],
+        entries,
+        session: 'IMG_0304',
+      });
+    });
+
+    // Load-only write: nothing changed, so coach-ana keeps the file.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    const first = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, { body: string }])[1].body,
+    ) as EtlSwingDoc;
+    expect(first.labels.quality).toBeNull();
+    expect(first.edit?.by).toBe('coach-ana');
+
+    // `qualityToGrade(9)` is 'good', so re-picking 'good' CLEARS the rating —
+    // one click, and now the human has deliberately said "no rating".
+    expect(clip(result.current.state, 'IMG_0304/swing_001').grade).toBe('good');
+    act(() => {
+      result.current.dispatch({ type: 'setGrade', clip: 'IMG_0304/swing_001', grade: 'good' });
+    });
+    expect(clip(result.current.state, 'IMG_0304/swing_001').grade).toBeNull();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    const second = JSON.parse(
+      (fetchMock.mock.calls[1] as [string, { body: string }])[1].body,
+    ) as EtlSwingDoc;
+    // Byte-identical labels...
+    expect(second.labels).toEqual(first.labels);
+    // ...but this is the reviewer's own call now, against the render they saw.
+    expect(second.edit?.by).toBe('reviewer');
+    expect(second.edit?.against).toBe('sha256:CURRENT');
+  });
+});

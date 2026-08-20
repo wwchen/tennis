@@ -4,22 +4,43 @@
  * boundary where they become camelCase is `etl.ts`.
  *
  * Enums are duplicated from `tennisproc/schema.py`, which owns them. Keep in
- * step with STAGES / STROKES / VERDICTS / PLAYER_SLOTS there.
+ * step with STAGES / STROKES / VERDICTS / PLAYER_SLOTS / QUALITY there.
  */
 
-export type EtlStage = 'setup' | 'contact' | 'finish' | 'other';
+/**
+ * The vocabularies as runtime arrays, not just types.
+ *
+ * `user-edit.json` can be hand-edited or written by another tool, so a value
+ * arriving on the read path is only *claimed* to be a member — the types above
+ * describe what `tennisproc` writes, not what the app might be handed. Write-back
+ * has to be able to check membership before echoing a value back
+ * (`sanitiseLabels` in `etl-write.ts`), and that needs the list at runtime.
+ *
+ * Each type is derived from its array so the two cannot drift apart here; they
+ * still have to be kept in step with STAGES / STROKES / VERDICTS / PLAYER_SLOTS
+ * / QUALITY in `tennisproc/schema.py`, which owns them.
+ */
+export const ETL_STAGES = ['setup', 'contact', 'finish', 'other'] as const;
+export type EtlStage = (typeof ETL_STAGES)[number];
 
-export type EtlStroke =
-  | 'forehand'
-  | 'backhand'
-  | 'volley'
-  | 'serve'
-  | 'overhead'
-  | 'other';
+export const ETL_STROKES = [
+  'forehand',
+  'backhand',
+  'volley',
+  'serve',
+  'overhead',
+  'other',
+] as const;
+export type EtlStroke = (typeof ETL_STROKES)[number];
 
-export type EtlVerdict = 'valid' | 'false_positive' | 'duplicate' | 'unclear';
+export const ETL_VERDICTS = ['valid', 'false_positive', 'duplicate', 'unclear'] as const;
+export type EtlVerdict = (typeof ETL_VERDICTS)[number];
 
-export type EtlPlayerSlot = 'left' | 'right' | 'near' | 'far';
+export const ETL_PLAYER_SLOTS = ['left', 'right', 'near', 'far'] as const;
+export type EtlPlayerSlot = (typeof ETL_PLAYER_SLOTS)[number];
+
+export const ETL_QUALITY = [1, 2, 3, 4, 5] as const;
+export type EtlQuality = (typeof ETL_QUALITY)[number];
 
 export interface EtlFrame {
   file: string;
@@ -36,7 +57,7 @@ export interface EtlLabels {
   player_slot: EtlPlayerSlot | null;
   player_name: string | null;
   stroke: EtlStroke | null;
-  quality: 1 | 2 | 3 | 4 | 5 | null;
+  quality: EtlQuality | null;
   verdict: EtlVerdict | null;
   tags: string[];
   notes: string | null;
@@ -62,7 +83,17 @@ export interface EtlDetection {
 export interface EtlEdit {
   by: string;
   at: string;
-  against?: string;
+  /**
+   * `doc_hash` of the ETL output this review was made against, so `overlay()` can
+   * warn when the clip has been re-rendered since (`schema.py:419`).
+   *
+   * `null`, not absent, when there is nothing to record: `optional=True` in
+   * `_Check.field` means "null is allowed", and `field()` reports `missing`
+   * *before* it consults `optional` — so `against: null` validates and an absent
+   * `against` does not. Optional here in the TS sense only because a document
+   * read off disk may genuinely lack the key.
+   */
+  against?: string | null;
   reviewed: boolean;
 }
 
