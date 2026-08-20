@@ -9,7 +9,9 @@ deferred rather than rushed in unreviewed. Ordered by what to fix first.
 destructive paths survived it, all now fixed. They are kept struck through where
 fixed, because the reasoning is what makes the current design legible — and
 because §1 in particular is the kind of bug that only appears when four
-individually-harmless mappings compose. §5, §6 and §11 remain open.
+individually-harmless mappings compose. §12 then fixed two of §11's five bullets —
+the two that, like §1, let a write with no user action overwrite something only a
+human should change. §5, §6 and the remaining three §11 bullets are still open.
 
 ## ~~1. Write-back fires on page load and degrades existing labels~~ (blocking a second review pass)
 
@@ -262,11 +264,13 @@ than collapsing to null; that and the converse (a human clearing a real note wri
 Recorded rather than fixed, to keep this pass reviewable. None destroys data
 without a user action.
 
-- **`edit.by` and `edit.against` are not preserved** (I4). `by` is hardcoded
+The first and fourth bullets are now **fixed** (§12). The rest remain open.
+
+- ~~**`edit.by` and `edit.against` are not preserved** (I4). `by` is hardcoded
   `"reviewer"`, overwriting a real name; `against` is rewritten to the current
   hash, erasing the stale-review marker `overlay()` warns on. Both are
   counterexamples to "byte-identical apart from `edit.at`" for a file written by
-  another tool or reviewer.
+  another tool or reviewer.~~ **FIXED** — see §12.
 - **`undoRemove` invents a verdict** (M1/I1). A round-trip toggle rewrites the
   verdict it read: `duplicate` → restore → remove lands on `false_positive`, and
   `null` → remove → restore lands on `valid` — an accept call no human made,
@@ -274,13 +278,102 @@ without a user action.
 - **Duplicate `source_ms` in an incoming edit** (M2) is not rejected on the read
   path, though `schema.py:206` forbids it, so a hand-edited file can make a stage
   ambiguous.
-- **Non-string `tags`** (I3) are echoed by spread with no validation, so
-  `toUserEdit` can emit a document `validate_swing` rejects.
+- ~~**Non-string `tags`** (I3) are echoed by spread with no validation, so
+  `toUserEdit` can emit a document `validate_swing` rejects.~~ **FIXED** — see
+  §12, which also covers every other label field the same spread exposed.
 - **The detail filmstrip renders 0 of ~49 images** — `DetailView` builds its cell
   without `imageUrl`. Pre-existing, and a design question (the filmstrip may be
   intended as a painted index rather than a contact sheet) rather than a bug fix,
   so deliberately untouched. It does falsify the earlier report's claim that the
   detail view lazily requests up to 49 stills.
+
+## 12. Attribution, staleness, and label validity (§11 bullets 1 and 4)
+
+**FIXED.** Both were the same shape of bug as §1: the load-time write-back, which
+fires with **no user action**, rewriting something only a human should change.
+
+### `edit.by` and `edit.against` (I4)
+
+`by` was hardcoded and `against` was always the current `entry.hash`. So a bare
+page load over a `user-edit.json` written by `coach-ana` against an older render
+rewrote it to `by: "reviewer", against: <current>` — laundering the attribution
+and, worse, **erasing the stale-review marker**. `against` records *which ETL
+output was reviewed*, and it exists so `overlay()` can warn "stale edit: reviewed
+against X but metadata is Y" (`schema.py:419`). Overwriting it with the current
+hash makes a genuinely stale review silently claim to be current, which is worse
+than the stale review itself.
+
+Now, in `editFor` (`src/domain/etl-write.ts`): if the human changed nothing, `by`
+and `against` come from `prevEdit` verbatim; if they did, the write is genuinely
+theirs and both are this write's own. `at` is always this write's clock either way.
+
+**How "the human changed something" is decided.** Derived from the projection, not
+from a flag. Every `*For` helper already answers, field by field, "does the clip
+disagree with what the read adapter would have derived from `source`?" — and each
+returns `source`'s own value verbatim when it does not. So *changed nothing* is
+exactly *every projected field is identical to the one it came from*, which is the
+same identity the §1 fixed-point tests already pin. A flag threaded from the UI
+would be a second, independent answer to a question the projection must answer
+anyway, free to drift from it.
+
+**Two consequences worth noting.** Sanitisation runs *after* that comparison —
+repairing a malformed file is not a review, so it must not re-stamp `by`. And the
+dedup cache key changed: it used to strip `edit` entirely, which was sound only
+while `edit` was a pure function of the payload. It no longer is, and sanitising
+can collapse two projections that disagree about attribution onto identical
+`labels` (an illegal `quality: 9` writes as `null` whether preserved or cleared by
+a reviewer). The key now includes `edit` with only `at` blanked.
+
+### Non-string `tags`, and every other field the same spread exposed (I3)
+
+`toUserEdit` spreads `...source.labels`, and `source` came out of `overlay()`,
+which lifts `labels` out of `user-edit.json` field by field with **no validation at
+all** (`schema.py:424`). So *anything* the projection did not itself compute was
+echoed straight back, and `tags: [1, null]` or `tags: "backhand"` made the app
+emit a document its own `validate_swing` rejects.
+
+`sanitiseLabels` now forces the block into something the validator accepts:
+
+- **`tags`** — non-string entries are **dropped**, valid ones around them kept.
+  Not coerced: `String(1)` invents the tag `"1"` nobody wrote, and a non-empty list
+  *wins* in `overlay()`, so the fabrication would be unremovable by re-reading. A
+  non-array or absent `tags` becomes `[]`, which is also the one value `overlay()`
+  treats as "no opinion", so it cannot erase a list `metadata.json` carries.
+- **Every other label field** was exposed identically, and all are fixed here
+  because the fix is the same one line each: `stroke`, `verdict` and `player_slot`
+  outside their enums, a `quality` outside 1–5 (including a float, and a bool —
+  `schema.py`'s `_is` deliberately refuses `True` for an integer field), and a
+  non-string `player_name`/`notes`. Each becomes `null`, which is what "no label
+  here" already means. Deliberately **not** coerced towards a legal member:
+  `stroke: "Backhand"` might plausibly mean `backhand`, but `quality: 9` has no
+  defensible reading, and inventing one records a call no human made.
+- **`frames[].stage`** too, which was the subtle one: `stageToPhase` folds only
+  `null` and `other`, so `'wobble'` reached the clip *as a phase*, compared equal
+  to itself, and round-tripped. Also guarded in `orphanedFrames`.
+
+**`slice` deserves a mention**: it is deliberately absent from `STROKES` (spin is
+not recoverable at 30 fps) and it survived the read path invisibly, because
+`strokeToApp('slice')` is `'Slice'`, which compares equal to itself.
+
+### One thing the ETL schema does not mean
+
+`optional=True` in `_Check.field` reads as "this field may be absent", but that is
+**not** what it does: `field()` reports `missing` and returns *before* it consults
+`optional`, which governs only whether a null is accepted. So `edit.against: null`
+validates and an **absent** `against` does not. The first implementation here had
+it backwards — it omitted the key — and `tests/test_app_writeback.py`
+(`test_an_absent_against_is_missing_but_null_is_legal`) now pins the real rule.
+Write-back records an explicit `null` when the previous file had no `against`,
+which says "nothing to compare" without claiming a fresh review.
+
+### Verified
+
+31 new vitest cases and 22 new Python cases, each shown to fail against the
+pre-fix behaviour. Driven over the real 42-swing `IMG_0304` tree with a foreign,
+malformed `user-edit.json` planted: `by` and `against` survived a bare load,
+`tags` was repaired to `['reel']`, the reviewer's real `quality: 5` and notes were
+untouched, `session.validate_tree` reported **0 problems across 44 documents**,
+and the stale-edit warning still fired — the signal the fix exists to protect.
 
 ## Environmental limits, not code defects
 
