@@ -286,6 +286,15 @@ The first and fourth bullets are now **fixed** (§12). The rest remain open.
   intended as a painted index rather than a contact sheet) rather than a bug fix,
   so deliberately untouched. It does falsify the earlier report's claim that the
   detail view lazily requests up to 49 stills.
+- **A malformed `metadata.json` makes a whole session read as absent.** Found
+  while hardening the write path (§12). `strokeToApp` calls `.charAt` on
+  `labels.stroke`, so a non-string value throws inside `adaptSwing`, and
+  `loadEtlClips` catches everything and returns `null` — which is the "there is no
+  tree" signal. One malformed swing therefore silently drops all 42, and the
+  reviewer sees the seed with no indication why. The write path is now hardened
+  against this class of value; the read path still fails whole-session rather than
+  per-swing. Fix as: adapt swings individually, skip the ones that throw, and
+  surface a count.
 
 ## 12. Attribution, staleness, and label validity (§11 bullets 1 and 4)
 
