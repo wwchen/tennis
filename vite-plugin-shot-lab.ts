@@ -1,12 +1,16 @@
 import { createHash } from 'node:crypto';
 import {
+  closeSync,
+  constants,
+  fstatSync,
   existsSync,
   lstatSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
   statSync,
-  writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import type { Plugin, ViteDevServer } from 'vite';
@@ -440,6 +444,18 @@ function resolveWriteTarget(
   return { target };
 }
 
+/** Writes without following a final symlink or accepting a hard-linked target. */
+function writeUserEdit(target: string, data: string): void {
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW;
+  const fd = openSync(target, flags, 0o600);
+  try {
+    if (fstatSync(fd).nlink !== 1) throw new Error('refusing to write a multiply-linked file');
+    writeSync(fd, data, undefined, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export default function shotLab(): Plugin {
   return {
     name: 'shot-lab-etl',
@@ -502,7 +518,7 @@ export default function shotLab(): Plugin {
               res.end('{"error":"invalid swing document"}');
               return;
             }
-            writeFileSync(target, JSON.stringify(doc, null, 1) + '\n');
+            writeUserEdit(target, JSON.stringify(doc, null, 1) + '\n');
             res.statusCode = 204;
             res.end();
           } catch {
