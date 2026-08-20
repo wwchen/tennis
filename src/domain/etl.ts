@@ -4,6 +4,7 @@ import type {
   EtlStroke,
   EtlSwingDoc,
   SessionPayload,
+  SwingEntry,
 } from './etl-types';
 import type { Clip, Frame, Grade, Phase, Stroke } from './types';
 import { frameWindow } from './window';
@@ -154,7 +155,55 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
   };
 }
 
-export const adaptSession = (payload: SessionPayload): Clip[] =>
-  payload.swings.map((entry) =>
-    adaptSwing(entry.doc, `/api/media/${payload.session}/${entry.dir}`),
-  );
+/** A swing the read path could not adapt, and what went wrong. */
+export interface SkippedSwing {
+  /** Where it lives under the session, e.g. `swings/swing_007`. */
+  dir: string;
+  /** The adapter's own message, so a dev can tell which field was wrong. */
+  reason: string;
+}
+
+export interface AdaptedSession {
+  clips: Clip[];
+  /**
+   * Only the entries whose docs adapted. A swing with no clip is not a write
+   * target: `toUserEdit` projects a `Clip` back onto its source doc, so there is
+   * nothing to write for one the app could not read.
+   */
+  entries: SwingEntry[];
+  skipped: SkippedSwing[];
+}
+
+/**
+ * Every swing in a session, adapted INDIVIDUALLY.
+ *
+ * Individually because `adaptSwing` throws on values the ETL's types forbid but
+ * `overlay()` merges in unchecked from a hand-edited `user-edit.json` — a
+ * non-string `stroke` reaches `strokeToApp`'s `.charAt` and throws. This used to
+ * be a `.map`, so one such swing threw for the whole payload; `loadEtlClips`
+ * caught it and returned the `null` that means "there is no out/ tree", and all
+ * 42 swings silently became seed data.
+ *
+ * So a bad document costs its own swing and nothing else, and `skipped` says
+ * which — the count has to reach the reviewer, or a 41-of-42 session still reads
+ * as complete.
+ */
+export function adaptSession(payload: SessionPayload): AdaptedSession {
+  const clips: Clip[] = [];
+  const entries: SwingEntry[] = [];
+  const skipped: SkippedSwing[] = [];
+
+  for (const entry of payload.swings) {
+    // Read outside the try: `swings` is JSON off disk and can hold anything, so
+    // reporting the failure must not throw a second time inside the catch.
+    const dir = typeof entry?.dir === 'string' ? entry.dir : '(unknown)';
+    try {
+      clips.push(adaptSwing(entry.doc, `/api/media/${payload.session}/${dir}`));
+      entries.push(entry);
+    } catch (err) {
+      skipped.push({ dir, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return { clips, entries, skipped };
+}

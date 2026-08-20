@@ -3,6 +3,7 @@ import type { Clip, Grade, Phase, Selection, Stroke, View } from '@/domain/types
 import { ADD_PLAYER, ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
 import { SEED_NEXT_COMMENT_ID, SEED_REMOVED_STACK, seedClips, seedComments } from '@/domain/seed';
 import type { SwingEntry } from '@/domain/etl-types';
+import type { SkippedSwing } from '@/domain/etl';
 import { toUserEdit } from '@/domain/etl-write';
 import type { Doc } from './persistence';
 import { loadDoc, saveDoc } from './persistence';
@@ -37,10 +38,18 @@ export interface State {
   entries: SwingEntry[];
   /** Session name from the ETL tree. Not persisted. */
   session: string | null;
+  /**
+   * Swings in the tree the read path could not adapt. Surfaced in the header,
+   * because a session silently short of some of its swings is indistinguishable
+   * from a complete one.
+   */
+  skipped: SkippedSwing[];
 }
 
 export type Action =
-  | { type: 'hydrate'; clips: Clip[]; entries: SwingEntry[]; session: string }
+  // `skipped` is optional so a test hydrating a clean session need not say
+  // "nothing was skipped" — absent means none.
+  | { type: 'hydrate'; clips: Clip[]; entries: SwingEntry[]; session: string; skipped?: SkippedSwing[] }
   | { type: 'setView'; view: View }
   | { type: 'setPlayerFilter'; value: string }
   | { type: 'setStrokeFilter'; value: string }
@@ -106,6 +115,7 @@ export const initialState = (): State => ({
   ui: initialUi(),
   entries: [],
   session: null,
+  skipped: [],
 });
 
 /** Patches one clip in place, leaving every other clip's identity untouched. */
@@ -134,6 +144,7 @@ export function reducer(state: State, action: Action): State {
         ui: { ...state.ui, sel: null, detail: null, draft: '' },
         entries: action.entries,
         session: action.session,
+        skipped: action.skipped ?? [],
       };
     case 'setView':
       return ui(state, { view: action.view });
@@ -329,7 +340,13 @@ export function useShotLab() {
     let live = true;
     void loadEtlClips().then((payload) => {
       if (live && payload !== null) {
-        dispatch({ type: 'hydrate', clips: payload.clips, entries: payload.entries, session: payload.session });
+        dispatch({
+          type: 'hydrate',
+          clips: payload.clips,
+          entries: payload.entries,
+          session: payload.session,
+          skipped: payload.skipped,
+        });
       }
     });
     return () => {

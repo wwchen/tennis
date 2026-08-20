@@ -4,7 +4,7 @@ import { useDismissEditors } from '@/hooks/useDismissEditors';
 import { buildCompare, pinsFor, rosterOf, statsOf, strokesOf, visibleClips } from '@/lib/selectors';
 import { Avatar, Button, ICONS, SegmentedControl, TextField, valueOf } from '@/lds';
 import type { View } from '@/domain/types';
-import { Mono } from '@/components/shared';
+import { Mono, SkippedBanner } from '@/components/shared';
 import { Filters } from '@/components/Filters';
 import { CompareTable, FrameGrid } from '@/components/CompareView';
 import { CatalogView } from '@/components/CatalogView';
@@ -87,6 +87,7 @@ export default function App() {
           </span>
           <Mono>{stats.total} clips</Mono>
         </div>
+        <SkippedBanner skipped={state.skipped} />
         <SegmentedControl
           label="View"
           size="sm"
