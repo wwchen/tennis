@@ -181,5 +181,72 @@ def read_cache(path, cache_hash):
             if header.get("cache_hash") != cache_hash:
                 return None
             return [Track.from_json(json.loads(line)) for line in fh if line.strip()]
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, EOFError):
+        # EOFError is not an OSError: a run killed mid-write leaves a torn
+        # gzip that crashed every later run. A torn cache reads as absent.
         return None
+
+
+BODY_JUMP = pose_mod.BODY_JUMP
+
+
+def _nearest_body(poses, previous):
+    """The pose continuing `previous`, or the largest when starting fresh."""
+    if previous is not None:
+        last_x = previous.center_x()
+        nearest = min(poses, key=lambda p: abs(p.center_x() - last_x))
+        if abs(nearest.center_x() - last_x) <= BODY_JUMP:
+            return nearest
+    return max(poses, key=lambda p: p.torso_height() or 0.0)
+
+
+def scan_video(video, source, backend, scan_fps=10.0, cv2=None, on_progress=None):
+    """Pose across the WHOLE video at a low rate, for finding swings.
+
+    One linear read rather than a seek per candidate, which is both faster
+    (4.5x realtime) and what lets the body decide a swing happened. Wrists and
+    torso only; survivors are decoded again at native rate for measurement.
+    """
+    if cv2 is None:
+        import cv2 as cv2_mod
+        cv2 = cv2_mod
+
+    step_ms = 1000.0 / float(scan_fps) if scan_fps > 0 else 0.0
+    cap = open_capture(video, cv2)
+    samples = []
+    next_ms = 0.0
+    previous = None
+    try:
+        while True:
+            ok, raw = cap.read()
+            if not ok:
+                break
+            position_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+            if position_ms is None or position_ms < next_ms:
+                continue
+            next_ms = position_ms + step_ms
+            frame = rotate_frame(raw, source.get("rotation", 0), cv2)
+            poses = backend.detect(frame, int(round(position_ms)))
+            if not poses:
+                continue
+            # Follow ONE body, rather than taking the largest in each frame
+            # independently. With two players and spectators in frame the
+            # winner flips, and a flip moves the "wrist" across the court in
+            # one sample: measured at 17.5 torso-heights/s against 8.25 for the
+            # strongest real swing, so every flip both invents a candidate and
+            # suppresses the real swings within a second of it.
+            landmarks = _nearest_body(poses, previous)
+            centre = landmarks.center_x()
+            samples.append({
+                "ms": int(round(position_ms)),
+                "lw": landmarks.xy(pose_mod.L_WRIST),
+                "rw": landmarks.xy(pose_mod.R_WRIST),
+                "torso": landmarks.torso_height(),
+                "cx": centre,
+            })
+            previous = landmarks
+            if on_progress is not None and len(samples) % 250 == 0:
+                on_progress(len(samples), position_ms)
+    finally:
+        cap.release()
+    return samples

@@ -1,7 +1,9 @@
-"""The crop rectangle for one swing, from pose boxes.
+"""The crop rectangle for one swing.
 
-The union of the tracked player's pose bounding boxes across the swing
-window, padded, then clamped to the frame.
+With `crop_mode="pose"`, the union of the tracked player's pose bounding boxes
+across the swing window, padded, then clamped to the frame. The default is
+`crop_mode="full"` -- see `Settings.crop_mode` for why -- in which case
+`full_frame()` supplies the rect and none of the union maths runs.
 
 Pose rather than motion differencing, for three reasons: pose is already
 computed so it costs nothing extra; it follows the *player* rather than
@@ -69,13 +71,25 @@ def to_pixels(box, width, height, min_size=32, even=True):
     return {"x": int(x0), "y": int(y0), "w": int(w), "h": int(h)}
 
 
+def full_frame(width, height):
+    """The whole frame as a `crop` block.
+
+    Both sides rounded down to even: yuv420p subsamples chroma 2x2, so ffmpeg
+    refuses an odd dimension, and a 1079-pixel crop fails at render time rather
+    than here. Shared with `rect_for`'s no-pose fallback so the rule lives once.
+    """
+    return {"x": 0, "y": 0,
+            "w": int(width) - int(width) % 2,
+            "h": int(height) - int(height) % 2,
+            "space": "source_display", "static": True}
+
+
 def rect_for(boxes, width, height, pad_fraction=0.18, min_size=32):
     """Full path: pose boxes -> the `crop` block of a SwingDoc."""
     merged = union(boxes)
     if merged is None:
         # No pose: fall back to the whole frame, so the swing still renders.
-        rect = {"x": 0, "y": 0, "w": int(width) - int(width) % 2,
-                "h": int(height) - int(height) % 2}
+        return full_frame(width, height)
     else:
         rect = to_pixels(pad(merged, pad_fraction), width, height,
                          min_size=min_size)

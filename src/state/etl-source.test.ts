@@ -8,6 +8,7 @@ afterEach(() => {
 
 const payload = {
   session: 'IMG_0304',
+  sessions: ['IMG_0304', 'IMG_0305'],
   swings: [{ dir: 'swings/swing_001', hash: 'sha256:abc', doc: realSwing }],
 };
 
@@ -23,6 +24,41 @@ describe('loadEtlClips', () => {
     expect(result?.clips[0].id).toBe('IMG_0304/swing_001');
     expect(result?.session).toBe('IMG_0304');
     expect(result?.entries).toHaveLength(1);
+  });
+
+  it('asks for no particular session by default', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(payload) });
+    vi.stubGlobal('fetch', fetchMock);
+    await loadEtlClips();
+    expect(fetchMock).toHaveBeenCalledWith('/api/session');
+  });
+
+  it('asks for the session it was given, encoded', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(payload) });
+    vi.stubGlobal('fetch', fetchMock);
+    await loadEtlClips('IMG 0305');
+    expect(fetchMock).toHaveBeenCalledWith('/api/session?session=IMG%200305');
+  });
+
+  it('carries the tree’s other sessions through, for the picker', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(payload) }),
+    );
+    expect((await loadEtlClips())?.sessions).toEqual(['IMG_0304', 'IMG_0305']);
+  });
+
+  it('falls back to the one session it was sent when the list is absent', async () => {
+    // A parsed network response, not a checked value: an older dev server, or a
+    // hand-rolled fixture, can leave `sessions` off entirely.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ session: 'IMG_0304', swings: payload.swings }),
+      }),
+    );
+    expect((await loadEtlClips())?.sessions).toEqual(['IMG_0304']);
   });
 
   it('returns null when there is no out/ tree, so the seed stands', async () => {

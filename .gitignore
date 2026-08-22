@@ -35,5 +35,21 @@ __pycache__/
 # deliberately or back them up outside this tree.
 out/
 
+# Source video: the sessions this pipeline reads. 15 iPhone .MOV files,
+# 13.3 GB total, 683 MB median, 3.8 GiB largest (IMG_0479). Thirteen of the
+# fifteen are over GitHub's 100 MB per-file limit, so a stray `git add .` here
+# does not fail politely -- it makes a commit that cannot be pushed and has to
+# be rewritten out of history.
+#
+# scripts/process.sh reads raw/<stem>.MOV, and tests/test_real_footage.py
+# falls back to it when the fixture's recorded path no longer exists.
+raw/
+
 # MediaPipe pose models (~14 MB). Download link is in tennisproc/README.md.
 models/
+
+# Scratch trees the dev-middleware tests build in the repo root
+# (.test-tmp, .test-tmp-sessions, .test-tmp-write, ... in
+# vite-plugin-shot-lab.test.ts). Removed on teardown, left behind when a run
+# is interrupted.
+.test-tmp*

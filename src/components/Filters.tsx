@@ -2,9 +2,9 @@ import type { Dispatch } from 'react';
 import type { Action, Ui } from '@/state/store';
 import type { Stats } from '@/lib/selectors';
 import type { Phase } from '@/domain/types';
-import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
+import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES, SUSPECT_SPEED } from '@/domain/types';
 import { GRADE_ORDER, GRADES } from '@/domain/grades';
-import { checkedOf, ICONS, SegmentedControl, Select, Toggle, valueOf } from '@/lds';
+import { Button, checkedOf, ICONS, SegmentedControl, Select, Toggle, valueOf } from '@/lds';
 import { Mono } from './shared';
 
 const ANCHOR_OPTIONS = [
@@ -18,12 +18,15 @@ export function Filters({
   stats,
   players,
   strokes,
+  mobile,
   dispatch,
 }: {
   ui: Ui;
   stats: Stats;
   players: string[];
   strokes: string[];
+  /** Render as a drawer over the content rather than a column beside it. */
+  mobile: boolean;
   dispatch: Dispatch<Action>;
 }) {
   const anchorHint = ui.onlyAnchor
@@ -32,18 +35,61 @@ export function Filters({
 
   return (
     <aside
-      style={{
-        width: 268,
-        flex: 'none',
-        overflowY: 'auto',
-        padding: '20px 18px 40px',
-        background: 'var(--gray-50)',
-        borderRight: '1px solid var(--gray-300)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 20,
-      }}
+      className="filters-panel"
+      style={
+        mobile
+          ? {
+              // Over the clips, not beside them: 268px of a 390px screen is
+              // most of it, and the filters are a thing you open, change and
+              // close rather than watch.
+              position: 'fixed',
+              zIndex: 31,
+              top: 0,
+              bottom: 0,
+              left: 0,
+              width: 'min(300px,86vw)',
+              overflowY: 'auto',
+              padding: '16px 16px 32px',
+              background: 'var(--gray-50)',
+              borderRight: '1px solid var(--gray-300)',
+              boxShadow: '0 0 40px rgba(19,32,18,0.22)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 20,
+            }
+          : {
+              flex: 'none',
+              overflowY: 'auto',
+              padding: '20px 18px 40px',
+              background: 'var(--gray-50)',
+              borderRight: '1px solid var(--gray-300)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 20,
+            }
+      }
     >
+      {/* A drawer needs its own way out; the menu button that opened it is
+          behind the scrim. */}
+      {mobile && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <Mono style={{ letterSpacing: '0.09em' }}>Filters</Mono>
+          <span
+            onClick={() => dispatch({ type: 'toggleMobileFilters' })}
+            style={{ cursor: 'pointer' }}
+          >
+            <Button
+              variant="tertiary"
+              size="sm"
+              iconOnly
+              iconStart="close"
+              aria-label="Close filters"
+              iconHref={ICONS}
+              hint-size="28px,28px"
+            />
+          </span>
+        </div>
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Mono style={{ letterSpacing: '0.09em' }}>Filter</Mono>
         <Select
@@ -104,6 +150,17 @@ export function Filters({
           onChange={(e: Event) => dispatch({ type: 'setLowOnly', value: checkedOf(e) })}
           hint-size="100%,24px"
         />
+        <Toggle
+          label="Likely not a swing"
+          checked={ui.suspectOnly}
+          onChange={(e: Event) => dispatch({ type: 'setSuspectOnly', value: checkedOf(e) })}
+          hint-size="100%,24px"
+        />
+        <div style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--gray-600)' }}>
+          Wrist slower than {SUSPECT_SPEED} torso-heights/s <em>and</em> still at the body midline
+          at contact — a body standing still. About 18% of a session; check the clip before
+          removing.
+        </div>
         <Toggle
           label="Show removed clips"
           checked={ui.showRejected}

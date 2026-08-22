@@ -3,7 +3,8 @@ import type { Action, Ui } from '@/state/store';
 import type { Cell, Row } from '@/lib/selectors';
 import { commentsOn, pinsFor } from '@/lib/selectors';
 import type { Clip, Comment, Phase } from '@/domain/types';
-import { autoMeta } from '@/domain/grades';
+import { shortId, sourceRange } from '@/domain/types';
+import { phaseFrame } from '@/domain/window';
 import { Button, ICONS } from '@/lds';
 import { FrameTile, GradeChips, Mono, PlayerCell, StrokeCell } from './shared';
 
@@ -18,7 +19,6 @@ interface Shared {
 }
 
 function ClipLabel({ clip, roster, comments, ui, dispatch }: Shared & { clip: Clip }) {
-  const meta = autoMeta(clip);
   const commentCount = commentsOn(comments, clip.id).length;
   const editingPlayer = ui.editingPlayer === clip.id && !ui.addingPlayer;
 
@@ -36,7 +36,9 @@ function ClipLabel({ clip, roster, comments, ui, dispatch }: Shared & { clip: Cl
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span
           onClick={() => dispatch({ type: 'openDetail', clip: clip.id })}
+          title={clip.id}
           style={{
+            flex: 'none',
             fontFamily: 'var(--th-mono)',
             fontSize: 11,
             letterSpacing: '0.04em',
@@ -47,7 +49,7 @@ function ClipLabel({ clip, roster, comments, ui, dispatch }: Shared & { clip: Cl
             textUnderlineOffset: 3,
           }}
         >
-          {clip.id}
+          {shortId(clip.id)}
         </span>
         <StrokeCell
           clip={clip}
@@ -71,12 +73,23 @@ function ClipLabel({ clip, roster, comments, ui, dispatch }: Shared & { clip: Cl
         {!editingPlayer && (
           <>
             <span style={{ color: 'var(--gray-300)' }}>/</span>
-            <Mono size={10} title={meta.title} style={{ textTransform: 'none' }}>
-              {meta.label}
+            {/*
+              Where in the source video this clip came from, in the slot the
+              auto-tag confidence label used to occupy. Nothing in the tree is
+              auto-classified — the ETL ships `stroke` and `stage` as null on
+              purpose — so "auto-tagged" was labelling an absence.
+            */}
+            <Mono
+              size={10}
+              title={`Cut from ${clip.duration} of the source video`}
+              style={{ textTransform: 'none' }}
+            >
+              {sourceRange(clip)}
             </Mono>
           </>
         )}
       </div>
+
 
       <GradeChips
         clip={clip}
@@ -84,8 +97,14 @@ function ClipLabel({ clip, roster, comments, ui, dispatch }: Shared & { clip: Cl
       />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        {/*
+          Plays in the inspector rather than opening the clip. Losing your place
+          in the grid is too high a price for the question this button asks —
+          "was that actually a shot?" — which is the first one a reviewer has
+          about every row. The clip id beside it still opens the detail view.
+        */}
         <span
-          onClick={() => dispatch({ type: 'openDetail', clip: clip.id })}
+          onClick={() => dispatch({ type: 'playClip', clip: clip.id })}
           style={{ cursor: 'pointer' }}
         >
           <Button
@@ -93,7 +112,7 @@ function ClipLabel({ clip, roster, comments, ui, dispatch }: Shared & { clip: Cl
             size="sm"
             iconOnly
             iconStart="play"
-            aria-label={`Open clip ${clip.id}`}
+            aria-label={`Play clip ${clip.id}`}
             iconHref={ICONS}
             hint-size="28px,28px"
           />
@@ -165,7 +184,7 @@ export function CompareTable({
   anchor,
   ...shared
 }: Shared & { rows: Row[]; colLabels: string[]; anchor: Phase }) {
-  const { dispatch } = shared;
+  const { dispatch, ui } = shared;
 
   return (
     <div className="compare" style={{ padding: '22px 24px 60px', minWidth: 'min-content' }}>
@@ -207,6 +226,15 @@ export function CompareTable({
       </div>
 
       {rows.map(({ clip, cells }) => (
+        /*
+          The row whose clip the inspector is showing is marked.
+
+          Worth its own affordance now that a click does two things at a
+          distance: playing a clip selects it, and the panel on the right fills
+          with a swing whose row is somewhere in a list of 121. Negative margin
+          against the padding so the highlight bleeds past the content box and
+          reads as a band across the row rather than a box inside it.
+        */
         <div
           key={clip.id}
           className={clip.rejected ? 'is-removed' : undefined}
@@ -214,8 +242,12 @@ export function CompareTable({
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            padding: '8px 0',
+            padding: '8px 6px 8px 8px',
+            margin: '0 -8px',
             borderTop: '1px solid var(--gray-200)',
+            borderRadius: 6,
+            background: ui.sel?.clip === clip.id ? 'var(--gray-100)' : 'transparent',
+            boxShadow: ui.sel?.clip === clip.id ? 'inset 0 0 0 1px var(--gray-400)' : 'none',
           }}
         >
           <ClipLabel clip={clip} {...shared} />
@@ -261,7 +293,9 @@ export function FrameGrid({
       }}
     >
       {clips.map((clip) => {
-        const frame = clip.frames.find((f) => f.phase === anchor);
+        // `phase` is a human label and the ETL ships every one null, so
+        // matching on it alone left every tile blank and unclickable.
+        const frame = phaseFrame(clip, anchor);
         const pinCount = frame ? pinsFor(comments, clip.id, frame.i).length : 0;
         const cell: Extract<Cell, { real: true }> = {
           real: true,
@@ -270,6 +304,7 @@ export function FrameGrid({
           frame: frame?.i ?? 0,
           num: frame ? `f${String(frame.i + 1).padStart(2, '0')}` : 'not tagged',
           phase: anchor,
+          imageUrl: frame?.imageUrl,
           flagged: false,
           pinCount,
           selected: frame !== undefined && ui.sel?.clip === clip.id && ui.sel.frame === frame.i,
@@ -279,7 +314,18 @@ export function FrameGrid({
           <div
             key={clip.id}
             className={clip.rejected ? 'is-removed' : undefined}
-            style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              // Same marking as the compare row, sized for a tile: padding and
+              // an equal negative margin, so turning the highlight on does not
+              // shift the grid.
+              padding: 8,
+              margin: -8,
+              borderRadius: 8,
+              background: ui.sel?.clip === clip.id ? 'var(--gray-100)' : 'transparent',
+            }}
           >
             <FrameTile
               cell={cell}

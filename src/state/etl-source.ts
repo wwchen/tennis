@@ -1,5 +1,5 @@
 import type { Clip } from '@/domain/types';
-import type { SessionPayload, SwingEntry } from '@/domain/etl-types';
+import type { EtlSource, SessionPayload, SwingEntry } from '@/domain/etl-types';
 import type { SkippedSwing } from '@/domain/etl';
 import { adaptSession } from '@/domain/etl';
 
@@ -18,19 +18,34 @@ import { adaptSession } from '@/domain/etl';
  * swings. Unreadable documents are now skipped one at a time and reported in
  * `skipped`, even when that leaves no clips at all.
  */
-export async function loadEtlClips(): Promise<{
+export async function loadEtlClips(requested?: string): Promise<{
   clips: Clip[];
   entries: SwingEntry[];
   session: string;
+  sessions: string[];
+  source: EtlSource | null;
   skipped: SkippedSwing[];
 } | null> {
   try {
-    const res = await fetch('/api/session');
+    // A requested session the tree does not have 404s, which lands on the
+    // `!res.ok` line below and keeps whatever is already loaded.
+    const query = requested === undefined ? '' : `?session=${encodeURIComponent(requested)}`;
+    const res = await fetch(`/api/session${query}`);
     if (!res.ok) return null;
     const payload = (await res.json()) as SessionPayload;
     if (!Array.isArray(payload.swings) || payload.swings.length === 0) return null;
     const { clips, entries, skipped } = adaptSession(payload);
-    return { clips, entries, session: payload.session, skipped };
+    // Guarded like `swings` above, and for the same reason: this is a parsed
+    // network response, not a value the type system has actually checked.
+    const sessions = Array.isArray(payload.sessions) ? payload.sessions : [payload.session];
+    return {
+      clips,
+      entries,
+      session: payload.session,
+      sessions,
+      source: payload.source ?? null,
+      skipped,
+    };
   } catch {
     // No dev server, or a response that is not JSON. Seed stands.
     return null;

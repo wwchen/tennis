@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { adaptSwing } from '@/domain/etl';
 import { toUserEdit } from '@/domain/etl-write';
-import type { EtlSwingDoc } from '@/domain/etl-types';
+import type { EtlSource, EtlSwingDoc } from '@/domain/etl-types';
 import {
   docHash,
+  listSessions,
   overlayEdit,
   readMedia,
   readSession,
@@ -209,6 +217,40 @@ describe('overlayEdit', () => {
   });
 });
 
+describe('listSessions', () => {
+  const tmpDir = join(process.cwd(), '.test-tmp-sessions');
+
+  beforeEach(() => {
+    for (const name of ['IMG_0304', 'IMG_0305', 'IMG_0306']) {
+      mkdirSync(join(tmpDir, name, 'swings', 'swing_001'), { recursive: true });
+    }
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns every session in the tree, not just the first', () => {
+    expect(listSessions(tmpDir)).toEqual(['IMG_0304', 'IMG_0305', 'IMG_0306']);
+  });
+
+  it('ignores a directory with no swings/ child', () => {
+    mkdirSync(join(tmpDir, 'models'), { recursive: true });
+    expect(listSessions(tmpDir)).not.toContain('models');
+  });
+
+  it('ignores a session an interrupted run left with no swings in it', () => {
+    // `out/IMG_0308` was exactly this: the directory exists, nothing is in it.
+    // Offered in the picker it is an unselectable name — see `hasSwings`.
+    mkdirSync(join(tmpDir, 'IMG_0308', 'swings'), { recursive: true });
+    expect(listSessions(tmpDir)).not.toContain('IMG_0308');
+  });
+
+  it('returns nothing for a tree that is not there', () => {
+    expect(listSessions(join(tmpDir, 'nope'))).toEqual([]);
+  });
+});
+
 describe('readSession', () => {
   const tmpDir = join(process.cwd(), '.test-tmp-session');
   const swingDir = join(tmpDir, 'IMG_0304', 'swings', 'swing_001');
@@ -221,6 +263,27 @@ describe('readSession', () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reads the requested session, not the one that sorts first', () => {
+    const other = join(tmpDir, 'IMG_0305', 'swings', 'swing_001');
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, 'metadata.json'), metaRaw());
+
+    expect(readSession(tmpDir)!.session).toBe('IMG_0304');
+    expect(readSession(tmpDir, 'IMG_0305')!.session).toBe('IMG_0305');
+    expect(readSession(tmpDir, 'IMG_0305')!.sessions).toEqual(['IMG_0304', 'IMG_0305']);
+  });
+
+  it('refuses an unknown session rather than serving the default under its name', () => {
+    // Answering with IMG_0304's swings under a `session` the app then writes
+    // edits back through is how a reviewer's labels reach the wrong tree.
+    expect(readSession(tmpDir, 'IMG_9999')).toBeNull();
+  });
+
+  it('refuses a traversal dressed as a session name', () => {
+    expect(readSession(tmpDir, '../..')).toBeNull();
+    expect(readSession(tmpDir, '/etc')).toBeNull();
   });
 
   it('overlays user-edit.json so the human’s work survives a reload', () => {
@@ -558,5 +621,40 @@ describe('readMedia', () => {
     writeFileSync(join(tmpDir, 'outside.jpg'), 'secret');
     symlinkSync(join(tmpDir, 'outside.jpg'), join(root, 'IMG_0304', 'escape.jpg'));
     expect(readMedia(root, 'IMG_0304/escape.jpg')).toBeNull();
+  });
+});
+
+describe('the source block on the payload', () => {
+  const tmpDir = join(process.cwd(), '.test-tmp-source');
+  const swingDir = join(tmpDir, 'IMG_0304', 'swings', 'swing_001');
+
+  beforeEach(() => {
+    mkdirSync(swingDir, { recursive: true });
+    writeFileSync(join(swingDir, 'metadata.json'), readFileSync(FIXTURE, 'utf-8'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reports what the ETL probed about the video', () => {
+    const source = readSession(tmpDir)!.source as unknown as EtlSource;
+    expect(source.name).toBe('IMG_0304.MOV');
+    expect(source.width).toBe(1080);
+    expect(source.height).toBe(1920);
+    expect(source.bytes).toBeGreaterThan(0);
+  });
+
+  it('takes it from a swing, not the session document', () => {
+    // A session killed mid-render has no session metadata.json at all —
+    // IMG_0306 and IMG_0307 were both in that state — but every swing carries
+    // `source`, which is precisely why the ETL copies it into each one.
+    expect(existsSync(join(tmpDir, 'IMG_0304', 'metadata.json'))).toBe(false);
+    expect(readSession(tmpDir)!.source).not.toBeNull();
+  });
+
+  it('is null when no swing could be read', () => {
+    rmSync(join(swingDir, 'metadata.json'));
+    expect(readSession(tmpDir)!.source).toBeNull();
   });
 });

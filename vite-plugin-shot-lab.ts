@@ -284,13 +284,43 @@ function overlayEdit(metadata: Json, userEdit: unknown): Json {
   return merged;
 }
 
-/** First directory under `out/` that has a `swings/` child. */
-function findSession(root: string): string | null {
-  if (!existsSync(root)) return null;
-  for (const name of readdirSync(root).sort()) {
-    if (existsSync(join(root, name, 'swings'))) return name;
+/**
+ * Every directory under `out/` that has a `swings/` child, sorted.
+ *
+ * One video is one session: `tennisproc run raw/IMG_0304.MOV` writes
+ * `out/IMG_0304/`, so a tree holding one afternoon of footage holds one
+ * directory per source file. This used to return the first match and stop,
+ * which was indistinguishable from correct while `out/` held the single
+ * session the plan built it with — and silently hid eight of nine the moment
+ * it did not.
+ *
+ * Enumerating is also what makes `?session=` safe: a requested name is checked
+ * against this list rather than joined onto a path, so no traversal, absolute
+ * path or symlink is expressible through it.
+ */
+function listSessions(root: string): string[] {
+  if (!existsSync(root)) return [];
+  return readdirSync(root)
+    .sort()
+    .filter((name) => hasSwings(join(root, name, 'swings')));
+}
+
+/**
+ * Whether a `swings/` directory holds at least one swing.
+ *
+ * An interrupted run leaves the directory behind empty — `out/IMG_0308` is one,
+ * killed seconds after it started. Listing it would put a name in the picker
+ * that cannot be selected: an empty session sends no clips, `loadEtlClips`
+ * reads that as "no tree" and keeps what is loaded, and the dropdown snaps back
+ * to the previous name with nothing said. Better not to offer it.
+ */
+function hasSwings(swingsDir: string): boolean {
+  if (!existsSync(swingsDir)) return false;
+  try {
+    return readdirSync(swingsDir).some((d) => d.startsWith('swing_'));
+  } catch {
+    return false;
   }
-  return null;
 }
 
 /** Mirrors `session.read_json`: unreadable or malformed reads as absent. */
@@ -303,9 +333,20 @@ function readJson(path: string): unknown {
   }
 }
 
-function readSession(root: string) {
-  const session = findSession(root);
-  if (session === null) return null;
+/**
+ * One session's swings, plus the names of every session beside it.
+ *
+ * `requested` names which one to read. An unknown name is NOT quietly replaced
+ * by the default: the caller asked for a specific session, and answering with a
+ * different one under a `session` field it will then write edits back through
+ * is how a reviewer's labels would land in the wrong tree. The route 404s
+ * instead.
+ */
+function readSession(root: string, requested?: string) {
+  const sessions = listSessions(root);
+  if (sessions.length === 0) return null;
+  if (requested !== undefined && !sessions.includes(requested)) return null;
+  const session = requested ?? sessions[0];
 
   const swingsDir = join(root, session, 'swings');
   const swings = readdirSync(swingsDir)
@@ -314,8 +355,17 @@ function readSession(root: string) {
     .flatMap((dir) => {
       const metaPath = join(swingsDir, dir, 'metadata.json');
       if (!existsSync(metaPath)) return [];
-      const raw = readFileSync(metaPath, 'utf-8');
-      const metadata = JSON.parse(raw) as Json;
+      // Guarded like the user-edit read below: an unparseable document costs
+      // its own swing. Unguarded it threw, 500ing the route, and the app fell
+      // back to seed data with no message.
+      let raw;
+      let metadata;
+      try {
+        raw = readFileSync(metaPath, 'utf-8');
+        metadata = JSON.parse(raw) as Json;
+      } catch {
+        return [];
+      }
       // The hash stays that of the metadata alone. `edit.against` records
       // which ETL output was reviewed, so hashing the merged document would
       // make it self-referential and every review would read as stale.
@@ -331,7 +381,12 @@ function readSession(root: string) {
       return [{ dir: `swings/${dir}`, hash, doc, edit }];
     });
 
-  return { session, swings };
+  // Guarded rather than asserted: this is parsed file content, and a swing
+  // whose `source` is missing or malformed should report "unknown", not crash
+  // the route that serves every other swing beside it.
+  const first = swings.length > 0 ? swings[0].doc.source : undefined;
+  const source = isObject(first) ? first : null;
+  return { session, sessions, swings, source };
 }
 
 /**
@@ -417,9 +472,13 @@ export default function shotLab(): Plugin {
     name: 'shot-lab-etl',
     apply: 'serve',
     configureServer(server: ViteDevServer) {
-      server.middlewares.use('/api/session', (_req, res) => {
+      server.middlewares.use('/api/session', (req, res) => {
         try {
-          const payload = readSession(OUT_ROOT());
+          // `?session=` picks which one; absent means the first, which is what
+          // every caller predating the picker sends.
+          const query = (req.url ?? '').split('?')[1] ?? '';
+          const requested = new URLSearchParams(query).get('session') ?? undefined;
+          const payload = readSession(OUT_ROOT(), requested);
           if (payload === null) {
             res.statusCode = 404;
             res.end('{"error":"no session"}');
@@ -482,4 +541,12 @@ export default function shotLab(): Plugin {
   };
 }
 
-export { docHash, overlayEdit, readSession, resolveWriteTarget, safeJoin, WRITABLE };
+export {
+  docHash,
+  listSessions,
+  overlayEdit,
+  readSession,
+  resolveWriteTarget,
+  safeJoin,
+  WRITABLE,
+};

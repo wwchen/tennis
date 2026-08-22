@@ -28,6 +28,34 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "known_shots.json")
 
 
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _find_video(recorded_path, stem):
+    """The video for a session, wherever it actually is now.
+
+    The fixture records the absolute path the ground truth was collected
+    against -- `~/Downloads/IMG_0304.MOV`. Footage moved into `raw/` inside the
+    repository and the recorded path stopped existing, so `sessions()` returned
+    nothing and this entire class skipped. Silently: the suite still reported
+    OK, four skips look like the four the README budgets for, and the only
+    measurement of recall in the project was gone for as long as nobody
+    counted. Two detector defaults were then changed with no recall check at
+    all, one of which cost a third of the shots in a session.
+
+    So the recorded path is a hint, not the answer: fall back to `raw/<stem>`
+    beside the repo, which is where the videos live now.
+    """
+    recorded = os.path.expanduser(recorded_path or "")
+    if recorded and os.path.exists(recorded):
+        return recorded
+    for ext in (".MOV", ".mov", ".mp4", ".MP4"):
+        candidate = os.path.join(REPO, "raw", stem + ext)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def sessions():
     """[(stem, video_path, [verified_times_s])] for videos present on disk."""
     try:
@@ -37,9 +65,9 @@ def sessions():
         return []
     out = []
     for stem, entry in sorted(data.get("sessions", {}).items()):
-        video = os.path.expanduser(entry.get("video") or "")
+        video = _find_video(entry.get("video"), stem)
         times = entry.get("verified_times_s") or []
-        if video and os.path.exists(video) and len(times) >= 10:
+        if video and len(times) >= 10:
             out.append((stem, video, sorted(times)))
     return out
 

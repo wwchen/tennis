@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import realSwing from './__fixtures__/swing-real.json';
 import type { EtlSwingDoc, SessionPayload, SwingEntry } from './etl-types';
+import { clipLength, sourceEnd, sourceRange, sourceStart } from './types';
 import {
   adaptSession,
   adaptSwing,
@@ -15,15 +16,17 @@ import { FRAMES_PER_CLIP } from './types';
 const fixture = realSwing as unknown as EtlSwingDoc;
 
 describe('sampleFrames', () => {
-  it('takes a 9-frame window centred on contact from a real 49-frame swing', () => {
+  it('spreads its 9 frames over the whole swing, not a third of a second', () => {
     const picked = sampleFrames(fixture.frames, fixture.detection.contact_ms);
     expect(picked).toHaveLength(FRAMES_PER_CLIP);
-    // Verified against the real fixture: contact_ms 6301, 33 ms frame step.
+    // Verified against the real fixture: contact_ms 6301, 33 ms frame step, 49
+    // stills spanning ±800 ms. Adjacent frames would be -133..+133 — the racket
+    // passing through the ball, with the setup and the finish never shown.
     expect(picked.map((f) => f.offset_contact_ms)).toEqual([
-      -133, -100, -67, -33, 0, 33, 67, 100, 133,
+      -800, -600, -400, -200, 0, 200, 400, 600, 800,
     ]);
     expect(picked.map((f) => f.source_ms)).toEqual([
-      6168, 6201, 6234, 6268, 6301, 6334, 6368, 6401, 6434,
+      5501, 5701, 5901, 6101, 6301, 6501, 6701, 6901, 7101,
     ]);
   });
 
@@ -218,7 +221,12 @@ describe('adaptSession isolates a swing it cannot read', () => {
   const malformed = (dir: string) =>
     entry(dir, { ...fixture, labels: { ...fixture.labels, stroke: 7 } });
 
-  const payloadOf = (swings: SwingEntry[]): SessionPayload => ({ session: 'IMG_0304', swings });
+  const payloadOf = (swings: SwingEntry[]): SessionPayload => ({
+    session: 'IMG_0304',
+    sessions: ['IMG_0304'],
+    source: null,
+    swings,
+  });
 
   it('keeps every readable swing and names the one it could not read', () => {
     const { clips, skipped } = adaptSession(
@@ -279,5 +287,114 @@ describe('adaptSession isolates a swing it cannot read', () => {
     );
     expect(clips.map((c) => c.id)).toEqual(['ok']);
     expect(skipped).toHaveLength(1);
+  });
+});
+
+describe('the clip video', () => {
+  const swing = () => structuredClone(realSwing) as unknown as EtlSwingDoc;
+
+  it('points at the rendered clip the ETL named in trim.file', () => {
+    const clip = adaptSwing(swing(), '/api/media/IMG_0305/swings/swing_001');
+    expect(clip.videoUrl).toBe('/api/media/IMG_0305/swings/swing_001/clip.mp4');
+  });
+
+  it('follows trim.file rather than assuming the name', () => {
+    const doc = swing();
+    doc.trim.file = 'clip.webm';
+    expect(adaptSwing(doc, '/base').videoUrl).toBe('/base/clip.webm');
+  });
+
+  it('is absent when there is no media behind the clip', () => {
+    // Seeded clips reach `adaptSwing` with no base, and a `<video>` pointed at
+    // a URL that 404s renders as a broken black box.
+    expect(adaptSwing(swing()).videoUrl).toBeUndefined();
+  });
+});
+
+describe('the source range shown on the row', () => {
+  const swing = () => structuredClone(realSwing) as unknown as EtlSwingDoc;
+
+  it('reports where the clip was cut from, not how long it runs', () => {
+    // Every clip runs the same 3.5s by construction, so the duration alone is a
+    // column of identical text. This is the part that differs per row.
+    const doc = swing();
+    doc.trim.source_start_ms = 58250;
+    doc.trim.source_end_ms = 61750;
+    // The clock floors, so the range alone reads as three seconds; the length
+    // in parentheses is what says it is three and a half.
+    expect(sourceRange(adaptSwing(doc))).toBe('0:58–1:01 (3.5s)');
+  });
+
+  it('carries the raw milliseconds through for anything that needs them', () => {
+    const doc = swing();
+    const clip = adaptSwing(doc);
+    expect(clip.sourceStartMs).toBe(doc.trim.source_start_ms);
+    expect(clip.sourceEndMs).toBe(doc.trim.source_end_ms);
+  });
+
+  it('falls back to the duration for a clip that came from no video', () => {
+    const seeded = { ...adaptSwing(swing()), sourceStartMs: undefined, sourceEndMs: undefined };
+    expect(sourceRange(seeded)).toBe(seeded.duration);
+  });
+});
+
+describe('the catalog card’s timestamp and length', () => {
+  const swing = () => structuredClone(realSwing) as unknown as EtlSwingDoc;
+
+  it('shows where the clip starts in the session', () => {
+    const doc = swing();
+    doc.trim.source_start_ms = 40980;
+    doc.trim.source_end_ms = 44480;
+    expect(sourceStart(adaptSwing(doc))).toBe('0:40');
+  });
+
+  it('shows the length to a decimal, not as a floored clock', () => {
+    // Every clip is the same 3.5s window; `0:03` both rounds it away and
+    // would be indistinguishable from a 3.0s clip.
+    const doc = swing();
+    doc.trim.source_start_ms = 40980;
+    doc.trim.source_end_ms = 44480;
+    expect(clipLength(adaptSwing(doc))).toBe('3.5s');
+    expect(adaptSwing(doc).duration).toBe('0:03');
+  });
+
+  it('drops a trailing zero, so a whole number reads as one', () => {
+    const doc = swing();
+    doc.trim.source_start_ms = 1000;
+    doc.trim.source_end_ms = 4000;
+    expect(clipLength(adaptSwing(doc))).toBe('3s');
+  });
+
+  it('falls back to the duration for a clip with no source timing', () => {
+    const seeded = { ...adaptSwing(swing()), sourceStartMs: undefined, sourceEndMs: undefined };
+    expect(sourceStart(seeded)).toBe(seeded.duration);
+    expect(clipLength(seeded)).toBe(seeded.duration);
+  });
+});
+
+describe('the card’s end timestamp', () => {
+  const swing = () => structuredClone(realSwing) as unknown as EtlSwingDoc;
+
+  it('reports where the clip ends in the source video', () => {
+    const doc = swing();
+    doc.trim.source_start_ms = 40980;
+    doc.trim.source_end_ms = 44480;
+    const clip = adaptSwing(doc);
+    expect(sourceStart(clip)).toBe('0:40');
+    expect(sourceEnd(clip)).toBe('0:44');
+  });
+
+  it('crosses the minute boundary the same way the start does', () => {
+    const doc = swing();
+    doc.trim.source_start_ms = 58500;
+    doc.trim.source_end_ms = 62000;
+    const clip = adaptSwing(doc);
+    expect(sourceStart(clip)).toBe('0:58');
+    expect(sourceEnd(clip)).toBe('1:02');
+  });
+
+  it('falls back to the duration when there is no source timing', () => {
+    const seeded = { ...adaptSwing(swing()), sourceStartMs: undefined, sourceEndMs: undefined };
+    expect(sourceEnd(seeded)).toBe(seeded.duration);
   });
 });

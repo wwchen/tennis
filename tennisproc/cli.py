@@ -2,14 +2,23 @@
 
     run       the whole ETL
     probe     print the source video's facts
-    detect    audio candidates only; --dry-run prints and writes nothing
+    detect    find swings and print them; renders nothing
     validate  check an output tree against the schema
     show      print one swing, with user-edit.json overlaid
 
-`detect --dry-run` is the tuning loop. Missed shots and bad cuts are a
-detector problem, not something a human fixes per swing, so sweeping
---onset-k has to be cheap: it prints candidate times and the rejection
-histogram without rendering anything.
+`detect` prints candidate times and the rejection histogram without writing
+anything, which is how one video's stage counts get looked at. It is no longer
+the cheap tuning loop it was: the vision detector pose-scans the whole video,
+and `detect` passes no work directory, so nothing it computes is cached.
+Sweeping belongs in `scripts/process.sh`, which caches under out/<stem>/work/.
+
+`--dry-run` with `--pose-backend=stub` stops after detection and prints the
+candidate times, skipping the dense pose pass and verification -- which is all
+a stub could report on anyway. Note that the scan itself still runs, on
+synthetic poses, so those times are not a measurement of anything.
+
+`detector` has no flag, so the CLI always runs the vision detector; the
+audio-only one is reachable from `config.Settings(detector="audio")`.
 """
 
 import argparse
@@ -23,13 +32,21 @@ def _add_settings_args(parser):
     s = config.Settings()
     g = parser.add_argument_group("detection")
     g.add_argument("--onset-k", type=float, default=s.onset_k,
-                   help="audio threshold in MADs above the median (default %(default)s)")
+                   help="audio threshold in MADs above the median; sets which "
+                        "onsets exist for a swing to be dated by "
+                        "(default %(default)s)")
     g.add_argument("--gap", type=float, default=s.min_gap_s, dest="min_gap_s",
                    help="collapse swings closer than this many seconds")
     g.add_argument("--min-torso", type=float, default=s.min_torso,
                    help="reject bodies smaller than this fraction of frame height")
     g.add_argument("--min-wrist-speed", type=float, default=s.min_wrist_speed,
                    help="reject swings slower than this (torso heights/second)")
+    g.add_argument("--reanchor-min-speed", type=float,
+                   default=s.reanchor_min_speed,
+                   # Nothing moves any more; this only screens. See
+                   # verify.measure_slot and Settings.reanchor_min_speed.
+                   help="the speed required of a swing whose wrist peak is "
+                        "far from the strike (default %(default)s)")
 
     g = parser.add_argument_group("pose")
     g.add_argument("--pose-backend", default=s.pose_backend,
@@ -59,6 +76,10 @@ def _add_settings_args(parser):
     g.add_argument("--quality", type=int, default=s.frame_quality,
                    dest="frame_quality", help="JPEG quality 1-100")
     g.add_argument("--pad", type=float, default=s.crop_pad, dest="crop_pad")
+    g.add_argument("--crop", default=s.crop_mode, dest="crop_mode",
+                   choices=("full", "pose"),
+                   help="full renders the whole frame; pose crops to the "
+                        "tracked player (default %(default)s)")
 
     g = parser.add_argument_group("players")
     g.add_argument("--player-mode", default=s.player_mode,
@@ -94,10 +115,12 @@ def cmd_detect(args):
     report = pipeline.Reporter(verbose=True)
 
     source = pipeline.stage_probe(video, raw_path=args.video)
-    candidates = pipeline.stage_detect(video, settings, report)
+    candidates = pipeline.stage_detect(video, settings, report, source=source)
 
     if args.dry_run and args.pose_backend == "stub":
-        # No pose available: report the audio stage alone rather than pretend.
+        # A stub backend cannot verify anything, so stop at detection rather
+        # than pretend. With the vision detector the scan behind these
+        # candidates ran on synthetic poses too -- times only, no meaning.
         print("\ncandidates (audio only, no verification):")
         for i, candidate in enumerate(candidates, 1):
             print("  %3d  %8.2fs  peak %.1f"

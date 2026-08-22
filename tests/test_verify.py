@@ -5,6 +5,7 @@ generation of this code chose the wrist furthest from the body midline, which
 is usually the free arm, and measured 22% stroke agreement as a result.
 """
 
+import dataclasses
 import math
 import os
 import sys
@@ -125,20 +126,49 @@ class TestWristSpeeds(unittest.TestCase):
     def test_speed_is_in_torso_heights_per_second(self):
         """A wrist crossing one torso height in one second reads 1.0.
 
-        At index 0 the centred window clamps to [0, 1], so the measured
-        interval is the full 1000ms: one torso height per second.
+        Measured over the interval CENTRED on the sample, which is the only
+        interval `wrist_speeds` reports. This used to pass a two-frame series
+        and assert on index 0, where the window clamped to a one-sided
+        difference -- the very path that biased endpoints 2x hot and put half
+        of all re-anchored contacts on a window edge. There is no index 0 to
+        assert on any more, by design.
         """
         a = body(r_wrist=(0.5, 0.46))
+        mid = body(r_wrist=(0.5 + TORSO / 2.0, 0.46))
         b = body(r_wrist=(0.5 + TORSO, 0.46))
-        speeds = verify.wrist_speeds([(0, a), (1000, b)], pose.R_WRIST, TORSO)
+        speeds = verify.wrist_speeds([(0, a), (500, mid), (1000, b)],
+                                     pose.R_WRIST, TORSO)
+        self.assertEqual(len(speeds), 1)
+        self.assertEqual(speeds[0][0], 500)
         self.assertAlmostEqual(speeds[0][1], 1.0, places=3)
 
     def test_speed_halves_when_the_same_distance_takes_twice_as_long(self):
         a = body(r_wrist=(0.5, 0.46))
+        mid = body(r_wrist=(0.5 + TORSO / 2.0, 0.46))
         b = body(r_wrist=(0.5 + TORSO, 0.46))
-        fast = verify.wrist_speeds([(0, a), (1000, b)], pose.R_WRIST, TORSO)
-        slow = verify.wrist_speeds([(0, a), (2000, b)], pose.R_WRIST, TORSO)
+        fast = verify.wrist_speeds([(0, a), (500, mid), (1000, b)],
+                                   pose.R_WRIST, TORSO)
+        slow = verify.wrist_speeds([(0, a), (1000, mid), (2000, b)],
+                                   pose.R_WRIST, TORSO)
         self.assertAlmostEqual(slow[0][1], fast[0][1] / 2.0, places=3)
+
+    def test_endpoints_are_not_reported_at_all(self):
+        """The bias that broke re-anchoring, pinned.
+
+        A one-sided difference over half the baseline is not the same
+        measurement as a centred one: identical detector jitter reads about
+        twice as fast there. Reporting both kinds in one series and taking
+        `argmax` put contact on the first or last decoded frame in 50% of
+        tracks against 8% by chance -- 17 of 48 re-anchored swings in one real
+        session, at exactly +-pose_window_s from the onset.
+        """
+        series = [(i * 33, body(r_wrist=(0.5, 0.46))) for i in range(5)]
+        speeds = verify.wrist_speeds(series, pose.R_WRIST, TORSO)
+        self.assertEqual([t for t, _ in speeds], [33, 66, 99])
+
+    def test_a_track_too_short_to_have_an_interior_reports_nothing(self):
+        two = [(0, body()), (33, body())]
+        self.assertEqual(verify.wrist_speeds(two, pose.R_WRIST, TORSO), [])
 
     def test_glitch_is_capped(self):
         """One implausible frame must not dominate peak speed."""
@@ -189,21 +219,54 @@ class TestMeasureSlot(unittest.TestCase):
         got = verify.measure_slot(track_from([body()] * 9), 0, self.settings)
         self.assertEqual(got.reason, verify.WRIST_TOO_SLOW)
 
-    def test_rejects_an_onset_away_from_the_swing(self):
-        """The wrist peaks early in the window; the onset sits at its end.
+    def test_an_onset_away_from_the_swing_is_kept_at_its_onset(self):
+        """A shot whose wrist peak is elsewhere is still a shot, at the sound.
 
-        The offset has to be reachable by a real decode. extract_track only
-        builds tracks spanning contact +/- pose_window_s, so asserting on a
-        contact_ms thousands of ms outside the frames -- which this test
-        used to do -- proved nothing: it exercised a track the decoder
-        cannot produce. Here the frames run 1000..1264ms with the peak near
-        the start and contact declared at 1264ms, inside the window but
-        beyond ONSET_WINDOW_FRACTION of it.
+        Three behaviours have lived here. Rejecting it threw away real shots --
+        25 of 29 candidates on IMG_0304, four of them in `known_shots.json`.
+        Moving contact to the wrist peak recovered them and then put contact in
+        the wrong place: measured against 12 verified shot times, recall was
+        100% on the onset and 58% on the moved value, with the moved value
+        0.2-0.35s away on every shot it touched.
+
+        So: keep the swing, keep contact where the audio put it.
         """
         track = track_from(swinging(n=9), base_ms=1000, step_ms=33,
                            contact_ms=1264)
-        got = verify.measure_slot(track, 0, self.settings)
-        self.assertEqual(got.reason, verify.ONSET_OFF_SWING)
+        settings = dataclasses.replace(self.settings, reanchor_min_speed=0.0)
+        got = verify.measure_slot(track, 0, settings)
+        self.assertIsNone(got.reason)
+        self.assertFalse(got.reanchored)
+        self.assertEqual(got.contact_ms, 1264)
+
+    def test_a_slow_swing_far_from_its_onset_is_rejected(self):
+        """Far AND slow means nobody was swinging when the sound happened.
+
+        This is the surviving half of the re-anchor work: the peak's distance
+        from the onset is evidence about the candidate, not a correction to
+        apply to it. Gated by `reanchor_min_speed`, swept at
+        `config.Settings.reanchor_min_speed` -- 12.0 keeps 100% recall on the
+        verified shots while lifting precision from 32% to 46%.
+        """
+        track = track_from(swinging(n=9), base_ms=1000, step_ms=33,
+                           contact_ms=1264)
+        # The gate is set above this fixture's speed rather than left at the
+        # default, so the test exercises the branch instead of asserting where
+        # the shipped constant happens to sit. It moved 15.0 -> 12.0 once
+        # already and this test failed for that reason alone, which is the
+        # signature of a test pinned to a number rather than a behaviour.
+        strict = dataclasses.replace(self.settings, reanchor_min_speed=1e6)
+        got = verify.measure_slot(track, 0, strict)
+        self.assertEqual(got.reason, verify.PEAK_OFF_ONSET)
+
+    def test_a_standing_player_is_still_rejected(self):
+        """Re-anchoring must not become a way in for things that never swung.
+
+        The speed and torso gates run BEFORE the onset window, so a body that
+        did not swing is gone long before this can move its contact.
+        """
+        got = verify.measure_slot(track_from([body()] * 9), 0, self.settings)
+        self.assertEqual(got.reason, verify.WRIST_TOO_SLOW)
 
     def test_contact_offset_sign_says_which_side(self):
         """Positive means the wrist was right of the midline at contact.
@@ -339,3 +402,68 @@ class TestVerify(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IdentityFlipsInMeasurement(unittest.TestCase):
+    """A wrist that teleports to another player is not a fast swing.
+
+    `Track.series` indexes poses positionally, so when the detector reorders
+    its output the measured body changes mid-window. Over 396 shipped swings
+    49% of series contained such a jump and 43% reported a peak that sat on
+    one -- and because `verify` picks the slot with the fastest wrist, those
+    flips were also choosing which player got measured.
+    """
+
+    def test_a_flip_produces_no_speed(self):
+        near, far = 0.30, 0.75
+        series = [(i * 33, body(cx=(far if i == 2 else near),
+                                r_wrist=((far if i == 2 else near) + 0.2, 0.5)))
+                  for i in range(5)]
+        speeds = verify.wrist_speeds(series, pose.R_WRIST, TORSO)
+        self.assertEqual(speeds, [])
+
+    def test_one_body_still_measures(self):
+        series = [(i * 33, body(cx=0.30, r_wrist=(0.30 + 0.02 * i, 0.5)))
+                  for i in range(5)]
+        self.assertEqual(len(verify.wrist_speeds(series, pose.R_WRIST, TORSO)), 3)
+
+    def test_the_flip_no_longer_wins_slot_selection(self):
+        """Two slots: one really swinging, one that merely changes identity."""
+        swinger = swinging(n=9, cx=0.30, sweep=0.5)
+        flipper = []
+        for i in range(9):
+            cx = 0.80 if i % 2 else 0.20
+            flipper.append(body(cx=cx, r_wrist=(cx, 0.5)))
+        track = track_from([[swinger[i], flipper[i]] for i in range(9)])
+        measured, _ = verify.verify(track, config.Settings())
+        self.assertTrue(measured.ok, measured.reason)
+        self.assertEqual(measured.slot, 0)
+
+
+class AspectRatio(unittest.TestCase):
+    """x and y are each normalized to their own axis; torso height is in y.
+
+    Mixing them without the frame aspect measures horizontal motion in
+    width-fractions and divides by a height-fraction. A swing is mostly
+    horizontal, so 16:9 footage understated nearly every speed by 1.78x.
+    """
+
+    def test_horizontal_speed_scales_with_the_frame(self):
+        series = [(i * 100, body(cx=0.30, r_wrist=(0.30 + 0.05 * i, 0.5)))
+                  for i in range(3)]
+        square = verify.wrist_speeds(series, pose.R_WRIST, TORSO, 1.0)[0][1]
+        wide = verify.wrist_speeds(series, pose.R_WRIST, TORSO, 16 / 9.0)[0][1]
+        self.assertAlmostEqual(wide, square * 16 / 9.0, places=3)
+
+    def test_vertical_speed_is_unaffected(self):
+        series = [(i * 100, body(cx=0.30, r_wrist=(0.30, 0.50 + 0.02 * i)))
+                  for i in range(3)]
+        square = verify.wrist_speeds(series, pose.R_WRIST, TORSO, 1.0)[0][1]
+        wide = verify.wrist_speeds(series, pose.R_WRIST, TORSO, 16 / 9.0)[0][1]
+        self.assertAlmostEqual(square, wide, places=6)
+
+    def test_frame_aspect_falls_back_when_the_size_is_unknown(self):
+        track = track_from([body()] * 5)
+        self.assertAlmostEqual(verify.frame_aspect(track), 320 / 240.0)
+        track.frame_size = None
+        self.assertEqual(verify.frame_aspect(track), 1.0)

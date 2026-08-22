@@ -2,17 +2,24 @@
 
 Two ffmpeg jobs per swing:
 
-  * `clip.mp4` -- a few seconds of context around contact, cropped to the
-    player, re-encoded. Re-encoded rather than stream-copied because a copy
-    can only cut at a keyframe, which would put the clip's start up to a
-    keyframe interval away from where the metadata says it is.
-  * `frames/frame_NNNN.jpg` -- a dense run of stills around contact, cropped
-    and scaled, extracted in one pass with the fps filter.
+  * `clip.mp4` -- a few seconds of context around contact, re-encoded.
+    Re-encoded rather than stream-copied because a copy can only cut at a
+    keyframe, which would put the clip's start up to a keyframe interval away
+    from where the metadata says it is.
+  * `frames/frame_NNNN.jpg` -- a run of stills around contact, scaled,
+    extracted in one pass with the fps filter.
 
-Frames are extracted at the *source* frame rate by default. A human
-relabelling the true contact frame cannot do it on a sparse grid: at 30 fps
-one frame is 33 ms and the ball moves feet between them. That density is the
-main size driver, roughly 2-4 MB per swing.
+Both go through the same rect, which is the whole frame unless
+`crop_mode="pose"` was asked for.
+
+Frames are extracted at the *source* frame rate by DEFAULT, which is the
+density a human needs to relabel the true contact frame: at 30 fps one frame
+is 33 ms and the ball moves feet between them. It is also the main size
+driver, roughly 2-4 MB per swing, and `scripts/process.sh` therefore ships
+`--fps 2 --span 3.0` instead -- 7 stills half a second apart, about 300 KB a
+swing, wide enough to read a whole swing. Contact is still on the grid either
+way (see `frame_times_ms`), but at 0.5s spacing there is no neighbouring frame
+to move the label to. Neither setting is right for both jobs.
 
 Filenames are plain indices. The previous code encoded the time offset into
 each name (`f+0.00s.jpg`) and parsed it back out, which made filenames
@@ -45,9 +52,23 @@ def _run(cmd):
 
 
 def clip_bounds(contact_ms, pre_s, post_s, duration_ms):
-    """Clip start and end in ms, clamped to the video."""
+    """Clip start and end in ms: a fixed window, clamped to the video.
+
+    Every clip is the same `pre_s + post_s` around its contact, deliberately.
+    Splitting the session at the midpoint between neighbouring contacts was
+    tried and reverted: it removed all overlap, but made a clip's length a
+    function of how fast the rally was going -- 1.2s in an exchange, 3.5s off a
+    feed -- and truncated follow-throughs that genuinely run into the next shot.
+
+    Overlap between neighbours is therefore expected and fine: two shots 2s
+    apart share about 43% of their video and are still plainly different swings.
+    What is NOT fine is two contacts a fifth of a second apart yielding the same
+    clip twice, and that is `min_gap_s`' job, upstream in `dedupe_swings`.
+    """
     start = max(0, int(round(contact_ms - pre_s * 1000)))
     end = min(int(duration_ms), int(round(contact_ms + post_s * 1000)))
+
+
     if end <= start:
         end = min(int(duration_ms), start + 1)
     return start, end
@@ -177,6 +198,9 @@ def render_swing(video, dest_dir, rect, contact_ms, source, settings,
     start_ms, end_ms = clip_bounds(contact_ms, settings.pre_s, settings.post_s,
                                    source["duration_ms"])
 
+    # One rect for the clip and the stills, so `crop` in the document describes
+    # what was actually rendered. Which rect that is, and why it defaults to the
+    # whole frame, is `Settings.crop_mode`.
     trim = cut_clip(video, os.path.join(dest_dir, "clip.mp4"), rect,
                     start_ms, end_ms, height=settings.clip_height,
                     crf=settings.clip_crf)
@@ -184,6 +208,7 @@ def render_swing(video, dest_dir, rect, contact_ms, source, settings,
     fps = settings.frame_fps or source["fps"]
     times = frame_times_ms(contact_ms, settings.frame_span_s, fps,
                            source["duration_ms"])
+
     written = extract_frames(video, os.path.join(dest_dir, "frames"), rect,
                              times, long_edge=settings.frame_long_edge,
                              quality=settings.frame_quality,

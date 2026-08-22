@@ -34,6 +34,12 @@ class PoseError(TennisprocError):
     pass
 
 
+# How far a body's midline may move between consecutive samples, as a
+# fraction of frame width. A player crosses a court in seconds, not in a
+# tenth of one, so anything beyond this is the detector switching people.
+BODY_JUMP = 0.15
+
+
 class Landmarks:
     """One detected body in one frame.
 
@@ -143,10 +149,21 @@ class StubBackend(PoseBackend):
 
     name = "stub"
 
-    def __init__(self, script=None, players=1, window_s=0.40):
+    # One synthetic swing every two seconds during a continuous scan. Longer
+    # than `scan.SCAN_MIN_GAP_S` so consecutive swings stay distinguishable.
+    # Period and offset match the clicks test_integration.py plants (2/5/8s):
+    # a detector requiring sound and body to agree needs its fixtures to.
+    SWING_PERIOD_MS = 3000.0
+    SWING_OFFSET_MS = 2000.0
+
+    def __init__(self, script=None, players=1, window_s=0.40, period_ms=None,
+                 offset_ms=None):
         self.script = script
         self.players = players
         self.window_ms = float(window_s) * 1000.0
+        self.period_ms = float(period_ms or self.SWING_PERIOD_MS)
+        self.offset_ms = float(self.SWING_OFFSET_MS if offset_ms is None
+                               else offset_ms)
         self.calls = 0
         self._origin_ms = None
         self._last_ms = None
@@ -173,7 +190,25 @@ class StubBackend(PoseBackend):
             self._origin_ms = timestamp_ms
         self._last_ms = timestamp_ms
         span = max(1.0, 2.0 * self.window_ms)
-        return min(1.0, max(0.0, (timestamp_ms - self._origin_ms) / span))
+        elapsed = max(0.0, timestamp_ms - self._origin_ms)
+        if elapsed <= span:
+            return min(1.0, elapsed / span)
+
+        # Past one swing: the whole-video scan walks in small steps and never
+        # trips the reset above, so the stub swings repeatedly instead of
+        # freezing -- otherwise every end-to-end test detects zero swings.
+        # Between swings the arm is STILL: a stub that sweeps forever has the
+        # same median speed as its peaks, so a MAD threshold finds nothing.
+        # Swings centred on `offset + n * period`, each one sweeping out and
+        # back to where it started so position is continuous and the wrist
+        # genuinely rests in between.
+        half = span / 2.0
+        since = timestamp_ms - self._origin_ms - self.offset_ms
+        nearest = round(since / self.period_ms) * self.period_ms
+        distance = abs(since - nearest)
+        if distance >= half:
+            return 0.0
+        return 1.0 - distance / half
 
     def _body(self, phase, slot):
         base_x = 0.3 + slot * 0.4

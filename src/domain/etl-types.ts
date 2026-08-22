@@ -153,6 +153,41 @@ export interface SwingEntry {
 
 /** The whole `/api/session` response. */
 export interface SessionPayload {
+  /** The session these `swings` came from — one source video. */
   session: string;
   swings: SwingEntry[];
+  /**
+   * Every session in the tree, `session` included, so the picker can list them
+   * without a second round trip. One name per source video: nine clips of one
+   * afternoon are nine sessions here, because a session is whatever one
+   * `ffprobe` call can describe.
+   */
+  sessions: string[];
+  /**
+   * What the ETL probed about the source video, or null for a tree that has
+   * no readable swing to take it from.
+   *
+   * Read off a swing rather than the session document, because `source` is
+   * copied into every swing on purpose and a session killed mid-render has no
+   * session document at all — IMG_0306 and IMG_0307 were both in that state.
+   */
+  source: EtlSource | null;
+}
+
+/** The `source` block of a SwingDoc, as `probe.probe()` writes it. */
+export interface EtlSource {
+  name: string;
+  path: string;
+  sha256_16: string;
+  bytes: number;
+  duration_ms: number;
+  fps: number;
+  vfr: boolean;
+  width: number;
+  height: number;
+  rotation: number;
+  has_audio: boolean;
+  audio_sr?: number;
+  /** Source file mtime, ISO 8601. Absent in trees rendered before it existed. */
+  modified?: string;
 }

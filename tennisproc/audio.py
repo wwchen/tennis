@@ -1,9 +1,11 @@
-"""Shot candidates from the audio track.
+"""Strike onsets from the audio track.
 
 A racket striking a ball is a sharp broadband transient. Finding it in the
 audio gives contact timing to roughly +/-20 ms, which is far better than
 anything recoverable from 30 fps video, where a frame is 33 ms and the ball
-moves feet between frames.
+moves feet between frames. That timing is what this stage is for: under the
+default detector these onsets do not propose swings, they DATE the swings
+`scan.py` found. See `scan.corroborate`.
 
 The detector is deliberately plain: high-pass by first difference, sliding
 RMS envelope, then threshold at `median + k * MAD` over the whole session.
@@ -11,9 +13,12 @@ Median and MAD rather than mean and standard deviation because a session
 contains loud outliers by definition -- the shots themselves -- and they
 would inflate a mean-based threshold until quiet shots fall below it.
 
-This stage over-reports on purpose. It cannot tell a ball strike from a
-dropped racket or a clap, so pose verification downstream is what rejects
-those; a candidate that never reaches the verifier can never be recovered.
+This stage over-reports on purpose, and heavily -- 3.8 onsets per real swing
+at the shipped `k`, because a room rings and the next court is playing too. It
+cannot tell a ball strike from a bounce, a dropped racket or a clap, and no
+threshold on a waveform can: an onset with no swinging body near it is
+discarded by `scan.corroborate`, not here. An onset that never reaches that
+stage can never be recovered, which is why `onset_k` stays low.
 
 Only stdlib + numpy: the wav is read with `wave`, not a decoder library.
 """
@@ -159,10 +164,11 @@ def collapse(candidates, min_gap_s):
 
 
 def detect(video, k=8.0, min_gap_s=0.0, sample_rate=SAMPLE_RATE):
-    """Full audio stage: video -> candidates.
+    """Full audio stage: video -> onsets.
 
-    min_gap_s of 0 returns every onset; the caller usually collapses later,
-    after pose verification has thrown out the ones that were not swings.
+    min_gap_s of 0 returns every onset, which is what the pipeline asks for:
+    collapsing happens later, in `dedupe_swings`, once pose has said which
+    onsets anybody swung at.
     """
     with tempfile.TemporaryDirectory() as tmp:
         wav = os.path.join(tmp, "audio.wav")
