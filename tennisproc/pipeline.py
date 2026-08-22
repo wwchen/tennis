@@ -1,12 +1,15 @@
 """Stage orchestration: candidates -> tracks -> verified swings -> disk.
 
-Each stage is callable on its own and caches its expensive output, so tuning
-the detector never re-runs pose and re-rendering never re-runs either. The
-stages, in order:
+Each stage is callable on its own and both pose passes cache their output, so
+re-rendering never re-runs pose. Re-tuning the DETECTOR does, which is the one
+thing that changed when detection went vision-first: the scan is what decides
+which windows exist, so every knob upstream of it is in `config._CACHE_KEYS`.
+The stages, in order:
 
     probe    read the source video's facts
-    detect   audio onsets -> candidates
-    pose     one decode pass per candidate -> landmark tracks   (cached)
+    scan     pose over the whole video -> wrist-speed peaks     (cached)
+    detect   each peak takes the time of its nearest onset
+    pose     one dense track per surviving candidate            (cached)
     verify   accept/reject each candidate, measure the swing
     render   cut clips, extract frames
     index    write the session document
@@ -18,7 +21,7 @@ that every clip, crop, frame and timestamp is produced regardless.
 
 import os
 
-from . import audio, crop, players, probe, render, schema, session, tracks
+from . import audio, crop, players, probe, render, scan, schema, session, tracks
 from . import pose as pose_mod
 from . import verify as verify_mod
 
@@ -44,12 +47,56 @@ def stage_probe(video, raw_path=None):
     return source
 
 
-def stage_detect(video, settings, report=None):
-    """Audio candidates, before any pose verification."""
-    candidates = audio.detect(video, k=settings.onset_k)
+def stage_detect(video, settings, report=None, source=None, work_dir=None):
+    """Swing candidates.
+
+    Two detectors. `vision` scans pose across the whole video, takes the peaks
+    of wrist speed as swings, and gives each one the timestamp of the nearest
+    audio onset -- so the body decides THAT a swing happened and the sound
+    decides WHEN. `audio` is the original: every loud transient is a candidate.
+
+    Vision is the default because a body swings once where a room rings
+    several times; `scan.py` carries the measurements. `audio` stays reachable
+    for a run with no pose backend, and for comparing the two.
+    """
+    onsets = audio.detect(video, k=settings.onset_k)
+
+    if settings.detector == "audio" or source is None:
+        if report:
+            report.say("detect: %d audio candidates at k=%.1f"
+                       % (len(onsets), settings.onset_k))
+        return onsets
+
+    cache_path = os.path.join(work_dir, "scan.jsonl.gz") if work_dir else None
+    cache_key = "%s:%s" % (source["sha256_16"], settings.cache_hash())
+    samples = scan.read_cache(cache_path, cache_key) if cache_path else None
+    if samples is None:
+        backend = pose_mod.make_backend(
+            settings.pose_backend, model_path=settings.pose_model,
+            tiles=settings.pose_tiles,
+            min_confidence=settings.pose_min_confidence,
+            window_s=settings.pose_window_s)
+        samples = tracks.scan_video(video, source, backend,
+                                    scan_fps=settings.scan_fps)
+        # An empty scan is a failure, not a result: caching it would mean
+        # the session is never re-attempted.
+        if cache_path and samples:
+            os.makedirs(work_dir, exist_ok=True)
+            scan.write_cache(cache_path, samples, cache_key)
+    elif report:
+        report.say("scan: %d pose samples from cache" % len(samples))
+    series = scan.wrist_speed_series(samples)
+    peaks = scan.find_peaks(series, k=settings.scan_k,
+                            min_gap_s=settings.scan_min_gap_s)
+    candidates = scan.corroborate(peaks, onsets,
+                                  window_s=settings.audio_window_s,
+                                  min_gap_s=settings.scan_min_gap_s)
     if report:
-        report.say("detect: %d candidates at k=%.1f"
-                   % (len(candidates), settings.onset_k))
+        report.say("scan: %d pose samples, %d swing peaks" % (len(samples), len(peaks)))
+        report.say("detect: %d candidates (%d peaks had no strike within %.1fs; "
+                   "%d audio onsets not on a swing)"
+                   % (len(candidates), len(peaks) - len(candidates),
+                      settings.audio_window_s, len(onsets) - len(candidates)))
     return candidates
 
 
@@ -120,10 +167,17 @@ def dedupe_swings(accepted, min_gap_s):
     if not accepted:
         return []
     gap_ms = min_gap_s * 1000.0
-    ordered = sorted(accepted, key=lambda pair: pair[0].contact_ms)
+    # Ordered and compared on the ANCHORED contact: a bounce onset and its
+    # strike onset are far apart as onsets and nearly identical once pose has
+    # moved both to the swing, which is exactly the pair dedupe should collapse.
+    def anchor(pair):
+        return pair[1].contact_ms if pair[1].contact_ms is not None \
+            else pair[0].contact_ms
+
+    ordered = sorted(accepted, key=anchor)
     kept = [ordered[0]]
     for track, measured in ordered[1:]:
-        if track.contact_ms - kept[-1][0].contact_ms < gap_ms:
+        if anchor((track, measured)) - anchor(kept[-1]) < gap_ms:
             if measured.wrist_peak_speed > kept[-1][1].wrist_peak_speed:
                 kept[-1] = (track, measured)
         else:
@@ -145,7 +199,8 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
     os.makedirs(paths["swings"], exist_ok=True)
     existing_dirs = _swing_dirs(paths["swings"])
 
-    candidates = stage_detect(video, settings, report)
+    candidates = stage_detect(video, settings, report, source=source,
+                              work_dir=paths["work"])
     track_list = stage_pose(video, candidates, source, settings,
                             work_dir=paths["work"], report=report)
     accepted, histogram = stage_verify(track_list, settings, report)
@@ -175,14 +230,25 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
     for index, ((track, measured), slot) in enumerate(zip(accepted, slots), 1):
         dir_name = session.swing_dir_name(index)
         dest = os.path.join(paths["swings"], dir_name)
-        rect = crop.rect_for(measured.boxes, source["width"], source["height"],
-                             pad_fraction=settings.crop_pad)
+        # See `Settings.crop_mode`: the pose rect frames where the player stood
+        # during the pose window, which is a fifth of what gets rendered.
+        if settings.crop_mode == "pose":
+            rect = crop.rect_for(measured.boxes, source["width"],
+                                 source["height"],
+                                 pad_fraction=settings.crop_pad)
+        else:
+            rect = crop.full_frame(source["width"], source["height"])
 
         def missing(source_ms, reason, _dir=dir_name):
             report.say("  warning: %s frame at %dms not written: %s"
                        % (_dir, source_ms, reason))
 
-        trim, frames = render.render_swing(video, dest, rect, track.contact_ms,
+        # The anchored contact, which is the audio onset unless pose moved it.
+        # Everything a reviewer sees hangs off this: the clip is centred on it
+        # and every frame's `offset_contact_ms` is measured from it.
+        contact_ms = (measured.contact_ms if measured.contact_ms is not None
+                      else track.contact_ms)
+        trim, frames = render.render_swing(video, dest, rect, contact_ms,
                                            source, settings,
                                            on_missing=missing)
         _attach_pose_scores(frames, track, measured.slot)
@@ -191,9 +257,16 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
         doc = session.build_swing_doc(
             swing_id="%s/%s" % (os.path.splitext(source["name"])[0], dir_name),
             source=source, trim=trim, crop_rect=rect,
-            contact_ms=track.contact_ms, frames=frames,
+            contact_ms=contact_ms, frames=frames,
             measurements=measured.to_metadata(), player_slot=slot,
-            onset_peak=track.candidate.get("onset_peak"))
+            onset_peak=track.candidate.get("onset_peak"),
+            # `audio` alone is no longer true for a re-anchored swing: the
+            # instant came from the wrist-speed peak, and the onset only said
+            # where to look. Recorded so a reader can tell the two apart --
+            # audio locates contact to about +-20ms, pose to a frame.
+            method=("audio_onset+pose_contact" if measured.reanchored
+                    else "audio_onset+pose_verify"),
+            onset_ms=track.contact_ms if measured.reanchored else None)
         errors = schema.validate_swing(doc)
         if errors:
             raise RuntimeError("built an invalid swing doc for %s: %s"
@@ -275,6 +348,24 @@ def _attach_pose_scores(frames, track, slot):
         nearest = min(series, key=lambda row: abs(row[0] - frame["source_ms"]))
         if abs(nearest[0] - frame["source_ms"]) <= 50:
             frame["pose_score"] = round(float(nearest[1].score), 4)
+
+    # The schema asserts that non-null measurements imply *some* frame carries
+    # a score, and it is right to: the two blocks otherwise disagree about
+    # whether pose ran. But 50 ms is a native-fps assumption. At `--fps 2` the
+    # stills are 500 ms apart, so the whole +-400 ms pose window can fall
+    # between two of them and nothing lands within 50 ms -- a perfectly good
+    # swing then renders as an invalid document and aborts the session, which
+    # is how IMG_0305/swing_105 killed a 121-swing render at 100.
+    #
+    # The nearest still to the track IS the one the measurements describe, so
+    # it adopts the nearest sample whatever the gap. Deliberately last-resort:
+    # it fires only when the loop above scored nothing, so at native fps this
+    # is unreachable and every frame's score still means what it always did.
+    if frames and all(frame["pose_score"] is None for frame in frames):
+        gap = lambda frame: min(abs(row[0] - frame["source_ms"]) for row in series)
+        closest = min(frames, key=gap)
+        nearest = min(series, key=lambda row: abs(row[0] - closest["source_ms"]))
+        closest["pose_score"] = round(float(nearest[1].score), 4)
 
 
 def _write_pose_file(dest, track, slot):

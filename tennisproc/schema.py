@@ -40,7 +40,8 @@ PLAYER_MODES = ("side", "depth")
 QUALITY = (1, 2, 3, 4, 5)
 
 REJECT_REASONS = ("no_pose", "torso_too_small", "no_wrist_track",
-                  "wrist_too_slow", "onset_off_swing", "duplicate")
+                  "wrist_too_slow", "onset_off_swing", "reanchor_too_slow",
+                  "duplicate")
 
 CROP_SPACE = "source_display"
 MEASURE_SPACE = "crop_normalized"
@@ -128,6 +129,13 @@ def _check_source(c, src, path):
     c.field(src, "height", path, _INT, positive=True)
     c.field(src, "rotation", path, _INT, enum=ROTATIONS)
     c.field(src, "has_audio", path, (bool,))
+    # Checked only when present. `optional=True` on `field` means "may be
+    # null", not "may be absent" -- a missing key is always an error there, so
+    # declaring `modified` that way made every tree rendered before it existed
+    # fail validation wholesale. This block is copied into every swing, so that
+    # was 232 documents in one session alone.
+    if "modified" in src:
+        c.field(src, "modified", path, (str,), optional=True)
     c.field(src, "audio_sr", path, _INT, optional=True, positive=True)
 
 
@@ -154,6 +162,10 @@ def _check_crop(c, crop, path):
 
 def _check_detection(c, det, path):
     c.field(det, "method", path, (str,))
+    # Nothing sets this any more -- re-anchoring was reverted -- but trees on
+    # disk carry it, so it is validated when present and never required.
+    if "onset_ms" in det and det["onset_ms"] is not None:
+        c.field(det, "onset_ms", path, _INT, non_negative=True)
     c.field(det, "contact_ms", path, _INT, non_negative=True)
     c.field(det, "onset_peak", path, _NUM, optional=True)
     c.field(det, "verified", path, (bool,))

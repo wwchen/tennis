@@ -52,7 +52,7 @@ def read_json(path):
 def build_swing_doc(swing_id, source, trim, crop_rect, contact_ms, frames,
                     measurements=None, player_slot=None, onset_peak=None,
                     verified=True, reject_reason=None,
-                    method="audio_onset+pose_verify"):
+                    method="audio_onset+pose_verify", onset_ms=None):
     """One swing's metadata.json.
 
     `source` is denormalized into every swing rather than referenced, so a
@@ -68,10 +68,18 @@ def build_swing_doc(swing_id, source, trim, crop_rect, contact_ms, frames,
         "crop": dict(crop_rect),
         "detection": {
             "method": method,
-            # The detector's own record of where it fired. Never rewritten:
-            # a human moving contact edits user-edit.json instead, so
-            # offset_contact_ms on every frame stays meaningful.
+            # Where the ETL says contact happened. Never rewritten *by a human*:
+            # moving contact is an edit in user-edit.json, so every frame's
+            # offset_contact_ms stays meaningful against this.
+            #
+            # Usually the audio onset, which locates a strike to about +-20ms.
+            # When the onset turned out to be a bounce and pose found the swing
+            # a third of a second later, this is the wrist-speed peak instead
+            # and `method` says so -- see `measure_slot`. `onset_ms` then keeps
+            # the sound that started the search, so the two never merge into one
+            # unattributable number.
             "contact_ms": int(contact_ms),
+            "onset_ms": None if onset_ms is None else int(onset_ms),
             "onset_peak": onset_peak,
             "verified": bool(verified),
             "reject_reason": reject_reason,

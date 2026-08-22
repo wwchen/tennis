@@ -79,13 +79,99 @@ a:hover {
 }
 
 /* Compare grid tile size. One knob so the row labels, the header columns and
-   the cells themselves can never drift apart. */
+   the cells themselves can never drift apart.
+
+   Taller than it is wide, and bigger than it was. The stills are the player,
+   framed head to feet by a crop the ETL takes from pose: 338x640 on portrait
+   footage. A 108x71 landscape tile showed the middle third of that and cut off
+   the head, the racket and the feet — every part of a swing worth grading. A
+   tennis body is upright whichever way the phone was held, so the tile is too. */
 .compare {
-  --tile: 108px;
-  --tileh: 71px;
+  --tile: 132px;
+  --tileh: 186px;
 }
 
 /* A removed clip stays legible but visibly demoted while "Show removed" is on. */
 .is-removed {
   opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------------------
+   Layout widths, and the phone.
+
+   The panel widths live here rather than inline so the desktop column and the
+   phone's drawer/sheet can be told apart in one place. The structural part of
+   the switch is in `useIsMobile` — a drawer with a scrim and a sheet with a
+   drag handle are different elements, not restyled ones.
+   --------------------------------------------------------------------------- */
+.filters-panel {
+  width: 268px;
+}
+
+.inspector-panel {
+  width: 420px;
+  border-left: 1px solid var(--gray-300);
+}
+
+.catalog-grid {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.app-header {
+  gap: 20px;
+  padding: 0 20px;
+}
+
+@media (max-width: 839px) {
+  /* A tight single row where it fits, and the view control shrinks to make it
+     fit: the header wrapped to four rows on a 390px screen, roughly half the
+     viewport before a clip appeared. */
+  .app-header {
+    gap: 8px;
+    padding: 6px 10px;
+    row-gap: 6px;
+    min-height: 0;
+  }
+
+  .app-header lds-segmented-control,
+  .app-header [class*='segmented'] {
+    max-width: 150px;
+  }
+
+  /* Two cards across a 390px screen; the phone's card is a thumbnail, not a
+     player. */
+  .catalog-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    padding: 14px 12px 40px;
+    gap: 10px;
+  }
+
+  /* The compare grid cannot fit a phone at any tile size — nine columns of a
+     shared timeline is wide by nature — so it keeps scrolling sideways, with
+     less of it to scroll. */
+  .compare {
+    --tile: 96px;
+    --tileh: 136px;
+  }
+
+  /* The sheet sits over the content, so the content needs somewhere to end. */
+  .app-body {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+
+  /* "Needs work" was clipped mid-word on a 213px card. The chips wrap to a
+     second line rather than truncating a rating a reviewer has to read to
+     choose it. */
+  .catalog-grid .grade-chips {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+}
+
+/* A fingertip is not a mouse pointer: stop the double-tap zoom delay on the
+   things a reviewer taps repeatedly. */
+@media (pointer: coarse) {
+  .frame-still {
+    touch-action: manipulation;
+  }
 }

@@ -3,6 +3,7 @@ import { buildCompare, rosterOf, statsOf, strokesOf, visibleClips } from './sele
 import { SEED_NEXT_COMMENT_ID, seedClips, seedComments } from '@/domain/seed';
 import type { Doc } from '@/state/persistence';
 import type { Ui } from '@/state/store';
+import { initialState, reducer } from '@/state/store';
 import type { Clip } from '@/domain/types';
 import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES, FRAMES_PER_CLIP } from '@/domain/types';
 import { frameWindow } from '@/domain/window';
@@ -20,6 +21,12 @@ const doc = (): Doc => ({
 
 const ui = (patch: Partial<Ui> = {}): Ui => ({
   view: 'compare',
+  suspectOnly: false,
+  inspectorPlaying: false,
+  sourceMetaOpen: false,
+  inlineClip: null,
+  mobileFilters: false,
+  sheetFull: false,
   playerFilter: ALL_PLAYERS,
   strokeFilter: ALL_STROKES,
   gradeFilter: ALL_RATINGS,
@@ -143,9 +150,22 @@ describe('buildCompare narrows real 49-frame clips', () => {
     // seed's 9-frame rows would be padded out to 49 columns wide.
     const { rows, colLabels } = buildCompare([long('A', 24), long('B', 20)], 'contact', [], null);
     for (const row of rows) {
-      expect(row.cells.filter((c) => c.real)).toHaveLength(FRAMES_PER_CLIP);
+      const real = row.cells.filter((c) => c.real);
+      expect(real.length).toBeLessThanOrEqual(FRAMES_PER_CLIP);
+      expect(real.length).toBeGreaterThanOrEqual(FRAMES_PER_CLIP - 1);
       expect(row.cells).toHaveLength(colLabels.length);
     }
+  });
+
+  it('gives up a column rather than a uniform stride when the anchor sits off-grid', () => {
+    // Anchor 25 of 49 at stride 6 can reach four strides back but only three
+    // forward, so its row is eight columns of nine. The alternative — a stride
+    // chosen per clip — would make column "+200ms" mean a different moment on
+    // every row, which is the one thing the shared timeline cannot allow.
+    const { rows } = buildCompare([long('B', 25)], 'contact', [], null);
+    const real = rows[0].cells.filter((c) => c.real);
+    expect(real).toHaveLength(FRAMES_PER_CLIP - 1);
+    expect(real.map((c) => (c.real ? c.frame : -1))).toContain(25);
   });
 
   it('aligns every anchor in the same column across clips with different anchors', () => {
@@ -168,20 +188,21 @@ describe('buildCompare narrows real 49-frame clips', () => {
   it('keeps cell.frame a valid index into the full list, offset by the window', () => {
     const { rows } = buildCompare([long('A', 24)], 'contact', [], null);
     const frames = rows[0].cells.filter((c) => c.real).map((c) => (c.real ? c.frame : -1));
-    // Centred on 24: a 9-wide window is [20, 28].
-    expect(frames).toEqual([20, 21, 22, 23, 24, 25, 26, 27, 28]);
-    // The label follows the real index, so f21 is genuinely the 21st still.
+    // Anchored on 24 and strided by 6: the whole extraction, end to end.
+    expect(frames).toEqual([0, 6, 12, 18, 24, 30, 36, 42, 48]);
+    // The label follows the real index, so f01 is genuinely the first still.
     const nums = rows[0].cells.filter((c) => c.real).map((c) => (c.real ? c.num : ''));
-    expect(nums[0]).toBe('f21');
-    expect(nums[8]).toBe('f29');
+    expect(nums[0]).toBe('f01');
+    expect(nums[8]).toBe('f49');
   });
 
-  it('shifts the window inward rather than shortening it at either edge', () => {
-    const atStart = buildCompare([long('A', 1)], 'contact', [], null).rows[0];
-    const atEnd = buildCompare([long('B', 47)], 'contact', [], null).rows[0];
-    const real = (r: typeof atStart) => r.cells.filter((c) => c.real).map((c) => (c.real ? c.frame : -1));
-    expect(real(atStart)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(real(atEnd)).toEqual([40, 41, 42, 43, 44, 45, 46, 47, 48]);
+  it('spends the columns one side cannot reach on the other, at either edge', () => {
+    const atStart = buildCompare([long('A', 0)], 'contact', [], null).rows[0];
+    const atEnd = buildCompare([long('B', 48)], 'contact', [], null).rows[0];
+    const real = (r: typeof atStart) =>
+      r.cells.filter((c) => c.real).map((c) => (c.real ? c.frame : -1));
+    expect(real(atStart)).toEqual([0, 6, 12, 18, 24, 30, 36, 42, 48]);
+    expect(real(atEnd)).toEqual([0, 6, 12, 18, 24, 30, 36, 42, 48]);
   });
 
   it('anchors an untagged clip with no ETL timing on the middle of its extraction', () => {
@@ -191,14 +212,17 @@ describe('buildCompare narrows real 49-frame clips', () => {
     expect(untagged.frames[0].offsetContactMs).toBeUndefined();
     const { rows } = buildCompare([untagged], 'contact', [], null);
     const frames = rows[0].cells.filter((c) => c.real).map((c) => (c.real ? c.frame : -1));
-    expect(frames).toEqual([20, 21, 22, 23, 24, 25, 26, 27, 28]);
+    expect(frames).toEqual([0, 6, 12, 18, 24, 30, 36, 42, 48]);
   });
 
   it('handles a short clip, and the 42- and 47-frame swings the real tree has', () => {
     for (const length of [3, 42, 47]) {
       const { rows, colLabels } = buildCompare([long('S', 24 % length, length)], 'contact', [], null);
       const real = rows[0].cells.filter((c) => c.real);
-      expect(real).toHaveLength(Math.min(FRAMES_PER_CLIP, length));
+      // At most a full window; one short when the anchor sits off the stride
+      // grid near an edge, which is the documented cost of a uniform stride.
+      expect(real.length).toBeGreaterThanOrEqual(Math.min(FRAMES_PER_CLIP, length) - 1);
+      expect(real.length).toBeLessThanOrEqual(Math.min(FRAMES_PER_CLIP, length));
       expect(rows[0].cells).toHaveLength(colLabels.length);
       for (const cell of real) {
         if (cell.real) expect(rows[0].clip.frames[cell.frame]).toBeDefined();
@@ -325,35 +349,46 @@ describe('the CONTACT column on real ETL data', () => {
 });
 
 describe('frameWindow', () => {
-  it('centres a 9-wide window on the anchor', () => {
-    expect(frameWindow(49, 24)).toEqual({ start: 20, end: 29 });
-    expect(frameWindow(49, 25)).toEqual({ start: 21, end: 30 });
+  it('spends its nine columns on the whole clip, not on a third of a second', () => {
+    // 49 stills 33 ms apart: adjacent frames 20-28 are ±133 ms around contact,
+    // which is the racket passing through the ball and nine identical-looking
+    // tiles. Striding by 6 covers the full ±800 ms the ETL extracted.
+    expect(frameWindow(49, 24)).toEqual([0, 6, 12, 18, 24, 30, 36, 42, 48]);
   });
 
-  it('clamps to the list rather than returning a short window', () => {
-    expect(frameWindow(49, 0)).toEqual({ start: 0, end: 9 });
-    expect(frameWindow(49, 48)).toEqual({ start: 40, end: 49 });
+  it('keeps the anchor on the stride grid when it is not the midpoint', () => {
+    expect(frameWindow(49, 25)).toEqual([1, 7, 13, 19, 25, 31, 37, 43]);
+  });
+
+  it('spends what one side cannot reach on the other', () => {
+    // Contact at the very first frame can look forward only, so it does.
+    expect(frameWindow(49, 0)).toEqual([0, 6, 12, 18, 24, 30, 36, 42, 48]);
+    expect(frameWindow(49, 48)).toEqual([0, 6, 12, 18, 24, 30, 36, 42, 48]);
   });
 
   it('returns the whole list when it is no wider than the window', () => {
-    expect(frameWindow(9, 4)).toEqual({ start: 0, end: 9 });
-    expect(frameWindow(3, 0)).toEqual({ start: 0, end: 3 });
-    expect(frameWindow(3, 2)).toEqual({ start: 0, end: 3 });
+    expect(frameWindow(9, 4)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(frameWindow(3, 0)).toEqual([0, 1, 2]);
+    expect(frameWindow(3, 2)).toEqual([0, 1, 2]);
   });
 
-  it('always contains its anchor', () => {
+  it('always contains its anchor, in ascending order, inside the list', () => {
     for (let n = 1; n <= 49; n++) {
       for (let a = 0; a < n; a++) {
-        const { start, end } = frameWindow(n, a);
-        expect(a, `n=${n} anchor=${a}`).toBeGreaterThanOrEqual(start);
-        expect(a, `n=${n} anchor=${a}`).toBeLessThan(end);
-        expect(end - start).toBe(Math.min(FRAMES_PER_CLIP, n));
+        const window = frameWindow(n, a);
+        const where = `n=${n} anchor=${a}`;
+        expect(window, where).toContain(a);
+        expect(window.length, where).toBeLessThanOrEqual(Math.min(FRAMES_PER_CLIP, n));
+        expect(window[0], where).toBeGreaterThanOrEqual(0);
+        expect(window[window.length - 1], where).toBeLessThan(n);
+        expect([...window].sort((x, y) => x - y), where).toEqual(window);
+        expect(new Set(window).size, where).toBe(window.length);
       }
     }
   });
 
   it('is empty for an empty list', () => {
-    expect(frameWindow(0, 0)).toEqual({ start: 0, end: 0 });
+    expect(frameWindow(0, 0)).toEqual([]);
   });
 });
 
@@ -391,5 +426,88 @@ describe('null strokes', () => {
     const d = doc();
     d.clips = [{ ...d.clips[0], stroke: null }, { ...d.clips[1], stroke: 'Backhand' }];
     expect(strokesOf(d)).toEqual(['Backhand']);
+  });
+});
+
+describe('the "likely not a swing" filter', () => {
+  const measured = (id: string, wristSpeed: number, armOffset: number): Clip => ({
+    id,
+    player: 'left',
+    stroke: null,
+    rejected: false,
+    duration: '0:03',
+    triaged: false,
+    grade: null,
+    note: '',
+    frames: [{ i: 0, sourceMs: 0, phase: null }],
+    measurements: { wristSpeed, armOffset },
+  });
+
+  const docOf = (clips: Clip[]): Doc => ({
+    clips,
+    comments: [],
+    extraPlayers: [],
+    removedStack: [],
+    nextCommentId: 1,
+  });
+
+  it('keeps only the swings that are both slow and unextended', () => {
+    // Measured shapes from the real tree: a standing body, a drop shot (slow
+    // but the arm is out), a mishit (fast, arm in), a normal drive.
+    const d = docOf([
+      measured('standing', 2.27, 0.01),
+      measured('drop-shot', 2.4, 0.9),
+      measured('fast-arm-in', 22.0, 0.1),
+      measured('drive', 28.0, 1.1),
+    ]);
+    const kept = visibleClips(d, ui({ suspectOnly: true })).map((c) => c.id);
+    expect(kept).toEqual(['standing']);
+  });
+
+  it('is off by default, so nothing is hidden until asked', () => {
+    const d = docOf([measured('standing', 2.27, 0.01), measured('drive', 28.0, 1.1)]);
+    expect(visibleClips(d, ui()).map((c) => c.id)).toEqual(['standing', 'drive']);
+  });
+
+  it('never flags a clip with no measurements rather than guessing', () => {
+    // Seeded clips carry none. Treating "unmeasured" as "suspect" would hide
+    // the whole seed the moment the toggle went on.
+    const unmeasured = { ...measured('seed', 0, 0) };
+    delete unmeasured.measurements;
+    const d = docOf([unmeasured]);
+    expect(visibleClips(d, ui({ suspectOnly: true }))).toEqual([]);
+  });
+
+  it('reads the sign of the arm offset, not its direction', () => {
+    // `contact_offset` is signed: a left-handed contact is negative and just as
+    // extended, so flagging on the raw value would flag every left-side shot.
+    const d = docOf([measured('left-side', 2.0, -0.9)]);
+    expect(visibleClips(d, ui({ suspectOnly: true }))).toEqual([]);
+  });
+});
+
+describe('the selected clip is findable', () => {
+  // The highlight is styling, so what is pinned here is the fact it keys off:
+  // playing a clip must leave `sel` naming that clip, or the row the reviewer
+  // is being shown in the inspector cannot be marked at all.
+  it('playing a clip leaves the selection on it', () => {
+    const clip: Clip = {
+      id: 'IMG_0305/swing_042',
+      player: 'left',
+      stroke: null,
+      rejected: false,
+      duration: '0:03',
+      triaged: false,
+      grade: null,
+      note: '',
+      frames: [
+        { i: 0, sourceMs: 0, phase: null },
+        { i: 1, sourceMs: 500, phase: 'contact' },
+      ],
+    };
+    const base = initialState();
+    const state = { ...base, doc: { ...base.doc, clips: [clip] } };
+    const played = reducer(state, { type: 'playClip', clip: clip.id });
+    expect(played.ui.sel?.clip).toBe(clip.id);
   });
 });

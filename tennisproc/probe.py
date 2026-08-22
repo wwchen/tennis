@@ -19,6 +19,7 @@ itself rather than trusting a library default, because OpenCV 5.0 auto-rotates
 the previous generation of this code was written against one that did not.
 """
 
+import datetime
 import hashlib
 import json
 import os
@@ -102,6 +103,16 @@ def fingerprint(path):
     return h.hexdigest()[:16]
 
 
+def _modified_iso(path):
+    """The file's mtime as an ISO 8601 UTC string, or None if it has none."""
+    try:
+        stamp = os.path.getmtime(path)
+    except OSError:
+        return None
+    return datetime.datetime.utcfromtimestamp(stamp).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
 def probe(path, raw_path=None):
     """Return the `source` block of a SwingDoc/SessionDoc.
 
@@ -157,6 +168,13 @@ def probe(path, raw_path=None):
         "path": str(raw_path if raw_path is not None else path),
         "sha256_16": fingerprint(path),
         "bytes": os.path.getsize(path),
+        # When the footage was shot, as far as the filesystem knows. The
+        # container's own creation tag would be better, but it survives neither
+        # AirDrop nor a copy off the phone, while mtime does. Recorded rather
+        # than left to the reader because `source` is copied into every swing
+        # precisely so a swing directory can say where it came from, and "which
+        # afternoon was this" is part of that.
+        "modified": _modified_iso(path),
         "duration_ms": int(round(duration_s * 1000)),
         "fps": round(fps, 6),
         "vfr": vfr,

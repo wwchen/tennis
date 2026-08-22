@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Action, State } from './store';
 import { initialState, reducer, useShotLab } from './store';
 import { loadDoc, saveDoc } from './persistence';
-import { ADD_PLAYER } from '@/domain/types';
+import { ADD_PLAYER, shortId } from '@/domain/types';
+import type { Clip, Phase } from '@/domain/types';
 import type { EtlSwingDoc, SwingEntry } from '@/domain/etl-types';
 import { adaptSwing } from '@/domain/etl';
 import realSwing from '@/domain/__fixtures__/swing-real.json';
@@ -661,6 +662,8 @@ describe('the unreadable-swing report reaches the UI', () => {
       clips: [adaptSwing(realSwing as unknown as EtlSwingDoc)],
       entries: [],
       session: 'IMG_0304',
+      sessions: ['IMG_0304'],
+      source: null,
       skipped,
     });
     const { result } = renderHook(() => useShotLab());
@@ -677,5 +680,353 @@ describe('the unreadable-swing report reaches the UI', () => {
       session: 'IMG_0304',
     });
     expect(hydrated.skipped).toEqual([]);
+  });
+});
+
+describe('switching sessions', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const swing = (): EtlSwingDoc => realSwing as unknown as EtlSwingDoc;
+  const entriesOf = (): SwingEntry[] => [
+    { dir: 'swings/swing_001', hash: 'sha256:abc', doc: swing(), edit: null },
+  ];
+
+  const payloadFor = (session: string) => ({
+    clips: [adaptSwing(swing())],
+    entries: entriesOf(),
+    session,
+    sessions: ['IMG_0304', 'IMG_0305'],
+    source: null,
+    skipped: [],
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('re-reads the tree for the session the reviewer picked', async () => {
+    const load = vi
+      .spyOn(etlSource, 'loadEtlClips')
+      .mockResolvedValue(payloadFor('IMG_0304'));
+
+    const { result } = renderHook(() => useShotLab());
+    await waitFor(() => expect(result.current.state.session).toBe('IMG_0304'));
+    expect(load).toHaveBeenCalledWith(undefined);
+
+    load.mockResolvedValue(payloadFor('IMG_0305'));
+    act(() => result.current.switchSession('IMG_0305'));
+
+    await waitFor(() => expect(result.current.state.session).toBe('IMG_0305'));
+    expect(load).toHaveBeenLastCalledWith('IMG_0305');
+  });
+
+  it('offers every session in the tree, not only the one loaded', async () => {
+    vi.spyOn(etlSource, 'loadEtlClips').mockResolvedValue(payloadFor('IMG_0304'));
+    const { result } = renderHook(() => useShotLab());
+    await waitFor(() => expect(result.current.state.sessions).toEqual(['IMG_0304', 'IMG_0305']));
+  });
+
+  it('flushes an edit made inside the debounce window before switching away', async () => {
+    // The write effect cancels on a session change, and a switch changes it —
+    // so without the flush a label applied in the last 600 ms goes nowhere, and
+    // `hydrate` then replaces the clip that held it.
+    vi.spyOn(etlSource, 'loadEtlClips').mockResolvedValue(payloadFor('IMG_0304'));
+    const { result } = renderHook(() => useShotLab());
+    await waitFor(() => expect(result.current.state.session).toBe('IMG_0304'));
+    fetchMock.mockClear();
+
+    act(() => {
+      result.current.dispatch({
+        type: 'setNote',
+        clip: 'IMG_0304/swing_001',
+        note: 'switched too fast',
+      });
+    });
+    // No waiting: straight to the switch, well inside the 600 ms debounce.
+    act(() => result.current.switchSession('IMG_0305'));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(url).toBe('/api/swings/IMG_0304/swings/swing_001/user-edit');
+    expect((JSON.parse(init.body) as EtlSwingDoc).labels.notes).toBe('switched too fast');
+  });
+
+  it('does not let one session’s sent-payload cache retire another’s write', async () => {
+    // Every session names its first swing `swings/swing_001`. Keyed by dir
+    // alone, an identical first write to IMG_0305 would be skipped as already
+    // sent — silently, and permanently for that page load.
+    const load = vi
+      .spyOn(etlSource, 'loadEtlClips')
+      .mockResolvedValue(payloadFor('IMG_0304'));
+    const { result } = renderHook(() => useShotLab());
+    await waitFor(() => expect(result.current.state.session).toBe('IMG_0304'));
+
+    act(() => {
+      result.current.dispatch({ type: 'setNote', clip: 'IMG_0304/swing_001', note: 'same text' });
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    fetchMock.mockClear();
+
+    load.mockResolvedValue(payloadFor('IMG_0305'));
+    act(() => result.current.switchSession('IMG_0305'));
+    await waitFor(() => expect(result.current.state.session).toBe('IMG_0305'));
+    fetchMock.mockClear();
+
+    act(() => {
+      result.current.dispatch({ type: 'setNote', clip: 'IMG_0304/swing_001', note: 'same text' });
+    });
+
+    await waitFor(
+      () => {
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect((fetchMock.mock.calls[0] as [string])[0]).toBe(
+          '/api/swings/IMG_0305/swings/swing_001/user-edit',
+        );
+      },
+      { timeout: 1000 },
+    );
+  });
+});
+
+describe('playing a clip in the inspector', () => {
+  const withFrames = (id: string, phases: Array<Phase | null>): Clip => ({
+    id,
+    player: 'left',
+    stroke: null,
+    rejected: false,
+    duration: '0:03',
+    triaged: false,
+    grade: null,
+    note: '',
+    frames: phases.map((phase, i) => ({ i, sourceMs: i * 500, phase })),
+  });
+
+  const docWith = (clips: Clip[]): State => {
+    const base = initialState();
+    return { ...base, doc: { ...base.doc, clips } };
+  };
+
+  it('selects the anchor frame and starts playing, without opening the clip', () => {
+    // The point of the design change: answer "was that a shot?" beside the grid
+    // rather than navigating away and losing your place in it.
+    const state = docWith([withFrames('A', [null, null, 'contact', null])]);
+    const next = reducer(state, { type: 'playClip', clip: 'A' });
+    expect(next.ui.inspectorPlaying).toBe(true);
+    expect(next.ui.sel).toEqual({ clip: 'A', frame: 2 });
+    expect(next.ui.view).toBe('compare');
+    expect(next.ui.detail).toBeNull();
+  });
+
+  it('prefers the frame the grid is aligned on', () => {
+    const state = {
+      ...docWith([withFrames('A', ['setup', null, 'contact', null])]),
+    };
+    const aligned = { ...state, ui: { ...state.ui, anchor: 'setup' as Phase } };
+    expect(reducer(aligned, { type: 'playClip', clip: 'A' }).ui.sel).toEqual({
+      clip: 'A',
+      frame: 0,
+    });
+  });
+
+  it('falls back to the detector’s contact frame, then to the first', () => {
+    const untagged = docWith([
+      {
+        ...withFrames('A', [null, null, null]),
+        frames: [
+          { i: 0, sourceMs: 0, phase: null },
+          { i: 1, sourceMs: 500, phase: null, offsetContactMs: 0 },
+          { i: 2, sourceMs: 1000, phase: null },
+        ],
+      },
+    ]);
+    expect(reducer(untagged, { type: 'playClip', clip: 'A' }).ui.sel?.frame).toBe(1);
+
+    const bare = docWith([withFrames('B', [null, null])]);
+    expect(reducer(bare, { type: 'playClip', clip: 'B' }).ui.sel?.frame).toBe(0);
+  });
+
+  it('ignores a clip that is not there, and one with no frames', () => {
+    const state = docWith([{ ...withFrames('A', []), frames: [] }]);
+    expect(reducer(state, { type: 'playClip', clip: 'A' })).toBe(state);
+    expect(reducer(state, { type: 'playClip', clip: 'nope' })).toBe(state);
+  });
+
+  it('stops playing when the reviewer picks a frame', () => {
+    // They just said which moment they want to look at; letting the clip run on
+    // would carry them straight off it.
+    const playing = reducer(
+      docWith([withFrames('A', [null, 'contact', null])]),
+      { type: 'playClip', clip: 'A' },
+    );
+    const picked = reducer(playing, { type: 'select', clip: 'A', frame: 0 });
+    expect(picked.ui.inspectorPlaying).toBe(false);
+    expect(picked.ui.sel).toEqual({ clip: 'A', frame: 0 });
+  });
+
+  it('stops playing when the selection is cleared', () => {
+    const playing = reducer(
+      docWith([withFrames('A', ['contact'])]),
+      { type: 'playClip', clip: 'A' },
+    );
+    expect(reducer(playing, { type: 'clearSelection' }).ui.inspectorPlaying).toBe(false);
+  });
+
+  it('toggles, and is inert with nothing selected', () => {
+    const empty = initialState();
+    const nothingSelected = { ...empty, ui: { ...empty.ui, sel: null } };
+    expect(reducer(nothingSelected, { type: 'toggleInspectorPlay' })).toBe(nothingSelected);
+
+    const playing = reducer(
+      docWith([withFrames('A', ['contact'])]),
+      { type: 'playClip', clip: 'A' },
+    );
+    expect(reducer(playing, { type: 'toggleInspectorPlay' }).ui.inspectorPlaying).toBe(false);
+  });
+
+  it('leaves the detail view’s own transport alone', () => {
+    // Two players, two flags: watching in the inspector must not start the
+    // detail view playing behind it.
+    const playing = reducer(
+      docWith([withFrames('A', ['contact'])]),
+      { type: 'playClip', clip: 'A' },
+    );
+    expect(playing.ui.playing).toBe(false);
+  });
+});
+
+describe('changing the source video', () => {
+  it('drops the selection, the open clip and the running player', () => {
+    // Each of those names a swing in the tree being navigated away from.
+    const base = initialState();
+    const busy: State = {
+      ...base,
+      ui: {
+        ...base.ui,
+        sel: { clip: 'IMG_0304/swing_001', frame: 3 },
+        detail: 'IMG_0304/swing_001',
+        view: 'detail',
+        draft: 'half-typed',
+        inspectorPlaying: true,
+        sourceMetaOpen: true,
+      },
+    };
+    const next = reducer(busy, { type: 'requestSession', session: 'IMG_0305' });
+    expect(next.requested).toBe('IMG_0305');
+    expect(next.ui.sel).toBeNull();
+    expect(next.ui.detail).toBeNull();
+    expect(next.ui.view).toBe('compare');
+    expect(next.ui.draft).toBe('');
+    expect(next.ui.inspectorPlaying).toBe(false);
+    expect(next.ui.sourceMetaOpen).toBe(false);
+  });
+
+  it('leaves a catalog reviewer in the catalog', () => {
+    // Only `detail` is tied to one clip; the grid views survive the switch.
+    const base = initialState();
+    const inCatalog: State = { ...base, ui: { ...base.ui, view: 'catalog' } };
+    expect(reducer(inCatalog, { type: 'requestSession', session: 'IMG_0305' }).ui.view).toBe(
+      'catalog',
+    );
+  });
+
+  it('opens and closes the source details popover', () => {
+    const opened = reducer(initialState(), { type: 'setSourceMetaOpen', value: true });
+    expect(opened.ui.sourceMetaOpen).toBe(true);
+    expect(reducer(opened, { type: 'setSourceMetaOpen', value: false }).ui.sourceMetaOpen).toBe(
+      false,
+    );
+  });
+});
+
+describe('shortId', () => {
+  it('drops the session prefix the header already names', () => {
+    expect(shortId('IMG_0305/swing_042')).toBe('swing_042');
+  });
+
+  it('leaves an id with no prefix alone, which is what the seed carries', () => {
+    expect(shortId('SL-002')).toBe('SL-002');
+  });
+});
+
+describe('playing inline in the catalog', () => {
+  it('plays one card without opening the inspector panel', () => {
+    // The catalog card is already the size of a player; opening a panel to
+    // watch something you can see is a detour.
+    const next = reducer(initialState(), { type: 'playInline', clip: 'IMG_0305/swing_004' });
+    expect(next.ui.inlineClip).toBe('IMG_0305/swing_004');
+    expect(next.ui.inspectorPlaying).toBe(false);
+    expect(next.ui.view).toBe('compare');
+    expect(next.ui.detail).toBeNull();
+  });
+
+  it('stops the panel’s player when a card starts', () => {
+    const base = initialState();
+    const panelPlaying = { ...base, ui: { ...base.ui, inspectorPlaying: true } };
+    expect(
+      reducer(panelPlaying, { type: 'playInline', clip: 'A' }).ui.inspectorPlaying,
+    ).toBe(false);
+  });
+
+  it('plays one clip at a time', () => {
+    const first = reducer(initialState(), { type: 'playInline', clip: 'A' });
+    expect(reducer(first, { type: 'playInline', clip: 'B' }).ui.inlineClip).toBe('B');
+  });
+
+  it('stops when passed null, which is what the clip ending sends', () => {
+    const playing = reducer(initialState(), { type: 'playInline', clip: 'A' });
+    expect(reducer(playing, { type: 'playInline', clip: null }).ui.inlineClip).toBeNull();
+  });
+
+  it('picking a frame stops the card, so the still is not behind a video', () => {
+    const playing = reducer(initialState(), { type: 'playInline', clip: 'A' });
+    const picked = reducer(playing, { type: 'select', clip: 'A', frame: 2 });
+    expect(picked.ui.inlineClip).toBeNull();
+    expect(picked.ui.sel).toEqual({ clip: 'A', frame: 2 });
+  });
+});
+
+describe('the phone layout', () => {
+  it('keeps the drawer and the sidebar as separate flags', () => {
+    // They are different things wearing the same name: the sidebar is open by
+    // default and pushes the grid aside; the drawer starts closed and floats
+    // over it. One flag meant closing the drawer on a phone collapsed the
+    // sidebar for the next desktop session.
+    const base = initialState();
+    expect(base.ui.filtersOpen).toBe(true);
+    expect(base.ui.mobileFilters).toBe(false);
+
+    const drawerOpen = reducer(base, { type: 'toggleMobileFilters' });
+    expect(drawerOpen.ui.mobileFilters).toBe(true);
+    expect(drawerOpen.ui.filtersOpen).toBe(true);
+
+    const sidebarShut = reducer(drawerOpen, { type: 'toggleFilters' });
+    expect(sidebarShut.ui.filtersOpen).toBe(false);
+    expect(sidebarShut.ui.mobileFilters).toBe(true);
+  });
+
+  it('expands and collapses the inspector sheet', () => {
+    const full = reducer(initialState(), { type: 'setSheetFull', value: true });
+    expect(full.ui.sheetFull).toBe(true);
+    expect(reducer(full, { type: 'setSheetFull', value: false }).ui.sheetFull).toBe(false);
+  });
+
+  it('collapses the sheet when the selection is dismissed', () => {
+    // Otherwise the next frame picked raises an already-expanded sheet over
+    // the clip it was picked from.
+    const base = initialState();
+    const expanded: State = {
+      ...base,
+      ui: { ...base.ui, sheetFull: true, sel: { clip: 'A', frame: 1 } },
+    };
+    const dismissed = reducer(expanded, { type: 'clearSelection' });
+    expect(dismissed.ui.sheetFull).toBe(false);
+    expect(dismissed.ui.sel).toBeNull();
   });
 });

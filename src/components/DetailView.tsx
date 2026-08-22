@@ -4,6 +4,7 @@ import { pinsFor } from '@/lib/selectors';
 import type { Clip, Comment, Stroke } from '@/domain/types';
 import { STROKES, UNTAGGED_STROKE } from '@/domain/types';
 import { strokeHue } from '@/domain/grades';
+import { shortId } from '@/domain/types';
 import { Button, ICONS, Icon, Select, Tag, Textarea, valueOf } from '@/lds';
 import { FrameTile, GradeChips, Mono } from './shared';
 import { elapsedLabel, scrubberPercent } from './playback';
@@ -45,8 +46,17 @@ export function DetailView({
             Back to compare
           </Button>
         </span>
-        <span style={{ fontFamily: 'var(--th-mono)', fontSize: 12, letterSpacing: '0.04em' }}>
-          {clip.id}
+        <span
+          title={clip.id}
+          style={{
+            fontFamily: 'var(--th-mono)',
+            fontSize: 12,
+            letterSpacing: '0.04em',
+            whiteSpace: 'nowrap',
+            flex: 'none',
+          }}
+        >
+          {shortId(clip.id)}
         </span>
         <Tag size="sm" hue={strokeHue(clip.stroke)} emphasis="soft" hint-size="auto,20px">
           {clip.stroke ?? UNTAGGED_STROKE}
@@ -79,6 +89,34 @@ export function DetailView({
         </div>
       </div>
 
+      {clip.videoUrl !== undefined ? (
+        /*
+          The real clip, with the browser's own controls.
+          
+          Everything else in this app reasons about a swing one still at a time,
+          which cannot answer the first question a reviewer actually has — was
+          this a shot, or did the detector fire on a bounce? `contain` and a
+          height cap rather than a fixed aspect: the clip is cropped to the
+          player, so it is portrait on portrait footage and squarer on
+          landscape, and re-cropping it here would cut off the head again.
+        */
+        <video
+          key={clip.videoUrl}
+          src={clip.videoUrl}
+          controls
+          loop
+          playsInline
+          preload="metadata"
+          aria-label={`Clip for ${clip.id}`}
+          style={{
+            width: '100%',
+            maxHeight: 420,
+            objectFit: 'contain',
+            borderRadius: 8,
+            background: 'var(--green-900, #0d1a0e)',
+          }}
+        />
+      ) : (
       <div className="frame-still" style={{ borderRadius: 8, aspectRatio: '16 / 9', maxHeight: 420 }}>
         <span
           style={{
@@ -157,6 +195,7 @@ export function DetailView({
           </span>
         </div>
       </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <Mono style={{ letterSpacing: '0.09em' }}>Filmstrip — click a frame to inspect</Mono>
@@ -171,13 +210,17 @@ export function DetailView({
                 frame: f.i,
                 num: `f${String(f.i + 1).padStart(2, '0')}`,
                 phase: f.phase,
+                // Without this the filmstrip is a row of empty boxes: the tile only
+                // renders an image when the cell carries a URL, and this was
+                // the one place that built a cell and left it off.
+                imageUrl: f.imageUrl,
                 flagged: false,
                 pinCount: pinsFor(comments, clip.id, f.i).length,
                 selected: selectedFrame === f.i,
               }}
               pinSize={15}
               onClick={() => dispatch({ type: 'select', clip: clip.id, frame: f.i })}
-              style={{ width: 124, height: 82 }}
+              style={{ width: 96, height: 134 }}
             />
           ))}
         </div>

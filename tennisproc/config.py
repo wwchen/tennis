@@ -26,13 +26,30 @@ import json
 # Verify-stage knobs (min_gap_s, min_torso, min_wrist_speed), every render
 # knob, and --limit are all deliberately absent.
 _CACHE_KEYS = ("onset_k", "pose_backend", "pose_window_s", "pose_model",
-               "pose_tiles", "pose_min_confidence")
+               "pose_tiles", "pose_min_confidence",
+               # The scan decides which candidates exist at all, so every knob
+               # that moves a candidate moves the set of windows pose decodes.
+               "detector", "scan_fps", "scan_k", "scan_min_gap_s",
+               "audio_window_s")
 
 
 @dataclasses.dataclass
 class Settings:
     # --- detection -------------------------------------------------------
-    onset_k: float = 8.0          # threshold = median + k * MAD
+    # "vision" scans pose across the whole video and uses audio to place
+    # contact; "audio" is the original detector, kept because it is the only
+    # one that runs without a pose backend. See `scan.py` for the measurements
+    # that made vision the default -- 1.1 candidates per real swing against
+    # 3.8, at the same recall.
+    detector: str = "vision"
+    scan_fps: float = 10.0        # pose sampling rate while looking for swings
+    scan_k: float = 3.0           # peak threshold, MADs above median speed
+    scan_min_gap_s: float = 1.0   # two peaks closer than this are one swing
+    audio_window_s: float = 0.8   # how far a strike may sit from its peak
+    # threshold = median + k * MAD. Measured over three sessions against
+    # known_shots.json: recall 100/99/98% at k=8, 92/73/74% at k=15. Raised to
+    # 15 once on one 72-second clip and it cost a third of the shots elsewhere.
+    onset_k: float = 8.0
 
     # Collapse candidates closer together than this.
     #
@@ -50,10 +67,18 @@ class Settings:
     # suppresses a strike's own echo inside the onset detector, which is the
     # job this looked like it should do. Raise it only if a specific video
     # double-reports, and check what it costs first.
+    # 0.12. At 0.25 recall fell to 92/83/86% across the same three sessions.
+    # Duplicate CLIPS are not this knob's job -- audio cannot tell one swing
+    # detected twice from two shots in an exchange; pose can, in dedupe_swings.
     min_gap_s: float = 0.12
 
     min_torso: float = 0.045      # reject if the body is smaller than this
     min_wrist_speed: float = 0.45  # torso heights per second at contact
+
+    # Speed required when the wrist peak is NOT near the onset: far and slow
+    # means nobody swung at that sound. Swept on IMG_0304 -- 100% recall up to
+    # 15, precision 32% -> 46%; 20 starts losing shots. One session only.
+    reanchor_min_speed: float = 12.0
 
     # --- pose ------------------------------------------------------------
     pose_window_s: float = 0.40   # decoded either side of the onset
@@ -61,10 +86,30 @@ class Settings:
     # Vertical strips, for a player too small in frame to be detected whole.
     # 0 and 1 both mean "no tiling"; there is no auto-probe, whatever the
     # name once suggested.
-    pose_tiles: int = 0
-    pose_min_confidence: float = 0.4
+    # 3 vertical strips. Detection rate over a 90s slice: 5-12% at 0 tiles on
+    # distant/outdoor footage, 77-98% at 3, and 100% either way on the sessions
+    # that already worked. Costs ~15x the scan time. NOT 2 -- two strips
+    # measured worse than none on three sessions, seams landing on the players.
+    pose_tiles: int = 3
+    # 0.2, paired with the tiling: a distant player scores lower than a near
+    # one. Admits more bodies per frame (1.59 vs 1.00 outdoors) -- the opponent
+    # and spectators, which is why player-slot clustering now matters.
+    pose_min_confidence: float = 0.2
     pose_backend: str = "mediapipe"
 
+    # --- crop ------------------------------------------------------------
+    # "full" renders the whole frame; "pose" crops to the tracked player.
+    #
+    # Default "full", because the pose crop is measured over `pose_window_s`
+    # -- +-0.4s -- and then applied to everything: a 3.5s clip and, at
+    # `--fps 2 --span 3.0`, stills reaching +-1.5s. IMG_0304/swing_015 came out
+    # a 404x764 strip the player entered around -0.5s and left by +1.5s, so its
+    # first still is an empty court. Padding cannot fix that; the problem is the
+    # fraction of the clip the box was measured over, not its size.
+    #
+    # "pose" is still right when the frame span is inside the pose window, where
+    # a tight frame on the body is exactly what a reviewer wants.
+    crop_mode: str = "full"
     # --- clip ------------------------------------------------------------
     pre_s: float = 1.5            # clip starts this far before contact
     post_s: float = 2.0           # ...and ends this far after
@@ -144,6 +189,8 @@ class Settings:
             errs.append("min_torso must be >= 0")
         if self.min_wrist_speed < 0:
             errs.append("min_wrist_speed must be >= 0")
+        if self.reanchor_min_speed < 0:
+            errs.append("reanchor_min_speed must be >= 0")
         if self.pose_window_s <= 0:
             errs.append("pose_window_s must be > 0")
         if self.pose_tiles < 0:
@@ -156,6 +203,18 @@ class Settings:
             errs.append("clip_height must be > 0")
         if not 0 <= self.clip_crf <= 51:
             errs.append("clip_crf must be 0..51")
+        if self.detector not in ("vision", "audio"):
+            errs.append("detector must be 'vision' or 'audio'")
+        if self.scan_fps <= 0:
+            errs.append("scan_fps must be > 0")
+        if self.scan_k <= 0:
+            errs.append("scan_k must be > 0")
+        if self.scan_min_gap_s < 0:
+            errs.append("scan_min_gap_s must be >= 0")
+        if self.audio_window_s <= 0:
+            errs.append("audio_window_s must be > 0")
+        if self.crop_mode not in ("full", "pose"):
+            errs.append("crop_mode must be 'full' or 'pose'")
         if self.frame_span_s <= 0:
             errs.append("frame_span_s must be > 0")
         if self.frame_fps < 0:

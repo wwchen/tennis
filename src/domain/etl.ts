@@ -6,11 +6,11 @@ import type {
   SessionPayload,
   SwingEntry,
 } from './etl-types';
-import type { Clip, Frame, Grade, Phase, Stroke } from './types';
+import type { Clip, ClipMeasurements, Frame, Grade, Phase, Stroke } from './types';
 import { frameWindow } from './window';
 
 /**
- * The compare grid's window over a swing's 42-49 stills, in `source_ms` space:
+ * The compare grid's window over a swing's stills, in `source_ms` space:
  * the run of frames the aligned view can show at once, centred on contact.
  *
  * NOT used by `adaptSwing` — a `Clip` carries every frame, and `buildCompare`
@@ -19,8 +19,9 @@ import { frameWindow } from './window';
  * frame index. Both go through `frameWindow`, so there is one definition.
  *
  * Contact is never dropped: the window always contains its anchor, and the
- * frames come back in `source_ms` order without repeats because they are a
- * contiguous slice of a list the schema requires to be strictly increasing.
+ * frames come back in `source_ms` order without repeats because the indices
+ * ascend over a list the schema requires to be strictly increasing. They are
+ * strided rather than adjacent — see `frameWindow`.
  */
 export function sampleFrames(frames: EtlFrame[], contactMs: number): EtlFrame[] {
   if (frames.length === 0) return [];
@@ -35,8 +36,7 @@ export function sampleFrames(frames: EtlFrame[], contactMs: number): EtlFrame[] 
     }
   }
 
-  const { start, end } = frameWindow(frames.length, contact);
-  return frames.slice(start, end);
+  return frameWindow(frames.length, contact).map((i) => frames[i]);
 }
 
 /**
@@ -123,14 +123,32 @@ export const mediaUrlFor = (session: string, dir: string, file: string): string 
  * EVERY extracted frame is carried, in source order: `i` is a contiguous render
  * index over the whole list and `sourceMs` is the identity that `user-edit.json`
  * joins on. Narrowing to a window is the compare grid's concern
- * (`buildCompare`), not the adapter's — sampling here made 40 of 49 stills
- * unreachable and silently dropped their stage tags on write-back.
+ * (`buildCompare`), not the adapter's — sampling here made 40 of a 49-still
+ * swing unreachable and silently dropped their stage tags on write-back.
  *
  * `player_slot` stands in for a name because a slot is all the pipeline can
  * honestly know; `stroke` stays null because classification is not part of the
  * ETL. Neither is a placeholder to be filled with a guess.
  */
+/**
+ * The two numbers the row shows, or null if the ETL did not measure them.
+ *
+ * `measurements` is typed as an open record because the schema marks every
+ * field in it optional, so each one is checked at the value rather than trusted
+ * from the type. A swing missing either number is reported as unmeasured
+ * instead of half-measured: `isSuspect` needs both to say anything.
+ */
+function measurementsOf(doc: EtlSwingDoc): ClipMeasurements | null {
+  const m = doc.measurements;
+  if (m === null || typeof m !== 'object') return null;
+  const speed = m.wrist_peak_speed;
+  const arm = m.contact_offset;
+  if (typeof speed !== 'number' || typeof arm !== 'number') return null;
+  return { wristSpeed: speed, armOffset: arm };
+}
+
 export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
+  const measured = measurementsOf(doc);
   const frames: Frame[] = doc.frames.map((f, i) => ({
     i,
     sourceMs: f.source_ms,
@@ -148,10 +166,16 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
     stroke: strokeToApp(doc.labels.stroke),
     rejected: isRejected(doc),
     duration: formatDuration(doc.trim.source_end_ms - doc.trim.source_start_ms),
+    sourceStartMs: doc.trim.source_start_ms,
+    sourceEndMs: doc.trim.source_end_ms,
     triaged: doc.edit?.reviewed === true,
     grade: qualityToGrade(doc.labels.quality),
     note: doc.labels.notes ?? '',
     frames,
+    // `trim.file` rather than a hardcoded 'clip.mp4': the ETL owns the name and
+    // records it, and metadata.json is the only thing entitled to say it.
+    ...(mediaBase === undefined ? {} : { videoUrl: `${mediaBase}/${doc.trim.file}` }),
+    ...(measured === null ? {} : { measurements: measured }),
   };
 }
 

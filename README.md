@@ -5,24 +5,31 @@ per-shot clips, and a React app for reviewing them frame by frame.
 
 | | | |
 | --- | --- | --- |
-| **[`tennisproc/`](tennisproc/README.md)** | Python ETL | long video → per-shot clips, cropped per player, frames + metadata |
+| **[`tennisproc/`](tennisproc/README.md)** | Python ETL | long video → per-swing clips, frames + metadata |
 | **[`src/`](src/)** | React app | frame-level review: align, retag, rate, comment |
+| **[`scripts/`](scripts/README.md)** | the loop | process every video reproducibly, then score what came out |
 
 The ETL writes a `metadata.json` per swing with `stroke` and per-frame `stage`
-left `null`; the app is where a human fills them in. **The two are not wired
-together yet** — the app currently seeds twelve clips from a fixture and the ETL
-writes to `out/`. Connecting them means teaching the app to read the ETL's
-schema, which [`docs/examples/`](docs/examples/) documents.
+left `null`; the app is where a human fills them in. The two are wired: in
+`npm run dev`, [`vite-plugin-shot-lab.ts`](vite-plugin-shot-lab.ts) serves the
+`out/` tree at `/api/session`, `/api/media` and `/api/swings`, the app reads
+whichever session it is pointed at, and a reviewer's edits are written back as
+`user-edit.json` beside the ETL's `metadata.json` — the one file the app is
+allowed to write, into the one directory shape it is allowed to write it. The
+twelve seeded fixture clips remain the fallback for a build with no tree
+behind it: no dev server, no `out/`, a static deploy. The middleware is dev
+only by design, so `vite build` never depends on it.
 
 ---
 
 ## The review app
 
-A frame-level review tool for tennis clips. Each clip's **setup**, **contact**
-and **finish** frames are tagged; this app is where a coach checks that work —
-aligning every clip on the same swing phase so they can be compared column by
-column, correcting bad tags, rating shots, and pinning comments to individual
-frames.
+A frame-level review tool for tennis clips. A clip is aligned on one of three
+swing phases — **setup**, **contact**, **finish** — so that clips can be
+compared column by column, and this app is where those tags come from. The ETL
+supplies only contact, as the frame at `offset_contact_ms == 0`; setup and
+finish are a human's call, as is correcting a bad contact, rating a shot,
+retagging a stroke and pinning comments to individual frames.
 
 Ported from the [Claude Design project][design] (`Shot Lab.dc.html`). The design
 project remains the source of truth for the visual language; this repository is
@@ -38,8 +45,9 @@ npm ci && npm run dev
 
 Then open http://localhost:5173.
 
-`make help` lists everything else. `make check` runs exactly what CI runs, in
-CI's order.
+`make help` lists everything else. `make check` runs exactly what CI's `app`
+job runs, in its order; the Python ETL has its own job and its own command
+(`.venv/bin/python -m unittest discover -s tests`).
 
 ### What's in the box
 
@@ -77,8 +85,13 @@ clip carrying no tag for the current anchor falls back to its midpoint frame.
 
 #### Data
 
-There is no backend. Twelve clips are seeded from a fixture and every edit —
-ratings, comments, stroke/player corrections, removals — persists to
+There is no server, only the dev middleware. In `npm run dev` the app lists
+the sessions in `out/`, loads one, and writes a reviewer's verdicts back to
+that swing's `user-edit.json`; a swing whose `metadata.json` the app cannot
+read is skipped and reported rather than taking the whole session down with
+it. Without a tree — a static build, or a checkout that has never run the ETL
+— twelve clips are seeded from a fixture instead. Either way every edit
+(ratings, comments, stroke/player corrections, removals) also persists to
 `localStorage` under `shot-lab.doc`, versioned so an incompatible stored
 document is discarded rather than half-migrated. Clearing site data resets to
 the seed.
@@ -146,6 +159,10 @@ superseded runs, and a final `ci-passed` job that aggregates the others so one
 required check can gate the branch.
 
 - **app** — install, lint, typecheck, test, build, upload `dist/`.
+- **etl** — `tennisproc`, on its own job because it shares nothing with the
+  app: install ffmpeg, then run the Python suite. It also asserts that no more
+  than 12 tests skipped, because without ffmpeg the suite skips every
+  end-to-end case and would otherwise report green while covering nothing.
 - **docker-build** — build the image with GHA layer caching, smoke-test the
   running container (`/healthz`, that `/` is really the React shell, that
   unknown paths fall back to it), then tag and push to
@@ -219,24 +236,35 @@ success, joining the tailnet, installing a release over SSH and running
 ## The ETL
 
 [`tennisproc`](tennisproc/README.md) turns a long session video into the clips
-this app reviews: shots found, clips cut, cropped per player, frames extracted,
-metadata written. See its README for tuning, the output layout and the full
-schema; this is the short version.
+this app reviews: swings found, clips cut, frames extracted, metadata written.
+See its README for tuning, the output layout and the full schema; this is the
+short version.
 
 ```bash
 brew install ffmpeg            # or: sudo apt-get install -y ffmpeg
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-.venv/bin/python -m tennisproc detect ~/Downloads/session.MOV   # tune, renders nothing
-.venv/bin/python -m tennisproc run    ~/Downloads/session.MOV --outdir out
+# the normal way: everything in raw/ -> out/, then scored
+scripts/process.sh
+scripts/process.sh IMG_0305    # or one session
+
+# the pieces, if you want them
+.venv/bin/python -m tennisproc run      ~/Downloads/session.MOV --outdir out
 .venv/bin/python -m tennisproc validate out/session
 
 .venv/bin/python -m unittest discover -s tests
 ```
 
-`ffmpeg` and `ffprobe` are required, not optional — without them the suite
-still prints `OK` while skipping every end-to-end test.
+[`scripts/process.sh`](scripts/README.md) is the one to reach for: it caches,
+it records what produced each tree in `out/manifest.jsonl` (commit, settings,
+wall time, swing count), and it prints the score afterwards. `tennisproc
+detect` renders nothing but keeps no cache, so with the vision detector it
+re-scans the whole video every time it is asked.
+
+`ffmpeg` and `ffprobe` are required, not optional — without them 87 of the
+suite's 341 cases skip, every end-to-end test among them. CI installs ffmpeg
+and then fails the job if more than 12 tests skipped.
 
 Pose is a separate install and is not needed for the tests. When you do want
 it: `pip install "mediapipe==0.10.35"` on **Python 3.13 specifically**, since
@@ -247,31 +275,54 @@ MediaPipe does not raise — it aborts the process. `tennisproc` checks for a
 window server first and says so. `--pose-backend=stub` runs everything except
 real pose detection, which is how the Python suite works headless.
 
-### How shots are found
+### How swings are found
 
-A ball strike is a sharp broadband transient, which locates contact to about
-±20 ms; at 30 fps a frame is 33 ms and the ball moves feet between frames, so no
-visual estimate comes close. Pose then confirms a body actually swung at that
-moment, rejecting bounces, claps and the feeder. The crop is the union of the
-tracked player's pose boxes, so it follows the *player* rather than whatever
-moved.
+**The body says *that* a swing happened; the sound says *when*.** `scan.py`
+runs pose over the whole video at 10 fps and takes the peaks of wrist speed as
+swings, then gives each peak the timestamp of the nearest audio onset within
+0.8 s. A peak with no strike near it hit nothing and is dropped.
 
-Motion differencing was tried and abandoned: on a fixed camera the players move
-almost constantly, so it finds one long blob per rally and cannot say where one
-shot ends and the next begins.
+It used to be the other way round — audio proposed, pose disposed — and the
+inversion is measured. A room rings, so one swing arrives at the onset
+detector as three or four onsets: 268 onsets for IMG_0305's 75 real swings,
+440 for IMG_0306's 117. Most of them are not on any swing in frame at all —
+194 of IMG_0305's 268 — part echoes of a real strike off net, fence and wall,
+part strikes nobody in frame made, from the next court. No threshold on a
+waveform separates either kind from a shot, because they are the same sound.
+Audio-first therefore emitted about 3.6 clips per real swing; vision-first
+emits 0.97 on IMG_0305 and 1.26 on IMG_0306, at 89% and 91% recall.
+
+Audio keeps the job it is best at, which is the one it was always best at: a
+ball strike is a sharp broadband transient and locates contact to about ±20
+ms, where a 10 fps scan can only say "somewhere in this tenth of a second". So
+a silent video is still rejected outright, and the onset is what dates every
+swing.
+
+Motion differencing was tried and abandoned before either of these: on a fixed
+camera the players move almost constantly, so it finds one long blob per rally
+and cannot say where one shot ends and the next begins.
 
 ### What it writes
 
 ```
 out/<video-stem>/
   metadata.json                  session: source, settings, swing index
+  run.log                        the stage counts for the last run
+  work/                          the cached pose scan and landmark tracks
   swings/swing_001/
-    clip.mp4                     a few seconds around contact, cropped
-    frames/frame_0000.jpg ...    native fps, cropped
+    clip.mp4                     3.5s around contact, whole frame
+    frames/frame_0000.jpg ...    7 stills, 0.5s apart, whole frame
     pose.json                    landmarks per frame
     metadata.json                written by the ETL
     user-edit.json               written by a reviewer, same schema
 ```
+
+Whole frames, not crops: `crop_mode` defaults to `"full"` because the pose
+crop is measured over a ±0.4 s window and then applied to a 3.5 s clip, which
+produced clips whose first still was an empty court. Seven stills rather than
+a dense native-fps run for the same reason of proportion — the wide sparse
+span shows a whole swing at a twentieth of the bytes. Both are settings, and
+[`tennisproc/README.md`](tennisproc/README.md) says what each costs.
 
 One document shape written to two files: `metadata.json` is what the machine
 knows, `user-edit.json` is the same document with human fields filled in. The
@@ -286,13 +337,29 @@ part of the ETL; it can land later as a separate step writing the same fields.
 
 ### What is and isn't verified
 
-Detection recall is **99–100%** against 354 known shot times from three real
-sessions ([`tests/test_real_footage.py`](tests/test_real_footage.py), which
-skips unless the videos are present). Everything after the audio stage — pose
-verification, player zones, cropping — is exercised only on synthetic fixtures,
-because pose cannot run in CI or any headless environment. Precision is
-unmeasured: on one session the audio stage yields 267 candidates against 151
-known shots, and it takes pose or a human to say what the rest are.
+**Quote recall against clustered ground truth, always.**
+`tests/fixtures/known_shots.json` holds 354 shot times, and it is tempting to
+say "recall against 354 known shots". Those are audio *onsets* from the
+previous pipeline, not swings: one swing appears two or three times, and
+IMG_0304 lists 12 of them for the 6 swings the video actually contains.
+Clustered at 1.0 s the fixture is **198 swings**, which is the denominator
+that means anything. Scoring unclustered pays a detector for finding echoes,
+and it is exactly how this project talked itself into an audio-first design
+that emitted 3.8 clips per swing.
 
-The Python suite is stdlib `unittest`, not pytest, and is not part of `npm test`
-or the CI workflow. Nothing in CI runs it yet.
+[`scripts/evaluate.py`](scripts/README.md) does the clustering. Over the
+current `out/` tree it reports 67% / 89% / 91% recall on IMG_0304 / 0305 /
+0306, at 1.50 / 0.97 / 1.26 clips per real swing — and IMG_0304 is six swings
+in 72 seconds, far too small to resolve either figure.
+
+[`tests/test_real_footage.py`](tests/test_real_footage.py) is *not* that
+measurement, whatever its name suggests. It runs the audio onset detector
+alone against all 354 unclustered entries, and what it usefully guards is that
+`onset_k` still hears what it used to hear. Precision remains weakly measured:
+only 4 of 1,647 rendered swings so far carry a human "not a swing" verdict.
+Everything after the scan — player zones, cropping, the reject histogram — is
+exercised in tests only on synthetic fixtures, because MediaPipe cannot run
+headless.
+
+The Python suite is stdlib `unittest`, not pytest, and is not part of
+`npm test`. CI runs it in its own `etl` job.

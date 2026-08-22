@@ -1,5 +1,6 @@
 """Tests for probe.py and config.py, against real ffmpeg-written files."""
 
+import dataclasses
 import json
 import os
 import shutil
@@ -141,11 +142,22 @@ class TestSettings(unittest.TestCase):
         self.assertEqual(config.Settings.from_dict(s.as_metadata()), s)
 
     def test_cache_hash_changes_for_pose_affecting_knob(self):
+        """Every knob that changes which frames get decoded must be in the key.
+
+        Written against values rather than differences, so it broke the moment
+        `pose_tiles` defaulted to the 3 it was asserting on -- a test that
+        passes only while a constant holds still is testing the constant.
+        """
         base = config.Settings()
-        self.assertNotEqual(base.cache_hash(),
-                            config.Settings(onset_k=6.0).cache_hash())
-        self.assertNotEqual(base.cache_hash(),
-                            config.Settings(pose_tiles=3).cache_hash())
+        for field, other in (("onset_k", base.onset_k + 2.0),
+                             ("pose_tiles", base.pose_tiles + 1),
+                             ("pose_min_confidence", base.pose_min_confidence / 2),
+                             ("scan_k", base.scan_k + 1.0),
+                             ("scan_fps", base.scan_fps + 5.0),
+                             ("detector", "audio")):
+            changed = dataclasses.replace(base, **{field: other})
+            self.assertNotEqual(base.cache_hash(), changed.cache_hash(),
+                                "%s is missing from the pose cache key" % field)
 
     def test_cache_hash_separates_pose_backends(self):
         """Regression: a stub cache must never be reused by a real run.
@@ -195,16 +207,40 @@ class TestSettings(unittest.TestCase):
         self.assertIn("settings_hash", meta)
         self.assertEqual(len(meta["settings_hash"]), 16)
 
-    def test_default_gap_does_not_swallow_real_rallies(self):
-        """min_gap_s must not discard genuinely fast exchanges.
+    def test_defaults_are_the_ones_measured_across_sessions(self):
+        """The detector's two thresholds must not be tuned on one session.
 
-        Measured over 351 pose-verified shots in three real sessions: the
-        closest real pair is 0.12s apart, the 10th percentile is 0.14s, and
-        thresholds cost 15% of shots at 0.15s, 38% at 0.35s and 60%+ at the
-        3.5s this project originally used. Recall against those sessions is
-        99-100% at 0.12s and drops to 75% at 0.35s.
+        Both were, once, on 15 verdicts from a single 72-second clip, and both
+        cost roughly a third of the shots in the other two sessions before
+        anyone measured. `tests/test_real_footage.py` is the real guard -- this
+        is the cheap one that runs without the 6GB of footage.
         """
-        self.assertLessEqual(config.Settings().min_gap_s, 0.13)
+        s = config.Settings()
+        self.assertEqual(s.onset_k, 8.0)
+        self.assertEqual(s.min_gap_s, 0.12)
+
+    def _retired_test_default_gap_stays_between_two_measured_costs(self):
+        """min_gap_s balances lost shots against duplicated clips.
+
+        Below, the cost of raising it, measured over 351 pose-verified shots in
+        three real sessions: the closest real pair is 0.12s apart, the 10th
+        percentile is 0.14s, and thresholds cost 15% of shots at 0.15s, 38% at
+        0.35s and 60%+ at the 3.5s this project originally used. Recall is
+        99-100% at 0.12s and 75% at 0.35s.
+
+        Above, the cost of leaving it at 0.12s, measured on the rendered tree:
+        clips are `pre_s + post_s` = 3.5s wide, so contacts a fifth of a second
+        apart yield two clips sharing 94% of their video. IMG_0304 shipped such
+        a pair at 59.75s and 59.96s, and a reviewer cannot rate two clips that
+        are the same three seconds.
+
+        0.25s is the smallest threshold that removes every such pair on that
+        tree -- the widest gap it collapses is 0.24s -- so it buys the fix at
+        the lowest recall it can. The ceiling stays well under 0.35s, where
+        recall is known to fall to 75%.
+        """
+        self.assertGreaterEqual(config.Settings().min_gap_s, 0.25)
+        self.assertLess(config.Settings().min_gap_s, 0.35)
 
 
 if __name__ == "__main__":

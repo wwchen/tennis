@@ -154,7 +154,12 @@ export function FrameTile({
             inset: 0,
             width: '100%',
             height: '100%',
-            objectFit: 'cover',
+            // `contain`, not `cover`: the crop rectangle is already the framing
+            // decision, made from the tracked player's pose boxes, and a tile
+            // that re-crops it throws away whichever end of the body does not
+            // fit. Landscape footage letterboxes against the tile's own
+            // background instead of losing the head.
+            objectFit: 'contain',
           }}
         />
       )}
@@ -217,7 +222,7 @@ export function GradeChips({
   height?: number;
 }) {
   return (
-    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+    <span className="grade-chips" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
       {GRADE_ORDER.map((g) => {
         const active = clip.grade === g;
         return (
