@@ -30,10 +30,19 @@ __pycache__/
 # under work/. Regenerable from the source video, and large (~2-6 MB per
 # swing).
 #
-# Note that user-edit.json — human review work, which is NOT regenerable —
-# also lands in here. If you start reviewing swings, either track those files
-# deliberately or back them up outside this tree.
-out/
+# user-edit.json is the exception and IS tracked: it is human review work, the
+# only thing in this tree that no amount of recomputation brings back. A plain
+# `!out/*/swings/*/user-edit.json` would not work -- git does not descend into
+# an excluded directory, so every level has to stay traversable while its
+# contents are excluded. That is what the ladder below does.
+out/*
+!out/*/
+out/*/*
+!out/*/swings/
+out/*/swings/*
+!out/*/swings/*/
+out/*/swings/*/*
+!out/*/swings/*/user-edit.json
 
 # Source video: the sessions this pipeline reads. 15 iPhone .MOV files,
 # 13.3 GB total, 683 MB median, 3.8 GiB largest (IMG_0479). Thirteen of the

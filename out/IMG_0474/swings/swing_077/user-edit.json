@@ -1,0 +1,130 @@
+{
+ "schema": "tennis.swing/1",
+ "id": "IMG_0474/swing_077",
+ "source": {
+  "name": "IMG_0474.MOV",
+  "path": "raw/IMG_0474.MOV",
+  "sha256_16": "8c29f33171149c2a",
+  "bytes": 1006535548,
+  "modified": "2026-08-20T22:55:28Z",
+  "duration_ms": 583147,
+  "fps": 59.722913,
+  "vfr": true,
+  "width": 1920,
+  "height": 1080,
+  "rotation": 180,
+  "has_audio": true,
+  "audio_sr": 48000
+ },
+ "trim": {
+  "file": "clip.mp4",
+  "source_start_ms": 426802,
+  "source_end_ms": 430302,
+  "encoded_start_ms": 426802,
+  "width": 854,
+  "height": 480
+ },
+ "crop": {
+  "x": 0,
+  "y": 0,
+  "w": 1920,
+  "h": 1080,
+  "space": "source_display",
+  "static": true
+ },
+ "detection": {
+  "method": "audio_onset+pose_verify",
+  "contact_ms": 428302,
+  "onset_ms": null,
+  "onset_peak": 15.549,
+  "verified": true,
+  "reject_reason": null
+ },
+ "labels": {
+  "player_slot": "left",
+  "player_name": null,
+  "stroke": null,
+  "quality": null,
+  "verdict": "false_positive",
+  "tags": [],
+  "notes": null
+ },
+ "frames": [
+  {
+   "file": "frames/frame_0000.jpg",
+   "source_ms": 426802,
+   "clip_ms": 0,
+   "offset_contact_ms": -1500,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0001.jpg",
+   "source_ms": 427302,
+   "clip_ms": 500,
+   "offset_contact_ms": -1000,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0002.jpg",
+   "source_ms": 427802,
+   "clip_ms": 1000,
+   "offset_contact_ms": -500,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0003.jpg",
+   "source_ms": 428302,
+   "clip_ms": 1500,
+   "offset_contact_ms": 0,
+   "pose_score": 1,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0004.jpg",
+   "source_ms": 428802,
+   "clip_ms": 2000,
+   "offset_contact_ms": 500,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0005.jpg",
+   "source_ms": 429302,
+   "clip_ms": 2500,
+   "offset_contact_ms": 1000,
+   "pose_score": null,
+   "stage": null
+  },
+  {
+   "file": "frames/frame_0006.jpg",
+   "source_ms": 429802,
+   "clip_ms": 3000,
+   "offset_contact_ms": 1500,
+   "pose_score": null,
+   "stage": null
+  }
+ ],
+ "measurements": {
+  "space": "crop_normalized",
+  "origin": "top_left",
+  "units": {
+   "length": "torso_heights",
+   "speed": "torso_heights_per_s"
+  },
+  "hitting_side": "left",
+  "per_frame": "pose.json",
+  "wrist_peak_speed": 40,
+  "torso_height": 0.0621,
+  "contact_offset": -0.2711,
+  "contact_height": 0.7305
+ },
+ "edit": {
+  "by": "reviewer",
+  "at": "2026-08-22T06:27:36.933Z",
+  "against": "sha256:058e0ae40ca4dfd2",
+  "reviewed": true
+ }
+}
