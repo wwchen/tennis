@@ -118,6 +118,24 @@ error fails the image, not just CI. Caddy handles the SPA fallback, sets the
 CSP and security headers, caches fingerprinted `/assets/*` forever and
 `index.html` never, and answers `/healthz` for the container healthcheck.
 
+`out/` is mounted read-only at `/data`, and Caddy serves the two ETL routes
+from it — `/api/media/*` as files, and `/api/session` from payloads
+`scripts/session-index.ts` writes under `out/_index` ahead of time, since a
+file server cannot walk a directory the way the dev middleware does. The
+generator calls `readSession` itself, so the static route cannot drift from
+the dev route it stands in for.
+
+**Rerun `make session-index` after every `tennisproc` run.** `make up` depends
+on it, but a session processed afterwards will not appear until the index is
+rebuilt, and a stale index is indistinguishable from a session you have not
+reviewed yet.
+
+Read-only is deliberate: `user-edit.json` lives in that tree and is the one
+thing the pipeline cannot regenerate from the source video. The consequence is
+that **verdicts cannot be saved from the deployed app** — the `PUT` that stores
+them 404s there. Review work happens against `npm run dev`; the container is
+for looking, from anywhere.
+
 #### Cloudflare Access
 
 Authentication is enforced **at the Cloudflare edge**, the same way the roadtrip
