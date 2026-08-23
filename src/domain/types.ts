@@ -128,6 +128,23 @@ export const SUSPECT_ARM = 0.4;
  */
 export const shortId = (id: string): string => id.slice(id.lastIndexOf('/') + 1);
 
+/**
+ * What a downloaded clip is called on disk.
+ *
+ * `clip.id` is `IMG_0312/swing_005`: a browser reads the slash as a path
+ * separator and saves `swing_005`, so nine sessions of downloads collide on
+ * the same nine filenames. The session belongs in the name. The extension is
+ * taken from the URL rather than assumed — the ETL emits .mp4 or .webm
+ * depending on what the source was — and is omitted if the URL carries none,
+ * which is better than appending a wrong one.
+ */
+export const clipFileName = (id: string, videoUrl: string): string => {
+  const dot = videoUrl.lastIndexOf('.');
+  const slash = videoUrl.lastIndexOf('/');
+  const ext = dot > slash ? videoUrl.slice(dot) : '';
+  return `${id.replace(/\//g, '_')}${ext}`;
+};
+
 /** `m:ss` from milliseconds, floored — the clock convention used throughout. */
 const clock = (ms: number): string => {
   const total = Math.max(0, Math.floor(ms / 1000));
