@@ -113,8 +113,22 @@ a:hover {
   border-left: 1px solid var(--gray-300);
 }
 
+/* The cell floor is a height, not a width: at a flat 450px floor a portrait
+   still is 800 tall, and `1fr` stretching the track makes it taller again.
+   `--aspect` is the source's width/height, set on the grid by `CatalogView`.
+   The `max-width` is what caps the stretch — the floor alone cannot, since
+   `1fr` grows the track past it. `100%` keeps a column from outgrowing a
+   catalog narrower than the floor. */
 .catalog-grid {
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  --still-max-h: 520px;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(450px, calc(var(--still-max-h) * var(--aspect)), 100%), 1fr)
+  );
+}
+
+.catalog-grid > * {
+  max-width: calc(var(--still-max-h) * var(--aspect));
 }
 
 .app-header {

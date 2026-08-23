@@ -994,21 +994,21 @@ describe('playing inline in the catalog', () => {
 
 describe('the phone layout', () => {
   it('keeps the drawer and the sidebar as separate flags', () => {
-    // They are different things wearing the same name: the sidebar is open by
-    // default and pushes the grid aside; the drawer starts closed and floats
-    // over it. One flag meant closing the drawer on a phone collapsed the
+    // They are different things wearing the same name: the sidebar is a column
+    // that pushes the grid aside, the drawer floats over it. Both start closed,
+    // but one flag meant opening the drawer on a phone also expanded the
     // sidebar for the next desktop session.
     const base = initialState();
-    expect(base.ui.filtersOpen).toBe(true);
+    expect(base.ui.filtersOpen).toBe(false);
     expect(base.ui.mobileFilters).toBe(false);
 
     const drawerOpen = reducer(base, { type: 'toggleMobileFilters' });
     expect(drawerOpen.ui.mobileFilters).toBe(true);
-    expect(drawerOpen.ui.filtersOpen).toBe(true);
+    expect(drawerOpen.ui.filtersOpen).toBe(false);
 
-    const sidebarShut = reducer(drawerOpen, { type: 'toggleFilters' });
-    expect(sidebarShut.ui.filtersOpen).toBe(false);
-    expect(sidebarShut.ui.mobileFilters).toBe(true);
+    const sidebarOpen = reducer(drawerOpen, { type: 'toggleFilters' });
+    expect(sidebarOpen.ui.filtersOpen).toBe(true);
+    expect(sidebarOpen.ui.mobileFilters).toBe(true);
   });
 
   it('expands and collapses the inspector sheet', () => {

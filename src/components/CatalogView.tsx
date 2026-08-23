@@ -1,10 +1,16 @@
-import type { Dispatch } from 'react';
+import type { CSSProperties, Dispatch } from 'react';
 import type { Action, Ui } from '@/state/store';
 import { commentsOn } from '@/lib/selectors';
 import type { Clip, Comment, Phase } from '@/domain/types';
 import type { EtlSource } from '@/domain/etl-types';
 import { gradeOf, PHASES } from '@/domain/grades';
-import { clipLength, shortId, sourceEnd, sourceStart } from '@/domain/types';
+import {
+  clipFileName,
+  clipLength,
+  shortId,
+  sourceEnd,
+  sourceStart,
+} from '@/domain/types';
 import { phaseFrame } from '@/domain/window';
 import { Button, ICONS, Icon, Tag } from '@/lds';
 import { Mono } from './shared';
@@ -92,13 +98,13 @@ function CatalogCard({
             // still refuses to autoplay without the attribute, so the card
             // rendered a paused first frame with a play button on it.
             muted
-            // Click the video to stop it, the same as clicking the frame that
-            // started it. No `onEnded`: `loop` means it never ends, and a
-            // three-second swing is worth seeing several times.
-            onClick={(e) => {
-              e.stopPropagation();
-              dispatch({ type: 'playInline', clip: null });
-            }}
+            // `stopPropagation` only: the card behind this opens the clip. The
+            // native controls live in the video's shadow DOM and their clicks
+            // land here too, so anything else this did would happen on every
+            // one of them. Stopping is the overlay button below.
+            //
+            // No `onEnded`: `loop` means it never ends.
+            onClick={(e) => e.stopPropagation()}
             style={{
               position: 'absolute',
               inset: 0,
@@ -162,8 +168,8 @@ function CatalogCard({
           <span
             role="button"
             tabIndex={0}
-            aria-label={`Play clip ${clip.id}`}
-            title="Play clip"
+            aria-label={playingInline ? `Stop clip ${clip.id}` : `Play clip ${clip.id}`}
+            title={playingInline ? 'Stop clip' : 'Play clip'}
             onClick={(e) => {
               e.stopPropagation();
               dispatch({ type: 'playInline', clip: playingInline ? null : clip.id });
@@ -177,7 +183,9 @@ function CatalogCard({
             style={{
               position: 'absolute',
               left: 10,
-              bottom: 10,
+              // The control bar owns the bottom edge while playing, so the
+              // button moves out from under it.
+              ...(playingInline ? { top: 34 } : { bottom: 10 }),
               width: 30,
               height: 30,
               borderRadius: '50%',
@@ -188,7 +196,12 @@ function CatalogCard({
               cursor: 'pointer',
             }}
           >
-            <Icon name="play-fill" size={14} href={ICONS} hint-size="14px,14px" />
+            <Icon
+              name={playingInline ? 'close' : 'play-fill'}
+              size={14}
+              href={ICONS}
+              hint-size="14px,14px"
+            />
           </span>
         )}
       </div>
@@ -297,25 +310,47 @@ function CatalogCard({
           <Mono size={10} style={{ textTransform: 'none' }}>
             {commentCount} comments
           </Mono>
-          {/* Icon-only on a phone: the label wrapped to three lines. */}
-          <span
-            onClick={() => dispatch({ type: 'toggleReject', clip: clip.id })}
-            style={{ cursor: 'pointer', flex: 'none' }}
-            title={clip.rejected ? 'Restore this clip' : 'Remove: not a swing'}
-          >
-            <Button
-              variant="tertiary"
-              size="sm"
-              hue={clip.rejected ? 'green' : 'red'}
-              iconOnly={mobile}
-              iconStart={clip.rejected ? 'history' : 'trash'}
-              aria-label={clip.rejected ? `Restore clip ${clip.id}` : `Remove clip ${clip.id}`}
-              iconHref={ICONS}
-              hint-size={mobile ? '28px,28px' : 'auto,28px'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
+            {/* An anchor, not a fetch-and-blob: the media is same-origin, so the
+                browser owns the progress and the destination. */}
+            {clip.videoUrl !== undefined && (
+              <a
+                href={clip.videoUrl}
+                download={clipFileName(clip.id, clip.videoUrl)}
+                title="Download this clip"
+                style={{ display: 'inline-flex', textDecoration: 'none' }}
+              >
+                <Button
+                  variant="tertiary"
+                  size="sm"
+                  iconOnly
+                  iconStart="download"
+                  aria-label={`Download clip ${clip.id}`}
+                  iconHref={ICONS}
+                  hint-size="28px,28px"
+                />
+              </a>
+            )}
+            {/* Icon-only on a phone: the label wrapped to three lines. */}
+            <span
+              onClick={() => dispatch({ type: 'toggleReject', clip: clip.id })}
+              style={{ cursor: 'pointer', flex: 'none' }}
+              title={clip.rejected ? 'Restore this clip' : 'Remove: not a swing'}
             >
-              {mobile ? undefined : clip.rejected ? 'Restore' : 'Remove'}
-            </Button>
-          </span>
+              <Button
+                variant="tertiary"
+                size="sm"
+                hue={clip.rejected ? 'green' : 'red'}
+                iconOnly={mobile}
+                iconStart={clip.rejected ? 'history' : 'trash'}
+                aria-label={clip.rejected ? `Restore clip ${clip.id}` : `Remove clip ${clip.id}`}
+                iconHref={ICONS}
+                hint-size={mobile ? '28px,28px' : 'auto,28px'}
+              >
+                {mobile ? undefined : clip.rejected ? 'Restore' : 'Remove'}
+              </Button>
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -348,11 +383,15 @@ export function CatalogView({
   return (
     <div
       className="catalog-grid"
-      style={{
-        padding: '22px 24px 60px',
-        display: 'grid',
-        gap: 16,
-      }}
+      /* `--aspect` sizes the columns; see `.catalog-grid` in `styles.css`. */
+      style={
+        {
+          padding: '22px 24px 60px',
+          display: 'grid',
+          gap: 16,
+          '--aspect': aspect,
+        } as CSSProperties
+      }
     >
       {clips.map((clip) => (
         <CatalogCard

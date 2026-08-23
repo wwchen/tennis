@@ -26,10 +26,10 @@ export interface Ui {
    * Whether the phone's filter drawer is open. Separate from `filtersOpen`.
    *
    * They are different things wearing the same name: on a desktop the filters
-   * are a column that pushes the grid aside and is open by default; on a phone
-   * they are a drawer over the top of it that must start closed. Sharing one
-   * flag meant a phone opened onto a screenful of controls, and closing it
-   * there collapsed the sidebar for the next desktop session.
+   * are a column that pushes the grid aside; on a phone they are a drawer over
+   * the top of it. Both start closed now, but for different reasons, and they
+   * still cannot share a flag — closing the drawer on a phone would collapse
+   * the sidebar for the next desktop session.
    */
   mobileFilters: boolean;
   /** Whether the phone's inspector sheet is expanded to full height. */
@@ -163,7 +163,10 @@ const initialUi = (): Ui => ({
   lowOnly: false,
   suspectOnly: false,
   showRejected: false,
-  filtersOpen: true,
+  // Collapsed to start. The filters are a refinement, not a first step: the
+  // catalog is what the session is for, and the column was taking 268px of it
+  // away from every reviewer who opened the app to look at clips.
+  filtersOpen: false,
   mobileFilters: false,
   sheetFull: false,
   sel: { clip: 'SL-002', frame: 5 },
