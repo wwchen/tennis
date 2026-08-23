@@ -113,25 +113,12 @@ a:hover {
   border-left: 1px solid var(--gray-300);
 }
 
-/* A card is a player, not a thumbnail — but "big enough" is a height, not a
-   width. At a flat 450px floor the landscape sessions were right (three across,
-   a 464x261 still instead of 344x193) and the portrait ones were unusable: 9:16
-   at 450 wide is 800 tall, and `1fr` stretching it to fill the row made it
-   1370 — one clip taller than the screen.
-
-   So the floor is derived from `--aspect`, the source's width/height, which
-   `CatalogView` sets on the grid. Both rules below say the same thing from
-   opposite ends: no still is taller than `--still-max-h`, and none is wider
-   than 450px.
-
-     landscape 16:9  floor min(450, 924) = 450, cap 924 never binds
-                     -> three across, stretched to ~464x261
-     portrait  9:16   floor and cap both 292
-                     -> four across at 292x520, the stretch capped off
-
-   `100%` in the `min()` keeps a column from outgrowing a narrow catalog — the
-   filters and inspector panels can leave less than 450px between them — which
-   would scroll the grid sideways instead of shrinking the card. */
+/* The cell floor is a height, not a width: at a flat 450px floor a portrait
+   still is 800 tall, and `1fr` stretching the track makes it taller again.
+   `--aspect` is the source's width/height, set on the grid by `CatalogView`.
+   The `max-width` is what caps the stretch — the floor alone cannot, since
+   `1fr` grows the track past it. `100%` keeps a column from outgrowing a
+   catalog narrower than the floor. */
 .catalog-grid {
   --still-max-h: 520px;
   grid-template-columns: repeat(
@@ -140,10 +127,6 @@ a:hover {
   );
 }
 
-/* The floor alone cannot hold the height: `1fr` grows the track past it to
-   fill the row, and every pixel of portrait width costs 1.78 of height. This
-   caps the card at the width its own aspect ratio allows, and the leftover
-   track width becomes space between cards. */
 .catalog-grid > * {
   max-width: calc(var(--still-max-h) * var(--aspect));
 }

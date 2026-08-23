@@ -67,22 +67,16 @@ describe('catalog phase frames', () => {
 
 describe('the downloaded clip filename', () => {
   it('keeps the session in the name', () => {
-    // `clip.id` carries the session and the swing. A browser reads the slash
-    // as a path separator and saves plain `swing_001`, so every session's
-    // downloads land on the same handful of names.
     expect(clipFileName('IMG_0305/swing_001', '/api/media/IMG_0305/swings/swing_001/clip.mp4')).toBe(
       'IMG_0305_swing_001.mp4',
     );
   });
 
   it('takes the extension from the URL', () => {
-    // The ETL emits .mp4 or .webm depending on the source, so the extension
-    // cannot be assumed.
     expect(clipFileName('a/b', '/base/clip.webm')).toBe('a_b.webm');
   });
 
   it('appends nothing when the URL has no extension', () => {
-    // Better a name with no suffix than one that lies about the container.
     expect(clipFileName('a/b', '/base/clip')).toBe('a_b');
     expect(clipFileName('a/b', '/base.v2/clip')).toBe('a_b');
   });

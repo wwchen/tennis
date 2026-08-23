@@ -98,17 +98,12 @@ function CatalogCard({
             // still refuses to autoplay without the attribute, so the card
             // rendered a paused first frame with a play button on it.
             muted
-            // Clicking the video used to stop it, the inverse of the click that
-            // started it. But `controls` draws fullscreen, mute, the scrubber
-            // and the download menu inside the video's own shadow DOM, and a
-            // click on any of them lands on this element too — so the handler
-            // ate them all, and the only thing every control did was end
-            // playback. Stopping is the overlay button below, which is the
-            // affordance that started it.
+            // `stopPropagation` only: the card behind this opens the clip. The
+            // native controls live in the video's shadow DOM and their clicks
+            // land here too, so anything else this did would happen on every
+            // one of them. Stopping is the overlay button below.
             //
-            // `stopPropagation` stays: the card behind this opens the clip.
-            // No `onEnded`: `loop` means it never ends, and a three-second
-            // swing is worth seeing several times.
+            // No `onEnded`: `loop` means it never ends.
             onClick={(e) => e.stopPropagation()}
             style={{
               position: 'absolute',
@@ -188,11 +183,8 @@ function CatalogCard({
             style={{
               position: 'absolute',
               left: 10,
-              // Bottom-left is where a play button belongs on a still, and
-              // exactly where the browser draws its control bar once the clip
-              // is playing. The two overlapped and this one won, covering the
-              // left end of the scrubber. While playing it sits under the clip
-              // id instead, clear of the controls.
+              // The control bar owns the bottom edge while playing, so the
+              // button moves out from under it.
               ...(playingInline ? { top: 34 } : { bottom: 10 }),
               width: 30,
               height: 30,
@@ -319,14 +311,8 @@ function CatalogCard({
             {commentCount} comments
           </Mono>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
-            {/*
-              The browser's own download sits two clicks deep in the video's overflow
-              menu, and only while the clip is playing. A clip is the thing this app
-              produces, so saving one is a button on the card.
-
-              An anchor, not a fetch-and-blob: the media is same-origin, so `download`
-              saves it directly and the browser owns the progress and the destination.
-            */}
+            {/* An anchor, not a fetch-and-blob: the media is same-origin, so the
+                browser owns the progress and the destination. */}
             {clip.videoUrl !== undefined && (
               <a
                 href={clip.videoUrl}
@@ -397,14 +383,7 @@ export function CatalogView({
   return (
     <div
       className="catalog-grid"
-      /*
-        The grid sizes its columns from the footage's shape, not from a fixed
-        width: 450px is a good landscape card and a catastrophic portrait one —
-        9:16 at 450 wide is 800 tall, and stretched to fill the row it reached
-        1370, one clip taller than the screen. What holds steady between
-        orientations is the height of the still, so the width floor is derived
-        from it in `styles.css`.
-      */
+      /* `--aspect` sizes the columns; see `.catalog-grid` in `styles.css`. */
       style={
         {
           padding: '22px 24px 60px',

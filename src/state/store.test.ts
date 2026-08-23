@@ -997,8 +997,7 @@ describe('the phone layout', () => {
     // They are different things wearing the same name: the sidebar is a column
     // that pushes the grid aside, the drawer floats over it. Both start closed,
     // but one flag meant opening the drawer on a phone also expanded the
-    // sidebar for the next desktop session. What matters here is that moving
-    // either one leaves the other where it was.
+    // sidebar for the next desktop session.
     const base = initialState();
     expect(base.ui.filtersOpen).toBe(false);
     expect(base.ui.mobileFilters).toBe(false);
