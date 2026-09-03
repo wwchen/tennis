@@ -25,6 +25,8 @@ export async function loadEtlClips(requested?: string): Promise<{
   sessions: string[];
   source: EtlSource | null;
   proxy: EtlProxy | null;
+  settings: Record<string, unknown> | null;
+  detection: Record<string, unknown> | null;
   skipped: SkippedSwing[];
 } | null> {
   try {
@@ -48,6 +50,8 @@ export async function loadEtlClips(requested?: string): Promise<{
       // `?? null` rather than trusting the type: this is a parsed network
       // response, and every tree written before proxies existed omits the key.
       proxy: payload.proxy ?? null,
+      settings: payload.settings ?? null,
+      detection: payload.detection ?? null,
       skipped,
     };
   } catch {

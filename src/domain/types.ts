@@ -51,6 +51,21 @@ export interface Frame {
    * landmark quality, which is a different quantity.
    */
   conf?: number;
+  /**
+   * How well the pose model saw a body in this frame, 0–1.
+   *
+   * A different quantity from `conf` above, which is why it gets its own field
+   * rather than being folded into it: `conf` would mean "the classifier is this
+   * sure this frame is a contact", and there is no classifier. This only says
+   * the landmarks were found.
+   *
+   * Absent on MOST frames of a measured swing, and that is by design rather
+   * than a gap: pose is decoded over a narrower window than the stills are
+   * extracted over (±0.40s against ±1.5s at the current defaults), so the outer
+   * frames have no score to carry. A panel reporting this has to say "scored on
+   * 1 of 7" rather than treating the other six as failures.
+   */
+  poseScore?: number;
   /** Served by the dev middleware. Absent for seeded clips. */
   imageUrl?: string;
 }
@@ -106,6 +121,35 @@ export interface Clip {
    * left null. Numbers, not a verdict: `isSuspect` turns them into one.
    */
   measurements?: ClipMeasurements;
+  /**
+   * What the detector decided, before any human touched it.
+   *
+   * `rejected` already folds `detection.verified` together with a human's
+   * verdict (see `isRejected`), which is the right answer for a list but the
+   * wrong one for a panel explaining a call: once folded, there is no way back
+   * to "the ETL rejected this and a human overrode it" versus "nobody has
+   * looked". Absent on seeded clips, which have no detector behind them.
+   */
+  detection?: ClipDetection;
+  /**
+   * The human-authored label block, verbatim.
+   *
+   * `stroke`, `grade`, `player` and `note` above are the app's lossy views of
+   * it — `grade` has three values against quality's five, `player` collapses a
+   * name and a court slot into one string, and `rejected` is one bit against
+   * four verdicts. A panel whose job is to report what the pipeline knows has
+   * to show the unreduced values, or it re-tells the same lossy story.
+   */
+  labels?: ClipLabels;
+  /**
+   * Pixel size of the rendered clip, as the ETL wrote it.
+   *
+   * Carried on the clip rather than read off the session's `source`, because
+   * the two can disagree and the difference is the interesting fact: clips were
+   * downscaled until #26, so a tree rendered before it holds 386×480 stills of
+   * a 1080×1920 source, and only this number says which you are looking at.
+   */
+  clipSize?: { width: number; height: number };
 }
 
 export interface ClipMeasurements {
@@ -113,6 +157,61 @@ export interface ClipMeasurements {
   wristSpeed: number;
   /** Hitting wrist's distance from the body midline at contact, in torso heights. */
   armOffset: number;
+  /**
+   * The tracked player's torso height as a fraction of the crop — the unit
+   * everything else here is expressed in.
+   *
+   * Worth showing because it is the denominator: a swing measured against a
+   * torso of 0.008 of the frame is a player far enough away that both numbers
+   * above are mostly noise, and nothing else on the panel would say so.
+   * Optional because the schema marks every measurement field optional; a swing
+   * can carry the two required numbers and not this one.
+   */
+  torsoHeight?: number;
+  /** Contact's height within the crop, 0 at the top edge. */
+  contactHeight?: number;
+  /** Which wrist the numbers above were taken from. */
+  hittingSide?: 'left' | 'right';
+}
+
+/** @see Clip.detection */
+export interface ClipDetection {
+  /**
+   * How this swing was found, e.g. `audio_onset+pose_verify`. Free-form on
+   * purpose: the ETL owns the vocabulary and has changed it more than once, so
+   * an enum here would reject trees on disk rather than describe them.
+   */
+  method: string;
+  /**
+   * Strength of the audio onset the window was built around, in noise-floor
+   * multiples. Null when the method did not use one — the vision detector
+   * finds swings from pose and never measures a peak.
+   */
+  onsetPeak: number | null;
+  /** Whether the verifier's pose checks passed. ETL-owned; no human can clear it. */
+  verified: boolean;
+  /**
+   * Which check failed, from REJECT_REASONS in `schema.py`, or null.
+   *
+   * Almost always null in a rendered tree, because a rejected candidate is not
+   * rendered at all — the session document's histogram is where rejections are
+   * counted. Shown anyway: when it is set, it is the single most useful line
+   * on the panel.
+   */
+  rejectReason: string | null;
+}
+
+/** @see Clip.labels */
+export interface ClipLabels {
+  /** Court zone the ETL assigned. A zone, never a person. */
+  playerSlot: string | null;
+  /** The name a human typed, or null — which is why `player` falls back to the slot. */
+  playerName: string | null;
+  /** 1–5, finer than `grade`'s three values. */
+  quality: number | null;
+  /** `valid` | `false_positive` | `duplicate` | `unclear`, or null for no call. */
+  verdict: string | null;
+  tags: string[];
 }
 
 /**

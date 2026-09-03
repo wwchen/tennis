@@ -226,6 +226,8 @@ describe('adaptSession isolates a swing it cannot read', () => {
     sessions: ['IMG_0304'],
     source: null,
     proxy: null,
+    settings: null,
+    detection: null,
     swings,
   });
 

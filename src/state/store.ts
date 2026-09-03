@@ -83,6 +83,9 @@ export interface State {
    * session whose source video was gone when the proxy would have been built.
    */
   proxy: EtlProxy | null;
+  /** The detector's tuning and reject histogram for this session. */
+  settings: Record<string, unknown> | null;
+  detection: Record<string, unknown> | null;
   /**
    * The session the reviewer asked for, or null for "whichever comes first".
    *
@@ -111,6 +114,8 @@ export type Action =
       sessions?: string[];
       source?: EtlSource | null;
       proxy?: EtlProxy | null;
+      settings?: Record<string, unknown> | null;
+      detection?: Record<string, unknown> | null;
       skipped?: SkippedSwing[];
     }
   | { type: 'requestSession'; session: string }
@@ -198,6 +203,8 @@ export const initialState = (): State => ({
   sessions: [],
   source: null,
   proxy: null,
+  settings: null,
+  detection: null,
   requested: null,
   skipped: [],
 });
@@ -231,6 +238,8 @@ export function reducer(state: State, action: Action): State {
         sessions: action.sessions ?? [action.session],
         source: action.source ?? null,
         proxy: action.proxy ?? null,
+        settings: action.settings ?? null,
+        detection: action.detection ?? null,
         skipped: action.skipped ?? [],
       };
     case 'requestSession':
@@ -504,6 +513,8 @@ export function useShotLab() {
           sessions: payload.sessions,
           source: payload.source,
           proxy: payload.proxy,
+          settings: payload.settings,
+          detection: payload.detection,
           skipped: payload.skipped,
         });
       }

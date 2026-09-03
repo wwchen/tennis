@@ -6,7 +6,16 @@ import type {
   SessionPayload,
   SwingEntry,
 } from './etl-types';
-import type { Clip, ClipMeasurements, Frame, Grade, Phase, Stroke } from './types';
+import type {
+  Clip,
+  ClipDetection,
+  ClipLabels,
+  ClipMeasurements,
+  Frame,
+  Grade,
+  Phase,
+  Stroke,
+} from './types';
 import { frameWindow } from './window';
 
 /**
@@ -144,8 +153,50 @@ function measurementsOf(doc: EtlSwingDoc): ClipMeasurements | null {
   const speed = m.wrist_peak_speed;
   const arm = m.contact_offset;
   if (typeof speed !== 'number' || typeof arm !== 'number') return null;
-  return { wristSpeed: speed, armOffset: arm };
+  // The three below are reported, not judged, so a missing one costs only its
+  // own row — unlike the two above, whose absence makes `isSuspect` unanswerable
+  // and so makes the whole block unmeasured.
+  return {
+    wristSpeed: speed,
+    armOffset: arm,
+    ...(typeof m.torso_height === 'number' ? { torsoHeight: m.torso_height } : {}),
+    ...(typeof m.contact_height === 'number' ? { contactHeight: m.contact_height } : {}),
+    ...(m.hitting_side === 'left' || m.hitting_side === 'right'
+      ? { hittingSide: m.hitting_side }
+      : {}),
+  };
 }
+
+/**
+ * The detector's own account of this swing, unfolded.
+ *
+ * `??` on the two nullable fields rather than a bare read: these come off JSON
+ * on disk, and a document written before a field existed omits the key entirely
+ * — `onset_ms` did exactly that when re-anchoring was reverted. Absent and null
+ * mean the same thing here, so both land on null.
+ */
+const detectionOf = (doc: EtlSwingDoc): ClipDetection => ({
+  method: doc.detection.method,
+  onsetPeak: doc.detection.onset_peak ?? null,
+  verified: doc.detection.verified,
+  rejectReason: doc.detection.reject_reason ?? null,
+});
+
+/**
+ * The label block, unreduced.
+ *
+ * `tags` is guarded with `Array.isArray` because `overlay()` merges
+ * `user-edit.json` in unchecked, and a hand-edited file can put anything there
+ * — the panel maps over this, so a non-array would throw the whole clip out of
+ * `adaptSession` rather than losing one row.
+ */
+const labelsOf = (doc: EtlSwingDoc): ClipLabels => ({
+  playerSlot: doc.labels.player_slot ?? null,
+  playerName: doc.labels.player_name ?? null,
+  quality: doc.labels.quality ?? null,
+  verdict: doc.labels.verdict ?? null,
+  tags: Array.isArray(doc.labels.tags) ? doc.labels.tags : [],
+});
 
 export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
   const measured = measurementsOf(doc);
@@ -156,6 +207,10 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
     // real contact frame rather than guessing at the midpoint of the extraction.
     offsetContactMs: f.offset_contact_ms,
     phase: stageToPhase(f.stage),
+    // Omitted rather than carried as null: `poseScore` is absent on every frame
+    // outside the pose window by design, and `undefined` is the shape the rest
+    // of `Frame`'s optional fields already use for "the ETL had nothing here".
+    ...(typeof f.pose_score === 'number' ? { poseScore: f.pose_score } : {}),
     ...(mediaBase === undefined ? {} : { imageUrl: `${mediaBase}/${f.file}` }),
   }));
 
@@ -169,6 +224,9 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
     sourceStartMs: doc.trim.source_start_ms,
     sourceEndMs: doc.trim.source_end_ms,
     contactMs: doc.detection.contact_ms,
+    detection: detectionOf(doc),
+    labels: labelsOf(doc),
+    clipSize: { width: doc.trim.width, height: doc.trim.height },
     triaged: doc.edit?.reviewed === true,
     grade: qualityToGrade(doc.labels.quality),
     note: doc.labels.notes ?? '',

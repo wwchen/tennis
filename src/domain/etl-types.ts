@@ -180,6 +180,17 @@ export interface SessionPayload {
    * seeks within it; with no proxy it falls back to the per-swing clips.
    */
   proxy: EtlProxy | null;
+  /**
+   * The detector's own tuning for this session, as `Settings.as_metadata()`
+   * wrote it, or null on a tree with no session document.
+   *
+   * Open-shaped on purpose: `tennisproc/config.py` owns these keys and adds to
+   * them freely (`scan_k`, `min_wrist_speed`, `pose_model`, …), and a mirror
+   * that had to be updated in lockstep would go stale silently.
+   */
+  settings: Record<string, unknown> | null;
+  /** Candidate/verified/rejected counts and the reject histogram. */
+  detection: Record<string, unknown> | null;
 }
 
 /**

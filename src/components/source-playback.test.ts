@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip } from '@/domain/types';
 import {
+  axisTicks,
   clock,
   nearestSwing,
+  outsideWindow,
   playWindow,
+  remainingMs,
   timelinePercent,
   windowProgress,
   windowsFor,
@@ -188,5 +191,85 @@ describe('windowsFor', () => {
   it('omits contactMs rather than writing undefined into the window', () => {
     const [got] = windowsFor([clip({ id: 'a', sourceStartMs: 1, sourceEndMs: 2 })]);
     expect('contactMs' in got).toBe(false);
+  });
+});
+
+describe('axisTicks', () => {
+  it('steps by a round interval a person reads as time', () => {
+    // 7 minutes over ~8 labels wants 52s, which rounds up to the minute.
+    const ticks = axisTicks(7 * 60_000, 8);
+    expect(ticks.slice(0, 4)).toEqual([0, 60_000, 120_000, 180_000]);
+  });
+
+  it('always starts at zero and ends at the exact duration', () => {
+    const ticks = axisTicks(423_000);
+    expect(ticks[0]).toBe(0);
+    expect(ticks[ticks.length - 1]).toBe(423_000);
+  });
+
+  it('widens the step for a long video instead of crowding the axis', () => {
+    const short = axisTicks(60_000);
+    const long = axisTicks(3 * 3_600_000);
+    expect(long[1] - long[0]).toBeGreaterThan(short[1] - short[0]);
+    expect(long.length).toBeLessThan(14);
+  });
+
+  it('drops an interval tick that would collide with the duration label', () => {
+    // 61s: the 60s tick sits a second from the end, which at any real width
+    // renders as two labels on top of each other.
+    const ticks = axisTicks(61_000, 6);
+    expect(ticks).not.toContain(60_000);
+    expect(ticks[ticks.length - 1]).toBe(61_000);
+  });
+
+  it('drops a tick close enough to the end to touch it, not just overlap it', () => {
+    // Observed on IMG_0694 (5:18): 5:00 and 5:18 are 18s apart — far enough not
+    // to overlap in time, close enough that the rendered labels collided.
+    const ticks = axisTicks(318_000);
+    expect(ticks).not.toContain(300_000);
+    expect(ticks[ticks.length - 1]).toBe(318_000);
+    expect(ticks[ticks.length - 2]).toBe(240_000);
+  });
+
+  it('keeps the ticks ascending and inside the video', () => {
+    const ticks = axisTicks(501_582);
+    for (let i = 1; i < ticks.length; i++) expect(ticks[i]).toBeGreaterThan(ticks[i - 1]);
+    expect(Math.max(...ticks)).toBeLessThanOrEqual(501_582);
+  });
+
+  it('has nothing to label for a video of unknown length', () => {
+    expect(axisTicks(0)).toEqual([]);
+    expect(axisTicks(-5)).toEqual([]);
+  });
+});
+
+describe('remainingMs', () => {
+  it('counts down to the window end', () => {
+    expect(remainingMs(24_500, 28_000)).toBe(3_500);
+    expect(remainingMs(27_900, 28_000)).toBe(100);
+  });
+
+  it('floors at zero rather than reporting negative time left', () => {
+    // The boundary overshoots by up to ~150ms on the timeupdate path, so the
+    // cursor is routinely PAST the end by the time this is read.
+    expect(remainingMs(28_154, 28_000)).toBe(0);
+  });
+});
+
+describe('outsideWindow', () => {
+  it('is false inside the window', () => {
+    expect(outsideWindow(25_000, 24_500, 28_000)).toBe(false);
+    expect(outsideWindow(24_500, 24_500, 28_000)).toBe(false);
+  });
+
+  it('is true before the window — the session-switch case', () => {
+    // The element reloads to 0 while the selection survives; play from there
+    // ran a full minute before reaching the selected window's end.
+    expect(outsideWindow(0, 63_000, 66_500)).toBe(true);
+  });
+
+  it('treats the end as outside, so resuming there restarts the window', () => {
+    expect(outsideWindow(28_000, 24_500, 28_000)).toBe(true);
+    expect(outsideWindow(30_000, 24_500, 28_000)).toBe(true);
   });
 });

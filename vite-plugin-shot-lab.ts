@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   closeSync,
@@ -6,15 +7,19 @@ import {
   existsSync,
   fstatSync,
   lstatSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
 import type { Plugin, ViteDevServer } from 'vite';
+import { clipExportFileName } from './src/components/clip-export';
 
 /**
  * Serves the `tennisproc` output tree to the review app in dev.
@@ -34,6 +39,38 @@ const WRITABLE = 'user-edit.json';
  * `PUT /api/swings/IMG_0304/work/user-edit` writes outside a swing.
  */
 const SWING_DIR = /^[^/]+\/swings\/swing_\d+$/;
+
+/**
+ * The session's full-length playable video, the one `/api/clip` cuts from.
+ *
+ * Hard-coded rather than read from `metadata.json`'s `proxy.file`: that name
+ * comes out of a file on disk and would then be joined onto a path, and there is
+ * no reason to widen this route's attack surface for a filename `transcode.py`
+ * has only ever written one value of.
+ */
+const PROXY = 'source.mp4';
+
+/**
+ * The longest cut `/api/clip` will make, in ms.
+ *
+ * A swing window is 3.5s and the widest pad the UI offers is 4s a side, so 12s
+ * is the real ceiling and this is an order of magnitude of headroom. It exists
+ * because the cut is a synchronous re-encode: without a bound, `?end=99999999`
+ * asks a dev server to spend eight minutes of CPU on one request.
+ */
+const MAX_CLIP_MS = 120_000;
+
+/** The widest pad accepted, in seconds. The UI's own maximum is 4. */
+const MAX_PAD_S = 30;
+
+/**
+ * The longest source position addressable, in ms — 24 hours.
+ *
+ * Not a limit any real session approaches; it is there so an absurd `?start=`
+ * is refused outright instead of becoming an `-ss` that makes ffmpeg read to the
+ * end of an 800MB file before discovering there is nothing there.
+ */
+const MAX_SOURCE_MS = 24 * 60 * 60 * 1000;
 
 /** `schema.ETL_OWNED`: blocks a user edit may never rewrite. */
 const ETL_OWNED = ['source', 'trim', 'crop', 'detection', 'measurements'] as const;
@@ -397,7 +434,16 @@ function readSession(root: string, requested?: string) {
   const rawProxy = isObject(sessionDoc) ? sessionDoc.proxy : undefined;
   const proxy = isObject(rawProxy) && typeof rawProxy.file === 'string' ? rawProxy : null;
 
-  return { session, sessions, swings, source, proxy };
+  // How the detector was tuned, and what it threw away. Neither is derivable
+  // from the swings: `rendered` counts what survived, so a session that dropped
+  // 40 candidates looks identical to one that found 108 cleanly unless the
+  // histogram says otherwise. This is the only place a reviewer can see that.
+  const rawSettings = isObject(sessionDoc) ? sessionDoc.settings : undefined;
+  const settings = isObject(rawSettings) ? rawSettings : null;
+  const rawDetection = isObject(sessionDoc) ? sessionDoc.detection : undefined;
+  const detection = isObject(rawDetection) ? rawDetection : null;
+
+  return { session, sessions, swings, source, proxy, settings, detection };
 }
 
 /**
@@ -432,6 +478,104 @@ function resolveWriteTarget(
   }
 
   return { target };
+}
+
+/**
+ * A non-negative decimal, and nothing else.
+ *
+ * Deliberately narrower than `Number()`, which reads `' 12 '` as 12, `'0x10'` as
+ * 16, `'1e999'` as Infinity and `''` as 0 — that last one is why a bare
+ * `Number(query.get('start'))` accepts a missing parameter as "the start of the
+ * video" rather than refusing it.
+ */
+const DECIMAL = /^\d+(?:\.\d+)?$/;
+
+function decimal(raw: string | null): number | null {
+  if (raw === null || !DECIMAL.test(raw)) return null;
+  const n = Number(raw);
+  // A 400-digit literal passes the pattern and overflows to Infinity.
+  return Number.isFinite(n) ? n : null;
+}
+
+/** What ffmpeg should cut, or the status to answer with. */
+export type ClipCut =
+  | { source: string; startMs: number; endMs: number; fileName: string }
+  | { status: 400 | 404; error: string };
+
+/**
+ * Validates a `GET /api/clip/<session>/<swing_dir>` request into cut arguments.
+ *
+ * Factored out of the route for the reason `resolveWriteTarget` is: these are
+ * the checks that keep an ffmpeg invocation away from files it has no business
+ * reading, and reaching them through a live dev server means they are tested
+ * only as far as somebody remembers to stand one up.
+ *
+ * The order of the checks is itself load-bearing. `rel` is matched against
+ * `SWING_DIR` FIRST, so `../../etc/passwd` and `IMG_0684` alike are refused on
+ * shape before any path is built from them; `safeJoin` is then a second line
+ * rather than the only one. Numbers are validated before the filesystem is
+ * touched, so a malformed range costs a regex rather than three stats.
+ *
+ * Bounds are checked AFTER padding, because the padded interval is what gets
+ * encoded — a 100s window with a 30s pad is a 160s cut however innocent each
+ * half looks alone.
+ */
+export function resolveClipCut(root: string, rel: string, query: URLSearchParams): ClipCut {
+  if (!SWING_DIR.test(rel)) return { status: 404, error: 'not a swing directory' };
+
+  const start = decimal(query.get('start'));
+  const end = decimal(query.get('end'));
+  if (start === null || end === null) {
+    return { status: 400, error: 'start and end must be non-negative milliseconds' };
+  }
+  if (end <= start) return { status: 400, error: 'end must be after start' };
+  if (end > MAX_SOURCE_MS) return { status: 400, error: 'range past the end of any session' };
+
+  // Absent means no padding, which is what the URL builder relies on when it
+  // leaves `pad` off. Present but unparseable is a refusal, not a fallback to
+  // zero: the caller asked for a wider clip and would be handed a narrower one.
+  const rawPad = query.get('pad');
+  const padS = rawPad === null ? 0 : decimal(rawPad);
+  if (padS === null || padS > MAX_PAD_S) {
+    return { status: 400, error: `pad must be 0-${MAX_PAD_S} seconds` };
+  }
+
+  // Clamped at zero rather than refused: padding a swing at 0:01 by 2s is an
+  // ordinary request, and the answer is the first second of the video.
+  const startMs = Math.max(0, Math.round(start - padS * 1000));
+  const endMs = Math.round(end + padS * 1000);
+  if (endMs - startMs > MAX_CLIP_MS) {
+    return { status: 400, error: `range longer than ${MAX_CLIP_MS / 1000}s` };
+  }
+
+  const session = rel.slice(0, rel.indexOf('/'));
+  const source = safeJoin(root, join(session, PROXY));
+  // A tree written before proxies existed, or a run killed during transcode.
+  // Distinguished from a bad request on purpose: nothing about the URL is wrong.
+  if (source === null || !statSync(source).isFile()) {
+    return { status: 404, error: 'no source video for this session' };
+  }
+
+  // Checked even though nothing below reads it: a URL naming a swing that does
+  // not exist should 404 rather than quietly hand back a cut of the session,
+  // which is a clip of something the caller never asked about.
+  const dir = safeJoin(root, rel);
+  if (dir === null || !statSync(dir).isDirectory()) {
+    return { status: 404, error: 'no such swing' };
+  }
+
+  return {
+    source,
+    startMs,
+    endMs,
+    // The padding is already in `startMs`, so it is not passed again.
+    fileName: clipExportFileName({
+      session,
+      dir: rel.slice(session.length + 1),
+      startMs,
+      endMs,
+    }),
+  };
 }
 
 /**
@@ -637,6 +781,149 @@ export default function shotLab(): Plugin {
           res.end();
         });
         stream.pipe(res);
+      });
+
+      // `GET /api/clip/<session>/swings/swing_NNN?start=&end=&pad=`
+      //
+      // Cuts one swing out of the session's `source.mp4` and hands it back as a
+      // download. There is nothing on disk to link to any more — the redesign
+      // replaced 108 pre-rendered `clip.mp4` files with one full-length proxy
+      // and a pair of timestamps per swing — so the file a reviewer wants to
+      // keep or send to a coach only exists if this route makes it.
+      //
+      // Encoded to a temp file rather than piped straight to the response,
+      // because `-movflags +faststart` rewrites the moov atom to the head of the
+      // file once the encode has finished, and a socket cannot be rewound. The
+      // fragmented-MP4 alternative streams but produces a file some players
+      // handle worse, which is the wrong trade for an artefact meant to be kept.
+      // A cut is bounded to `MAX_CLIP_MS`, so the file is a few megabytes.
+      server.middlewares.use('/api/clip', (req, res) => {
+        const fail = (status: number, error: string) => {
+          res.statusCode = status;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error }));
+        };
+
+        if (req.method !== 'GET') {
+          fail(405, 'use GET');
+          return;
+        }
+
+        const [rawPath, rawQuery = ''] = (req.url ?? '').split('?');
+        let rel: string;
+        try {
+          rel = decodeURIComponent(rawPath).replace(/^\/+/, '');
+        } catch {
+          // A lone `%` is not a valid escape and throws URIError.
+          fail(400, 'malformed path');
+          return;
+        }
+
+        let cut;
+        try {
+          cut = resolveClipCut(OUT_ROOT(), rel, new URLSearchParams(rawQuery));
+        } catch {
+          fail(500, 'could not resolve the clip');
+          return;
+        }
+        if ('status' in cut) {
+          fail(cut.status, cut.error);
+          return;
+        }
+
+        // ffmpeg is spawned with an argv array and no shell, so nothing in the
+        // URL can be read as a command however it survived validation. `source`
+        // is a realpath `safeJoin` proved is inside `out/`, and the two numbers
+        // are formatted from parsed doubles rather than passed through as text.
+        const workDir = mkdtempSync(join(tmpdir(), 'shot-lab-clip-'));
+        // A fixed name: the download's name is the response header's job, and a
+        // constant here means nothing derived from the request reaches the
+        // filesystem at all.
+        const dest = join(workDir, 'clip.mp4');
+        const clean = () => rmSync(workDir, { recursive: true, force: true });
+
+        // `-ss` before `-i` seeks first and decodes after, and the re-encode is
+        // what makes the cut land exactly where asked: `-c copy` can only start
+        // at a keyframe, which on this proxy is up to two seconds early. Same
+        // reasoning, and the same encoder settings, as `cut_clip` in
+        // `tennisproc/render.py`. Audio is kept, unlike there: a clip a reviewer
+        // sends to a coach is worth more with the sound of contact in it.
+        const ffmpeg = spawn(
+          'ffmpeg',
+          [
+            '-v', 'error',
+            '-ss', (cut.startMs / 1000).toFixed(3),
+            '-i', cut.source,
+            '-t', ((cut.endMs - cut.startMs) / 1000).toFixed(3),
+            '-c:v', 'libx264', '-profile:v', 'high', '-crf', '26', '-preset', 'veryfast',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-movflags', '+faststart',
+            '-y', dest,
+          ],
+          {
+            stdio: ['ignore', 'ignore', 'pipe'],
+            // A bounded cut should take seconds. The timeout is for the case
+            // where ffmpeg wedges on a half-written proxy rather than for slow
+            // ones, and without it that request holds a process forever.
+            timeout: 120_000,
+            killSignal: 'SIGKILL',
+          },
+        );
+
+        let stderr = '';
+        ffmpeg.stderr.setEncoding('utf-8');
+        ffmpeg.stderr.on('data', (chunk: string) => {
+          // Bounded: `-v error` says little, but a broken input can say it once
+          // per frame and there is no reason to hold that in memory.
+          if (stderr.length < 4096) stderr += chunk;
+        });
+
+        // The client navigating away or cancelling the download must stop the
+        // encode too. Without this, a reviewer clicking Export twice leaves the
+        // first ffmpeg running to completion for a file nobody will read.
+        let aborted = false;
+        res.on('close', () => {
+          if (!res.writableEnded) {
+            aborted = true;
+            ffmpeg.kill('SIGKILL');
+          }
+        });
+
+        ffmpeg.on('error', () => {
+          clean();
+          if (!aborted) fail(500, 'ffmpeg is not available');
+        });
+
+        ffmpeg.on('close', (code) => {
+          if (aborted) {
+            clean();
+            return;
+          }
+          if (code !== 0 || !existsSync(dest)) {
+            clean();
+            fail(500, `ffmpeg failed: ${stderr.trim() || `exit ${String(code)}`}`);
+            return;
+          }
+
+          res.setHeader('Content-Type', 'video/mp4');
+          res.setHeader('Content-Length', statSync(dest).size);
+          // The filename is quoted, and `clipExportFileName` has already reduced
+          // it to `[A-Za-z0-9._-]`, so no session name can close the quote and
+          // append a header directive of its own.
+          res.setHeader('Content-Disposition', `attachment; filename="${cut.fileName}"`);
+
+          const stream = createReadStream(dest);
+          // The temp directory goes on end, on error and on the client vanishing
+          // mid-download — the last of which emits nothing on the stream itself.
+          stream.on('close', clean);
+          res.on('close', () => stream.destroy());
+          stream.on('error', () => {
+            res.statusCode = 500;
+            res.end();
+          });
+          stream.pipe(res);
+        });
       });
 
       server.middlewares.use('/api/swings', (req, res) => {

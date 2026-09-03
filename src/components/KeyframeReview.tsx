@@ -3,11 +3,17 @@ import type { CSSProperties } from 'react';
 import type { Clip } from '@/domain/types';
 import { shortId } from '@/domain/types';
 import { Button, ICONS, Select, Toggle, checkedOf, valueOf } from '@/lds';
+import type { EtlSource } from '@/domain/etl-types';
+import { SwingMetadata } from './SwingMetadata';
+import { clipExportFileName, clipExportUrl } from './clip-export';
 import {
   PAD_STEPS,
+  axisTicks,
   clock,
   nearestSwing,
+  outsideWindow,
   playWindow,
+  remainingMs,
   timelinePercent,
   windowProgress,
   windowsFor,
@@ -41,6 +47,12 @@ interface Props {
   proxyUrl?: string;
   /** Source length in ms, for the timeline. */
   durationMs: number;
+  /** What the probe read off the source video, for the details panel. */
+  probe?: EtlSource | null;
+  /** The detector's tuning for this session. */
+  settings?: Record<string, unknown> | null;
+  /** Candidate/verified/rejected counts and the reject histogram. */
+  detection?: Record<string, unknown> | null;
   session: string;
   sessions: string[];
   onSession: (session: string) => void;
@@ -58,6 +70,9 @@ export function KeyframeReview({
   clips,
   proxyUrl,
   durationMs,
+  probe,
+  settings,
+  detection,
   session,
   sessions,
   onSession,
@@ -78,6 +93,31 @@ export function KeyframeReview({
   const [held, setHeld] = useState(false);
   /** Set by "Keep playing": drops the window bound until the next selection. */
   const [unbounded, setUnbounded] = useState(false);
+  const [tab, setTab] = useState<'swings' | 'details'>('swings');
+
+  // Switching session swaps the whole swing list and reloads the element to 0,
+  // but `idx` is component state and survived — so the rail highlighted swing 16
+  // of the NEW session while the playhead sat at 0:00, a minute before it.
+  // Pressing play then ran from 0:00 until it happened to reach that window's
+  // end, which is why the boundary looked broken.
+  //
+  // Adjusted during render rather than in an effect: this is React's own
+  // "reset state when an input changes" pattern, and it re-renders before
+  // anything is painted instead of showing one frame of the stale selection.
+  // Compared on the first swing's id, not the array — `windowsFor` rebuilds
+  // the list on every clips render, so depending on the array itself would
+  // throw away the reviewer's selection on unrelated state changes.
+  const firstId = windows[0]?.id;
+  const [seenFirstId, setSeenFirstId] = useState(firstId);
+  if (firstId !== seenFirstId) {
+    setSeenFirstId(firstId);
+    setIdx(0);
+    setAtEnd(false);
+    setUnbounded(false);
+  }
+  // The seek itself is left to the paused-reseek effect below: the element has
+  // reloaded to 0, which is before the first window's start, so it moves the
+  // playhead there — and a DOM mutation has no business happening in render.
 
   const current = windows[idx];
   const bounds = useMemo(
@@ -178,13 +218,15 @@ export function KeyframeReview({
       return;
     }
     // Resuming at the end of a window replays it; resuming from a pause in the
-    // middle of one simply continues.
-    if (atEnd) {
+    // middle of one simply continues. Resuming from OUTSIDE it seeks back in
+    // first — otherwise play runs from wherever the playhead happens to be,
+    // which after a session change is the top of the video.
+    if (atEnd || (bounds !== null && outsideWindow(el.currentTime * 1000, bounds.startMs, bounds.endMs))) {
       replay(1);
       return;
     }
     void el.play().catch(() => undefined);
-  }, [atEnd, replay]);
+  }, [atEnd, replay, bounds]);
 
   /** Run on past the window end, into the rest of the video. */
   const keepPlaying = useCallback(() => {
@@ -266,7 +308,6 @@ export function KeyframeReview({
         </span>
       </div>
       <div style={{ flex: 1 }} />
-      <span style={S.mono}>{clock(durationMs)} source</span>
     </header>
   );
 
@@ -326,8 +367,16 @@ export function KeyframeReview({
 
               <div style={S.badgeRight}>
                 {unbounded && <span style={S.badgeDim}>past window</span>}
-                <span style={S.badgeDim}>{rate === 1 ? '1×' : `${rate}×`}</span>
-                <span style={S.badgeDim}>{clock(cursorMs, true)}</span>
+                {rate !== 1 && <span style={S.badgeDim}>{rate}×</span>}
+                {/* Seconds LEFT, not the clock: the previous readout was the
+                    position in the source, which answers "where am I" — a
+                    question the axis already answers — and never "when does
+                    this stop", which was the one actually being asked. */}
+                <span style={S.badgeCount}>
+                  {bounds === null || unbounded
+                    ? clock(cursorMs, true)
+                    : `${(remainingMs(cursorMs, bounds.endMs) / 1000).toFixed(1)}s left`}
+                </span>
               </div>
 
               {!playing && !atEnd && (
@@ -496,7 +545,37 @@ export function KeyframeReview({
               />
             </span>
             <div style={{ flex: 1 }} />
-            <span style={S.mono}>{counter}</span>
+            {current !== undefined && (
+              // The pad goes with it: the exported file is the window as it is
+              // being watched, so widening a bad window and exporting gives the
+              // clip the reviewer actually just saw, not the detector's guess.
+              //
+              // `dir` is rebuilt from the id rather than threaded through the
+              // Clip: `shortId` yields `swing_005`, and `swings/<that>` is
+              // exactly the `dir` /api/session reports for every swing.
+              <a
+                href={clipExportUrl({
+                  session,
+                  dir: `swings/${shortId(current.id)}`,
+                  startMs: current.startMs,
+                  endMs: current.endMs,
+                  padS,
+                })}
+                download={clipExportFileName({
+                  session,
+                  dir: `swings/${shortId(current.id)}`,
+                  startMs: current.startMs,
+                  endMs: current.endMs,
+                  padS,
+                })}
+                title="Download this swing as a video file"
+                style={S.click}
+              >
+                <Button variant="tertiary" size="sm" iconStart="download" iconHref={ICONS}>
+                  Export
+                </Button>
+              </a>
+            )}
           </div>
 
           <div style={S.timelineWrap}>
@@ -515,6 +594,15 @@ export function KeyframeReview({
                   width: `${timelinePercent(cursorMs, durationMs).toFixed(2)}%`,
                 }}
               />
+              {axisTicks(durationMs).map((ms) => (
+                <div
+                  key={`grid-${ms}`}
+                  style={{
+                    ...S.grid,
+                    left: `${timelinePercent(ms, durationMs).toFixed(3)}%`,
+                  }}
+                />
+              ))}
               {windows.map((w, i) => (
                 <div
                   key={w.id}
@@ -545,20 +633,56 @@ export function KeyframeReview({
                 }}
               />
             </div>
-            <div style={S.timelineLabels}>
-              <span>0:00</span>
-              <span>{clock(cursorMs)}</span>
-              <span>{clock(durationMs)}</span>
+            <div style={S.axis}>
+              {axisTicks(durationMs).map((ms, i, all) => {
+                const pct = timelinePercent(ms, durationMs);
+                // The first and last labels are pulled inside the track rather
+                // than centred, so neither overhangs the edge it marks.
+                const edge = i === 0 ? 'left' : i === all.length - 1 ? 'right' : 'mid';
+                return (
+                  <span
+                    key={ms}
+                    style={{
+                      ...S.axisLabel,
+                      left: edge === 'right' ? undefined : `${pct}%`,
+                      right: edge === 'right' ? 0 : undefined,
+                      transform: edge === 'mid' ? 'translateX(-50%)' : undefined,
+                    }}
+                  >
+                    {clock(ms)}
+                  </span>
+                );
+              })}
             </div>
           </div>
         </main>
 
         <aside style={S.rail}>
           <div style={S.railHead}>
-            <span style={S.label}>{windows.length} swings</span>
+            <span onClick={() => setTab('swings')} style={S.click}>
+              <Button variant={tab === 'swings' ? 'secondary' : 'tertiary'} size="sm">
+                {windows.length} swings
+              </Button>
+            </span>
+            <span onClick={() => setTab('details')} style={S.click}>
+              <Button variant={tab === 'details' ? 'secondary' : 'tertiary'} size="sm">
+                Details
+              </Button>
+            </span>
+            <div style={{ flex: 1 }} />
             <span style={S.mono}>{counter}</span>
           </div>
-          <div ref={rail} style={S.railList}>
+          {tab === 'details' && (
+            <div style={S.railList}>
+              <SwingMetadata
+                clip={clips.find((c) => c.id === current?.id)}
+                source={probe ?? null}
+                settings={settings ?? null}
+                detection={detection ?? null}
+              />
+            </div>
+          )}
+          <div ref={rail} style={{ ...S.railList, display: tab === 'swings' ? undefined : 'none' }}>
             {windows.map((w, i) => (
               <div
                 key={w.id}
@@ -578,8 +702,6 @@ export function KeyframeReview({
                     {clock(w.startMs)} · {((w.endMs - w.startMs) / 1000).toFixed(1)}s
                   </span>
                 </div>
-                <div style={{ flex: 1 }} />
-                <span style={S.rowNum}>{String(i + 1).padStart(2, '0')}</span>
               </div>
             ))}
           </div>
@@ -747,13 +869,33 @@ const S: Record<string, CSSProperties> = {
   timelinePlayed: { position: 'absolute', left: 0, top: 0, bottom: 0, background: 'var(--gray-300)' },
   tick: { position: 'absolute', borderRadius: 2 },
   cursor: { position: 'absolute', top: 0, bottom: 0, width: 2, background: '#b3261e' },
-  timelineLabels: {
-    display: 'flex',
-    justifyContent: 'space-between',
+  // Positioned, not `space-between`: a label has to sit AT its own time, which
+  // is the whole difference between an axis and three strings in a row.
+  axis: {
+    position: 'relative',
+    height: 12,
     fontFamily: 'var(--th-mono)',
     fontSize: 10,
     letterSpacing: '0.06em',
     color: 'var(--gray-500)',
+  },
+  axisLabel: { position: 'absolute', top: 0, whiteSpace: 'nowrap' },
+  grid: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 1,
+    background: 'var(--gray-300)',
+    opacity: 0.7,
+  },
+  badgeCount: {
+    fontFamily: 'var(--th-mono)',
+    fontSize: 11,
+    letterSpacing: '0.06em',
+    color: 'rgba(250,249,233,0.92)',
+    background: 'rgba(16,19,14,0.55)',
+    padding: '4px 6px',
+    borderRadius: 4,
   },
   rail: {
     width: 316,
@@ -783,12 +925,6 @@ const S: Record<string, CSSProperties> = {
   rowText: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 },
   rowId: { fontFamily: 'var(--th-mono)', fontSize: 12, letterSpacing: '0.02em' },
   rowAt: { fontFamily: 'var(--th-mono)', fontSize: 11, color: 'var(--gray-500)' },
-  rowNum: {
-    fontFamily: 'var(--th-mono)',
-    fontSize: 10,
-    letterSpacing: '0.06em',
-    color: 'var(--gray-500)',
-  },
   railFoot: {
     flex: 'none',
     padding: '11px 16px',

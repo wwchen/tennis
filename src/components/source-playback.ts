@@ -137,3 +137,79 @@ export function windowsFor(clips: Clip[]): SwingWindow[] {
   }
   return windows.sort((a, b) => a.startMs - b.startMs);
 }
+
+/**
+ * The intervals an axis is allowed to step by, in ms.
+ *
+ * Round numbers a person reads as time: quarter-minutes up to a minute, then
+ * whole and half minutes, then five and ten. An axis stepping by 47s is
+ * arithmetically fine and useless to read.
+ */
+const AXIS_STEPS = [
+  5_000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000,
+  1_800_000, 3_600_000,
+];
+
+/**
+ * Labelled positions along the source timeline.
+ *
+ * The axis used to carry three labels: `0:00`, the cursor's time, and the
+ * duration — with the cursor's value pinned to the MIDDLE of the row by
+ * `space-between` rather than to the cursor. So it read as a midpoint label
+ * that was never the midpoint, and next to a red playhead somewhere else
+ * entirely it said nothing true about any position on the track.
+ *
+ * A real axis instead labels fixed intervals, so a tick's distance along the
+ * track is proportional to its time and the whole row can be read as a scale.
+ * `target` is how many labels to aim for, not a promise: the step is rounded UP
+ * to the next round interval, so a 7-minute session gets minutes and an
+ * hour-long one gets five-minute marks, both without crowding.
+ *
+ * The final label is always the exact duration, even when it lands close to the
+ * previous tick — the end of the video is the one position a reviewer scrubbing
+ * to the last swing needs to see.
+ */
+export function axisTicks(durationMs: number, target = 8): number[] {
+  if (durationMs <= 0) return [];
+
+  const ideal = durationMs / Math.max(1, target);
+  const step = AXIS_STEPS.find((s) => s >= ideal) ?? AXIS_STEPS[AXIS_STEPS.length - 1];
+
+  const ticks: number[] = [];
+  for (let t = 0; t < durationMs; t += step) ticks.push(t);
+
+  // Drop a last interval tick crowding the duration label. A third of a step is
+  // the gap below which the two collide: labels are ~5 characters wide and the
+  // duration is right-aligned to the very end, so they meet well before their
+  // times do. Measured on a 5:18 session, where 5:00 and 5:18 sit 18s apart and
+  // rendered touching at 570px of track.
+  if (ticks.length > 1 && durationMs - ticks[ticks.length - 1] < step / 3) ticks.pop();
+  ticks.push(durationMs);
+  return ticks;
+}
+
+/**
+ * Milliseconds left in the window, floored at zero.
+ *
+ * Surfaced because the previous UI gave no answer to "when does this stop?"
+ * beyond a 3px bar: the window end was enforced but invisible, so a swing
+ * playing on read as the app having lost track of the boundary rather than as
+ * three seconds still to run.
+ */
+export const remainingMs = (cursorMs: number, endMs: number): number =>
+  Math.max(0, endMs - cursorMs);
+
+/**
+ * Whether the playhead is outside the window that is supposed to be playing.
+ *
+ * Selecting a swing seeks, so this is normally false — but switching sessions
+ * reloads the element to 0 while the selection survives, which left the
+ * playhead a minute or more before the selected window. Pressing play then ran
+ * from wherever it was until it happened to reach the window's END, so the
+ * boundary appeared not to work at all. The caller seeks back in instead.
+ *
+ * The end is exclusive: a playhead resting exactly on `endMs` has finished the
+ * window, and resuming from there should restart it rather than read as inside.
+ */
+export const outsideWindow = (cursorMs: number, startMs: number, endMs: number): boolean =>
+  cursorMs < startMs || cursorMs >= endMs;

@@ -665,6 +665,8 @@ describe('the unreadable-swing report reaches the UI', () => {
       sessions: ['IMG_0304'],
       source: null,
       proxy: null,
+      settings: null,
+      detection: null,
       skipped,
     });
     const { result } = renderHook(() => useShotLab());
@@ -699,6 +701,8 @@ describe('switching sessions', () => {
     sessions: ['IMG_0304', 'IMG_0305'],
     source: null,
     proxy: null,
+    settings: null,
+    detection: null,
     skipped: [],
   });
 

@@ -71,6 +71,9 @@ export default function App() {
           // The SOURCE's duration, not the proxy's: they differ by a frame or
           // two, and every swing timestamp was measured against the source.
           durationMs={state.source?.duration_ms ?? state.proxy?.duration_ms ?? 0}
+          probe={state.source}
+          settings={state.settings}
+          detection={state.detection}
           session={state.session ?? '—'}
           sessions={state.sessions}
           onSession={switchSession}
