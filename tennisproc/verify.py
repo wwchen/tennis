@@ -67,11 +67,21 @@ ONSET_WINDOW_FRACTION = 0.5
 #     That is the exact fault this module's docstring describes fixing once
 #     already; the cap reintroduced it through a different door.
 #
-# The teleport this was meant to catch is already handled upstream, and
-# better: `wrist_speeds` skips any triple spanning a `pose.BODY_JUMP`, which
-# is why the uncapped maximum is 123 rather than unbounded. So this is now a
-# backstop against arithmetic nonsense, set well above anything observed,
-# rather than a threshold that decides anything.
+# 150.0 is chosen to stop the cap DECIDING anything, not because nothing
+# reaches it. Measured with the cap fully lifted across all 25 cached sessions
+# (2779 tracks), the tail is long: p50 33, p90 87, p99 279, max 949. At 150 the
+# cap still binds on 3.56% of tracks -- but on zero LR ties, which is the
+# failure it caused before. `BODY_JUMP` filtering removes the teleports, and
+# what is left above ~50 is single-frame landmark jitter rather than a limb.
+#
+# Which means the honest reading of this dimension is narrower than its range
+# suggests. A torso is roughly half a metre, so 150 torso-heights/s implies a
+# 75 m/s wrist; an elite serve's RACKET HEAD peaks near 50 m/s and the wrist
+# far below that. Anything above roughly 50 here is measurement noise that
+# happened to survive the jump filter. Treat `wrist_peak_speed` as ordinal
+# within a swing (which wrist moved faster) and as a coarse gate against
+# `min_wrist_speed`; do not read the number as a physical speed, and do not
+# build a threshold in the tail without re-measuring it first.
 SPEED_CAP = 150.0
 
 

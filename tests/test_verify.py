@@ -480,10 +480,13 @@ class SpeedCapAndHittingSide(unittest.TestCase):
     51.6% among uncapped ones.
     """
 
-    def test_the_cap_sits_above_real_swings_not_among_them(self):
-        # If the cap ever drops back among real speeds it silently starts
-        # deciding handedness again.
-        self.assertGreater(verify.SPEED_CAP, 123.0)
+    def test_the_cap_sits_clear_of_the_bulk_of_real_swings(self):
+        # Measured across 2779 cached tracks with the cap lifted: p50 33,
+        # p90 87. The cap must stay well clear of that bulk, because sitting
+        # among it is what made 63% of the corpus share one value and turned
+        # every LR comparison into a tie. It does NOT have to exceed the whole
+        # tail -- p99 is 279 and the max 949, which are landmark jitter.
+        self.assertGreater(verify.SPEED_CAP, 87.0)
 
     def test_equal_non_zero_peaks_do_not_silently_become_left(self):
         speeds = [(0, 10.0), (40, 10.0)]
