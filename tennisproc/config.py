@@ -23,8 +23,9 @@ import json
 #     here despite being verify-stage only, so sweeping --gap re-ran pose
 #     for nothing.
 #
-# Verify-stage knobs (min_gap_s, min_torso, min_wrist_speed), every render
-# knob, and --limit are all deliberately absent.
+# Verify-stage knobs (min_gap_s, same_place_torsos, min_torso,
+# min_wrist_speed), every render knob, and --limit are all deliberately
+# absent.
 _CACHE_KEYS = ("onset_k", "pose_backend", "pose_window_s", "pose_model",
                "pose_tiles", "pose_min_confidence",
                # The scan decides which candidates exist at all, so every knob
@@ -51,26 +52,61 @@ class Settings:
     # 15 once on one 72-second clip and it cost a third of the shots elsewhere.
     onset_k: float = 8.0
 
-    # Collapse candidates closer together than this.
+    # Collapse two swings closer together than this into one. See
+    # `pipeline.dedupe_swings`, this knob's only consumer.
     #
-    # Sized from real footage rather than intuition, because every plausible
-    # guess was wrong. Measured over 351 pose-verified shots in three real
-    # sessions, the closest genuine pair is 0.12s apart and the 10th
-    # percentile is 0.14s -- players hit far faster than feels believable
-    # (volley exchanges, a ball worked back off the fence). Discard rates for
-    # candidate thresholds:
+    # It was 0.12s, and that number was measured on the wrong population: the
+    # closest pair of *audio onsets* in known_shots.json. Onsets are not
+    # swings, and since detection went vision-first they are not even
+    # candidates -- `scan.corroborate` already thins the snapped contacts to
+    # `scan_min_gap_s` = 1.0s apart, so a 0.12s threshold could never fire and
+    # never did. Over the 2505 swings in out/, exactly one adjacent pair was
+    # under 1.0s apart.
     #
-    #     0.12s ->   0%      0.25s -> 31%      0.35s -> 38%
-    #     0.15s ->  15%      0.30s -> 36%      3.50s -> 60%+
+    # What the shipped trees do contain is one stroke reported twice: the
+    # wrist peaks again on the follow-through or the racket-bring-around, that
+    # second peak finds a nearby sound (the ball on the fence, the next feed
+    # leaving the machine) and ships as a swing 1.0-2.0s after the real one.
+    # Confirmed frame by frame on IMG_0684 at 28.55s/29.90s and 221.25s/
+    # 222.58s: the second "contact" is a player standing with the racket at
+    # his chest.
     #
-    # So this is deliberately near-inert: `audio.REFRACTORY_S` already
-    # suppresses a strike's own echo inside the onset detector, which is the
-    # job this looked like it should do. Raise it only if a specific video
-    # double-reports, and check what it costs first.
-    # 0.12. At 0.25 recall fell to 92/83/86% across the same three sessions.
-    # Duplicate CLIPS are not this knob's job -- audio cannot tell one swing
-    # detected twice from two shots in an exchange; pose can, in dedupe_swings.
-    min_gap_s: float = 0.12
+    # 2.0s is bounded on both sides by measurement:
+    #
+    #   * Above, by what a player can actually do. Across 171 A-B-A triples
+    #     where an opponent's shot sits between two shots by the same player
+    #     -- so both are certainly real -- the shortest same-player repeat in
+    #     the corpus is 2.53s, and the 5th percentile is 3.26s.
+    #   * Below, by the duplicates. In the 16 sessions whose ball-machine feed
+    #     is periodic enough to fit a lattice (Rayleigh R >= 0.55), 76 adjacent
+    #     pairs land in one feed slot, i.e. claim one ball twice. Their gaps
+    #     run 1.00-2.01s, median 1.30s, 90th percentile 1.53s.
+    #
+    # 2.0s sits in the middle of that empty band (1.53 -> 2.53) and removes
+    # 10.0% of the corpus, 65 of the 76 slot collisions among them. The
+    # remaining 11 sit past 2.0s and are left alone on purpose: 2.5s would
+    # catch 3 more and cost 15% of every session.
+    min_gap_s: float = 2.0
+
+    # ...but only when both contacts happened in the same place. Two shots
+    # a second apart at opposite ends of the court are an exchange, not a
+    # double report, and collapsing those was the whole reason a bigger gap
+    # looked unaffordable.
+    #
+    # Measured in torso heights, like every other length here, because a
+    # frame fraction means different things at different depths. Over the 597
+    # adjacent pairs closer than 2.5s in out/, separation between the two
+    # contacts' `center_x`:
+    #
+    #     same player_slot   n=513   median 0.53 torsos, 90th pct 2.69
+    #     different slots    n= 84   MINIMUM 2.12 torsos, median 6.34
+    #
+    # At 2.0 torsos not one of those 84 two-player pairs is collapsed, while
+    # 85% of the same-player pairs stay eligible. Without the test, 39 real
+    # exchanges would be merged. It also catches what `player_slot` cannot:
+    # IMG_0693 swing_009/010 is two people 1.07s apart in a session the
+    # clusterer called single-player, and they measure 2.85 torsos apart.
+    same_place_torsos: float = 2.0
 
     min_torso: float = 0.045      # reject if the body is smaller than this
     min_wrist_speed: float = 0.45  # torso heights per second at contact
@@ -193,6 +229,8 @@ class Settings:
             errs.append("onset_k must be > 0")
         if self.min_gap_s < 0:
             errs.append("min_gap_s must be >= 0")
+        if self.same_place_torsos < 0:
+            errs.append("same_place_torsos must be >= 0")
         if self.min_torso < 0:
             errs.append("min_torso must be >= 0")
         if self.min_wrist_speed < 0:

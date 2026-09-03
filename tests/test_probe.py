@@ -182,6 +182,7 @@ class TestSettings(unittest.TestCase):
                       config.Settings(clip_crf=18),
                       config.Settings(frame_quality=70),
                       config.Settings(min_gap_s=0.5),
+                      config.Settings(same_place_torsos=9.0),
                       config.Settings(min_torso=0.2),
                       config.Settings(min_wrist_speed=2.0)):
             self.assertEqual(base.cache_hash(), other.cache_hash())
@@ -217,30 +218,40 @@ class TestSettings(unittest.TestCase):
         """
         s = config.Settings()
         self.assertEqual(s.onset_k, 8.0)
-        self.assertEqual(s.min_gap_s, 0.12)
+        self.assertEqual(s.min_gap_s, 2.0)
+        self.assertEqual(s.same_place_torsos, 2.0)
 
-    def _retired_test_default_gap_stays_between_two_measured_costs(self):
-        """min_gap_s balances lost shots against duplicated clips.
+    def test_default_gap_sits_in_the_measured_gap_between_the_populations(self):
+        """min_gap_s must separate two measured populations, not split one.
 
-        Below, the cost of raising it, measured over 351 pose-verified shots in
-        three real sessions: the closest real pair is 0.12s apart, the 10th
-        percentile is 0.14s, and thresholds cost 15% of shots at 0.15s, 38% at
-        0.35s and 60%+ at the 3.5s this project originally used. Recall is
-        99-100% at 0.12s and 75% at 0.35s.
+        Above it, the fastest a player was ever seen hitting twice: 2.53s,
+        over 171 A-B-A triples in out/ where an opponent's shot sits between
+        two shots by the same player, so both are certainly real. Below it,
+        the duplicates: over the 76 adjacent pairs that claim one ball-machine
+        feed slot twice in the 16 sessions periodic enough to fit a lattice,
+        the median gap is 1.30s and the 90th percentile 1.53s.
 
-        Above, the cost of leaving it at 0.12s, measured on the rendered tree:
-        clips are `pre_s + post_s` = 3.5s wide, so contacts a fifth of a second
-        apart yield two clips sharing 94% of their video. IMG_0304 shipped such
-        a pair at 59.75s and 59.96s, and a reviewer cannot rate two clips that
-        are the same three seconds.
-
-        0.25s is the smallest threshold that removes every such pair on that
-        tree -- the widest gap it collapses is 0.24s -- so it buys the fix at
-        the lowest recall it can. The ceiling stays well under 0.35s, where
-        recall is known to fall to 75%.
+        A default outside 1.53..2.53 is not a threshold between them any more
+        -- below, it leaves most of the duplicates it could see; above, it
+        starts deleting shots a player really hit. `Settings.min_gap_s`
+        carries the workings, including why the default sits at the far end of
+        that band rather than the middle: past 2.0s the removals stop being
+        feed-slot collisions and become ordinary shots.
         """
-        self.assertGreaterEqual(config.Settings().min_gap_s, 0.25)
-        self.assertLess(config.Settings().min_gap_s, 0.35)
+        self.assertGreaterEqual(config.Settings().min_gap_s, 1.53)
+        self.assertLess(config.Settings().min_gap_s, 2.53)
+
+    def test_same_place_default_clears_every_measured_two_player_pair(self):
+        """The court-position guard must not merge two people.
+
+        Of the 597 adjacent pairs under 2.5s apart in out/, the 84 that cross
+        a player_slot boundary separate by at least 2.12 torso heights, and
+        the same-player pairs sit at a median of 0.53. A default at or above
+        2.12 would start collapsing real exchanges; one much below 1.0 would
+        stop catching the same player between two frames of drift.
+        """
+        self.assertLess(config.Settings().same_place_torsos, 2.12)
+        self.assertGreaterEqual(config.Settings().same_place_torsos, 1.0)
 
 
 if __name__ == "__main__":

@@ -36,7 +36,14 @@ def _add_settings_args(parser):
                         "onsets exist for a swing to be dated by "
                         "(default %(default)s)")
     g.add_argument("--gap", type=float, default=s.min_gap_s, dest="min_gap_s",
-                   help="collapse swings closer than this many seconds")
+                   help="collapse swings closer than this many seconds, when "
+                        "they also happened in the same place "
+                        "(default %(default)s)")
+    g.add_argument("--same-place", type=float, default=s.same_place_torsos,
+                   dest="same_place_torsos",
+                   help="how far apart in torso heights two contacts may be "
+                        "and still count as one player, for --gap "
+                        "(default %(default)s)")
     g.add_argument("--min-torso", type=float, default=s.min_torso,
                    help="reject bodies smaller than this fraction of frame height")
     g.add_argument("--min-wrist-speed", type=float, default=s.min_wrist_speed,
@@ -132,7 +139,8 @@ def cmd_detect(args):
                                      work_dir=None, report=report)
     accepted, histogram = pipeline.stage_verify(track_list, settings, report)
     before = len(accepted)
-    accepted = pipeline.dedupe_swings(accepted, settings.min_gap_s)
+    accepted = pipeline.dedupe_swings(accepted, settings.min_gap_s,
+                                      settings.same_place_torsos)
     if before != len(accepted):
         print("dedupe: %d -> %d" % (before, len(accepted)))
 

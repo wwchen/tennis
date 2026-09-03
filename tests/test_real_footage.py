@@ -83,9 +83,21 @@ def recall(found_s, truth_s, tolerance=TOLERANCE_S):
 
 @unittest.skipUnless(AVAILABLE, "no real footage + shots.json available")
 class TestRecallOnRealFootage(unittest.TestCase):
-    def detect(self, video, settings):
-        found = audio.collapse(audio.detect(video, k=settings.onset_k),
-                               settings.min_gap_s)
+    def detect(self, video, settings, collapse_s=0.0):
+        """Onset times, optionally collapsed.
+
+        `collapse_s` is a parameter of this test, not a setting, and it used
+        to be `settings.min_gap_s`. That knob's only consumer is
+        `pipeline.dedupe_swings`, which runs on verified swings and knows
+        where on court each one happened; onsets know neither. Reading it here
+        made the recall of the audio stage look like it depended on a
+        threshold no longer applied to it, and pinned the default to the
+        closest pair of *onsets* in the fixture rather than to anything about
+        swings.
+        """
+        found = audio.detect(video, k=settings.onset_k)
+        if collapse_s > 0:
+            found = audio.collapse(found, collapse_s)
         return [c["contact_ms"] / 1000.0 for c in found]
 
     def test_defaults_find_almost_every_known_shot(self):
@@ -97,28 +109,33 @@ class TestRecallOnRealFootage(unittest.TestCase):
                     "%s: recall %.0f%% of %d known shots"
                     % (stem, 100 * got, len(truth)))
 
-    def test_the_gap_setting_is_what_costs_recall(self):
-        """Proof the collapse step, not the detector, is the risk.
+    def test_collapsing_onsets_by_time_alone_costs_recall(self):
+        """Proof that a bare time threshold on ONSETS throws shots away.
 
-        The detector finds ~99% of known shots; a too-large --gap is what
-        throws them away. This is why the default is 0.12s.
+        The detector finds ~99% of known shots; collapsing what it found by
+        time alone is what loses them. This is why no stage of the pipeline
+        does that any more -- `dedupe_swings` runs on verified swings and
+        requires the two contacts to be in the same place as well.
         """
         stem, video, truth = AVAILABLE[0]
-        tight = config.Settings(min_gap_s=0.12)
-        loose = config.Settings(min_gap_s=1.0)
-        self.assertGreater(recall(self.detect(video, tight), truth),
-                           recall(self.detect(video, loose), truth))
+        settings = config.Settings()
+        self.assertGreater(recall(self.detect(video, settings), truth),
+                           recall(self.detect(video, settings, 1.0), truth))
 
     def test_real_shots_can_be_closer_together_than_intuition_suggests(self):
-        """Sanity-check the number the default is derived from."""
+        """Two onsets can be a fifth of a second apart and both be real.
+
+        This is the measurement that keeps `min_gap_s` out of the audio stage.
+        It is not a bound on the setting itself: a pair this close is two
+        players in an exchange or one player's strike and its echo, and
+        `dedupe_swings` separates those by court position, not by time.
+        """
         closest = min(b - a
                       for _, _, truth in AVAILABLE
                       for a, b in zip(truth, truth[1:]))
         self.assertLess(closest, 0.35,
-                        "if no real pair is under 0.35s, the measured basis "
-                        "for min_gap_s no longer holds")
-        self.assertGreaterEqual(config.Settings().min_gap_s, 0.0)
-        self.assertLessEqual(config.Settings().min_gap_s, closest + 0.01)
+                        "if no real pair is under 0.35s, the reason the audio "
+                        "stage does no time-only collapsing no longer holds")
 
     def test_portrait_footage_probes_as_portrait(self):
         """Real iPhone .MOV files are the rotation case that matters."""

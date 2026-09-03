@@ -16,7 +16,8 @@
  },
  "settings": {
   "onset_k": 8.0,
-  "min_gap_s": 0.35,
+  "min_gap_s": 2.0,
+  "same_place_torsos": 2.0,
   "min_torso": 0.045,
   "min_wrist_speed": 0.45,
   "pose_window_s": 0.4,

@@ -194,7 +194,8 @@ Read the histogram before reaching for a knob.
 | Flag | Default | What it does |
 |---|---|---|
 | `--onset-k` | 8.0 | Audio threshold, in MADs above the median. Lower finds more onsets and admits more noise. |
-| `--gap` | 0.12 | Collapse verified swings closer together than this many seconds. |
+| `--gap` | 2.0 | Collapse verified swings closer together than this many seconds, *and* in the same place on court. |
+| `--same-place` | 2.0 | How close two contacts must be, in torso heights, to count as one player. |
 | `--min-wrist-speed` | 0.45 | Reject swings slower than this, in torso heights per second. |
 | `--reanchor-min-speed` | 12.0 | The speed a swing must show when its wrist peak is far from the strike. Misnamed: it screens, it never moves anything. |
 | `--pose-tiles` | 3 | Vertical tiles for a player too small to detect whole. 0 or 1 means no tiling; there is no auto-probe. **Not 2** — see `config.py`. |
@@ -211,29 +212,68 @@ Change them in [`config.py`](config.py), where each default carries the
 measurement that chose it, and where a new number is expected to arrive with
 its own.
 
-`--gap` deserves a note, because every intuitive value for it is wrong. It
-looks like it should merge the several noises *one* swing makes — the strike,
-then the ball hitting a fence — but `audio.REFRACTORY_S` already suppresses a
-strike's own echo inside the onset detector, and the vision detector thins its
-peaks at `scan_min_gap_s` (1.0 s) and again after snapping them to onsets. So
-this is near-inert by design. It now runs in `dedupe_swings`, *after*
-verification and on the anchored contact, so a real shot is never discarded in
-favour of a nearby noise pose would have thrown out.
+`--gap` and `--same-place` work as a pair, and neither is safe alone.
 
-Measured over 351 pose-verified shots in three real sessions, the closest
-genuine pair of shots is **0.12 s** apart and the 10th percentile is 0.14 s:
-players hit much faster than feels believable. What a threshold costs:
+The failure they fix, confirmed frame by frame: the racket strikes, then the
+wrist peaks a *second* time on the follow-through more than a second later,
+that peak finds a nearby sound, and the swing ships twice. `IMG_0684`
+swing_006/007 are 1.30 s apart — the first has ball blur leaving the strings,
+the second is the player standing with the racket at their chest.
 
-| `--gap` | real shots discarded |
-|---|---|
-| 0.12 s | 0% |
-| 0.15 s | 15% |
-| 0.35 s | 38% |
-| 3.5 s | 60%+ |
+An earlier default of 0.12 s could never fire: `scan.corroborate` already thins
+candidates to `scan_min_gap_s` (1.0 s), and exactly **one** adjacent pair in the
+whole 2505-swing corpus sits below that. The old note claiming 0.12 s was the
+closest genuine pair measured *the gap between any two detections*, most of
+which are two players rallying, not one player hitting twice.
 
-The 3.5 s an earlier version of this project inherited turned 191 detected
-shots into 87. Raise this only if a specific video double-reports, and check
-the cost first.
+Separating those two populations needs ground truth, which the ball-machine
+sessions supply: a Rayleigh periodogram finds a feed lattice in 16 of 26
+sessions (`IMG_0687`–`0691` at 3.45 s, `IMG_0694`–`0696` at 2.571 s), and **76
+adjacent pairs land in a single feed slot** — two detections claiming one ball.
+
+| population | n | gap |
+|---|---|---|
+| two detections of one ball | 76 | min 1.00 s, median 1.30 s, p90 1.53 s, max 2.01 s |
+| same player hitting twice (A-B-A triples) | 171 | min **2.53 s**, p05 3.26 s, median 7.06 s |
+| two players rallying | 336 | min **1.00 s**, p10 1.55 s |
+
+The empty band from **1.53 s to 2.53 s** is where `--gap` 2.0 cuts. But the
+third row is why the time test cannot stand alone: a bare 2.0 s threshold eats
+real exchanges. Hence `--same-place`, measured over the 597 pairs under 2.5 s:
+
+| | n | min apart | median |
+|---|---|---|---|
+| same `player_slot` | 513 | 0.00 torsos | 0.53 |
+| different slots | 84 | **2.12 torsos** | 6.34 |
+
+At 2.0 torsos the guard merges **0 of the 84** two-player pairs; without it, 39
+real exchanges collapse. It also catches what `player_slot` cannot — `IMG_0693`
+swing_009/010 are visibly two people 1.07 s apart in a session the clusterer
+called single-player, 2.85 torsos apart, correctly kept.
+
+Together these remove **250 of 2505 swings (10%)**, concentrated in the
+weak-lattice sessions (`IMG_0473` 24%, `IMG_0477` 27%) — which are also the
+sessions where the result is least verifiable, being distant outdoor doubles.
+
+**Which member survives is chosen for coverage, not for correctness.** Nothing
+the pipeline measures identifies the real strike: over the feed-slot collisions
+`onset_peak`, `|contact_offset|`, `torso_height` and `wrist_peak_speed` all
+score between 50% and 61%, which at that sample size is a coin flip.
+`wrist_peak_speed` is the worst of them, because `verify.SPEED_CAP` clips at
+40.0 and 1575 of 2505 swings (63%) sit exactly on the cap. So `dedupe_swings`
+optimises for keeping the strike **on screen** instead: the window is
+asymmetric (`--pre` 1.5 s, `--post` 2.0 s), so keeping the earlier member
+covers the other contact for gaps up to 2.0 s while keeping the later covers
+only 1.5 s. Above 1.5 s the earlier member therefore wins outright; below it,
+where either window contains both contacts, the louder onset decides.
+
+Applies to **future runs only**. Dedupe renumbers `swings/swing_NNN`, and
+`user-edit.json` is keyed by that directory, so re-running an existing session
+orphans every review onto a different shot. `min_gap_s` and `same_place_torsos`
+are not in `_CACHE_KEYS`, so the scan and pose caches survive and a re-run
+takes minutes — but the cost is human: re-review, or a one-off remapper keyed
+on `detection.contact_ms`, which is stable across the re-run for every swing
+dedupe keeps.
 
 ## Output
 
