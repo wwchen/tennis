@@ -127,7 +127,6 @@ export function KeyframeReview({
   const [unbounded, setUnbounded] = useState(false);
   const [tab, setTab] = useState<'swings' | 'details'>('swings');
   const [showKeys, setShowKeys] = useState(false);
-  const [showHidden, setShowHidden] = useState(false);
   /**
    * Swings the reviewer has hidden, by id.
    *
@@ -286,12 +285,12 @@ export function KeyframeReview({
    */
   const skipHidden = useCallback(
     (from: number, step: number): number => {
-      if (showHidden || step === 0) return from;
+      if (step === 0) return from;
       let i = from;
       while (i >= 0 && i < windows.length && hidden.has(windows[i].id)) i += step;
       return i >= 0 && i < windows.length ? i : from;
     },
-    [windows, hidden, showHidden],
+    [windows, hidden],
   );
 
   /** Seek to a window and play it. The only path that moves the selection. */
@@ -648,16 +647,24 @@ export function KeyframeReview({
           </div>
 
           <div style={S.transport}>
-            <span onClick={() => goto(idx - 1)} title="Previous swing (←)" style={S.click}>
-              <Button
-                variant="tertiary"
-                size="sm"
-                iconOnly
-                iconStart="chevron-left"
-                aria-label="Previous swing"
-                iconHref={ICONS}
-              />
-            </span>
+            {/* The two swing arrows sit TOGETHER, and carry the glyph of the
+                key that drives them. Previously next-swing landed immediately
+                after the speed control's `>`, so two adjacent buttons showed
+                the same chevron and did entirely different things. Matching
+                each button to its own key (← → for swings, < > for speed) is
+                what tells them apart at a glance. */}
+            <div style={S.padGroup}>
+              <span onClick={() => goto(idx - 1)} title="Previous swing (←)" style={S.click}>
+                <Button variant="tertiary" size="sm" aria-label="Previous swing">
+                  ←
+                </Button>
+              </span>
+              <span onClick={() => goto(idx + 1)} title="Next swing (→)" style={S.click}>
+                <Button variant="tertiary" size="sm" aria-label="Next swing">
+                  →
+                </Button>
+              </span>
+            </div>
             <span onClick={toggle} title="Play / pause — space" style={S.click}>
               <Button
                 variant="secondary"
@@ -674,6 +681,7 @@ export function KeyframeReview({
               </Button>
             </span>
             <div style={S.padGroup}>
+              <span style={S.label}>Speed</span>
               <span
                 onClick={() => nudgeSpeed(-1)}
                 title="Slower (<)"
@@ -694,17 +702,6 @@ export function KeyframeReview({
                 </Button>
               </span>
             </div>
-            <span onClick={() => goto(idx + 1)} title="Next swing (→)" style={S.click}>
-              <Button
-                variant="tertiary"
-                size="sm"
-                iconOnly
-                iconStart="chevron-right"
-                aria-label="Next swing"
-                iconHref={ICONS}
-              />
-            </span>
-
             <div style={S.padGroup}>
               {/* The direct remedy for a mis-detected window: widen every one of
                   them, without re-running the pipeline. */}
@@ -869,14 +866,6 @@ export function KeyframeReview({
                 {starred.size > 0 && hidden.size > 0 && ' · '}
                 {hidden.size > 0 && `${hidden.size} hidden`}
               </span>
-              <div style={{ flex: 1 }} />
-              {hidden.size > 0 && (
-                <span onClick={() => setShowHidden((v) => !v)} style={S.click}>
-                  <Button variant="tertiary" size="sm">
-                    {showHidden ? 'Hide them' : 'Show them'}
-                  </Button>
-                </span>
-              )}
             </div>
           )}
           {tab === 'details' && (
@@ -892,11 +881,6 @@ export function KeyframeReview({
           <div ref={rail} style={{ ...S.railList, display: tab === 'swings' ? undefined : 'none' }}>
             {windows.map((w, i) => {
               const isHidden = hidden.has(w.id);
-              // Kept MOUNTED when filtered out, not removed: the selection is
-              // scrolled into view by index into this list's children, and a
-              // list that renumbers as swings are hidden would scroll to the
-              // wrong row.
-              if (isHidden && !showHidden) return <div key={w.id} style={{ display: 'none' }} />;
               return (
                 <div
                   key={w.id}
@@ -904,7 +888,7 @@ export function KeyframeReview({
                   style={{
                     ...S.row,
                     background: i === idx ? 'var(--gray-200)' : 'transparent',
-                    opacity: isHidden ? 0.45 : 1,
+                    opacity: isHidden ? 0.4 : 1,
                   }}
                 >
                   <div style={S.rowText}>
@@ -1175,7 +1159,11 @@ const S: Record<string, CSSProperties> = {
     fontSize: 11,
     letterSpacing: '0.04em',
     color: 'var(--gray-700)',
-    minWidth: 34,
+    // Fixed, not a minimum: "0.75x" is wider than "1x", so a minWidth let the
+    // badge grow and shoved Export onto a second row every time the rate
+    // changed. Sized for the widest label the steps can produce.
+    width: 42,
+    flex: 'none',
     textAlign: 'center',
   },
   rowMark: {
