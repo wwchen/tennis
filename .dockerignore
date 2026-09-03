@@ -10,6 +10,7 @@
 node_modules
 dist
 coverage
+raw
 
 Dockerfile
 docker-compose*.yml
