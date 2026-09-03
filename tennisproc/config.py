@@ -113,7 +113,7 @@ class Settings:
     # --- clip ------------------------------------------------------------
     pre_s: float = 1.5            # clip starts this far before contact
     post_s: float = 2.0           # ...and ends this far after
-    clip_height: int = 480
+    clip_height: int = 0          # 0 = keep the source resolution
     clip_crf: int = 26
 
     # --- frames ----------------------------------------------------------
@@ -199,8 +199,8 @@ class Settings:
             errs.append("pose_min_confidence must be 0..1")
         if self.pre_s <= 0 or self.post_s <= 0:
             errs.append("pre_s and post_s must be > 0")
-        if self.clip_height <= 0:
-            errs.append("clip_height must be > 0")
+        if self.clip_height < 0:
+            errs.append("clip_height must be >= 0")
         if not 0 <= self.clip_crf <= 51:
             errs.append("clip_crf must be 0..51")
         if self.detector not in ("vision", "audio"):
