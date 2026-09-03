@@ -99,11 +99,15 @@ def frame_times_ms(contact_ms, span_s, fps, duration_ms):
     return times or [int(min(max(0, contact_ms), last_ms))]
 
 
-def cut_clip(video, dest, rect, start_ms, end_ms, height=480, crf=26):
+def cut_clip(video, dest, rect, start_ms, end_ms, height=0, crf=26):
     """Cut and crop one clip. Returns (path, width, height, encoded_start_ms).
 
     `-ss` before `-i` seeks quickly; the re-encode means the result starts
     exactly where asked rather than at the previous keyframe.
+
+    `height=0` (the default) keeps the crop's own resolution: only the even-
+    dimension truncation yuv420p requires is applied. fps is left alone too --
+    no `-r` is ever passed, so the clip inherits the source's frame rate.
     """
     duration_s = (end_ms - start_ms) / 1000.0
     # Never upscale: a crop shorter than the target height is left alone
