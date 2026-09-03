@@ -74,6 +74,8 @@ export interface State {
   session: string | null;
   /** Every session the tree offers, for the picker. Not persisted. */
   sessions: string[];
+  /** Sessions whose source video exists — what the keyframe picker offers. */
+  playable: string[];
   /** What the ETL probed about the source video. Not persisted. */
   source: EtlSource | null;
   /**
@@ -112,6 +114,7 @@ export type Action =
       entries: SwingEntry[];
       session: string;
       sessions?: string[];
+      playable?: string[];
       source?: EtlSource | null;
       proxy?: EtlProxy | null;
       settings?: Record<string, unknown> | null;
@@ -201,6 +204,7 @@ export const initialState = (): State => ({
   entries: [],
   session: null,
   sessions: [],
+  playable: [],
   source: null,
   proxy: null,
   settings: null,
@@ -236,6 +240,7 @@ export function reducer(state: State, action: Action): State {
         entries: action.entries,
         session: action.session,
         sessions: action.sessions ?? [action.session],
+        playable: action.playable ?? [],
         source: action.source ?? null,
         proxy: action.proxy ?? null,
         settings: action.settings ?? null,
@@ -511,6 +516,7 @@ export function useShotLab() {
           entries: payload.entries,
           session: payload.session,
           sessions: payload.sessions,
+          playable: payload.playable,
           source: payload.source,
           proxy: payload.proxy,
           settings: payload.settings,

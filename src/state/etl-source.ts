@@ -23,6 +23,7 @@ export async function loadEtlClips(requested?: string): Promise<{
   entries: SwingEntry[];
   session: string;
   sessions: string[];
+  playable: string[];
   source: EtlSource | null;
   proxy: EtlProxy | null;
   settings: Record<string, unknown> | null;
@@ -46,6 +47,8 @@ export async function loadEtlClips(requested?: string): Promise<{
       entries,
       session: payload.session,
       sessions,
+      // Guarded like `sessions`: a dev server predating this key sends none.
+      playable: Array.isArray(payload.playable) ? payload.playable : sessions,
       source: payload.source ?? null,
       // `?? null` rather than trusting the type: this is a parsed network
       // response, and every tree written before proxies existed omits the key.

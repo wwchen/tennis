@@ -247,3 +247,23 @@ export const END_MODE_LABELS: Record<EndMode, { label: string; title: string }> 
   continue: { label: 'Continue', title: 'Keep playing into the rest of the video' },
   next: { label: 'Next', title: 'Advance to the next swing after a countdown' },
 };
+
+
+/**
+ * Every keyboard shortcut this view binds, and what it does.
+ *
+ * One list, used three ways: to label the buttons that have a shortcut, to
+ * render the `?` overlay, and as the reference a reader checks the handler
+ * against. Keeping them in three hand-synced places is how a UI ends up
+ * advertising a key it no longer binds.
+ */
+export const SHORTCUTS: { key: string; label: string; what: string }[] = [
+  { key: '\u2190', label: '\u2190', what: 'Previous swing' },
+  { key: '\u2192', label: '\u2192', what: 'Next swing' },
+  { key: ' ', label: 'space', what: 'Play / pause' },
+  { key: 'r', label: 'r', what: 'Replay the window' },
+  { key: 's', label: 's', what: 'Replay slowly' },
+  { key: 'e', label: 'e', what: 'Export this swing' },
+  { key: 'h', label: 'h', what: 'Hide / show this swing' },
+  { key: '?', label: '?', what: 'This list' },
+];

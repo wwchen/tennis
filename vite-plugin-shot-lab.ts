@@ -443,7 +443,17 @@ function readSession(root: string, requested?: string) {
   const rawDetection = isObject(sessionDoc) ? sessionDoc.detection : undefined;
   const detection = isObject(rawDetection) ? rawDetection : null;
 
-  return { session, sessions, swings, source, proxy, settings, detection };
+  // Which sessions can actually be PLAYED, not merely listed. The keyframe view
+  // seeks a source video, so a session with no proxy is not a destination there
+  // — offering it in the picker only to answer "no source video" wastes the
+  // click. The other views read stills and clips, so they still list them all.
+  const playable = sessions.filter((name) => {
+    const doc = readJson(join(root, name, 'metadata.json'));
+    const p = isObject(doc) ? doc.proxy : undefined;
+    return isObject(p) && typeof p.file === 'string' && existsSync(join(root, name, p.file));
+  });
+
+  return { session, sessions, playable, swings, source, proxy, settings, detection };
 }
 
 /**

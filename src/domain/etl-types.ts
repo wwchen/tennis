@@ -164,6 +164,15 @@ export interface SessionPayload {
    */
   sessions: string[];
   /**
+   * The subset of `sessions` whose proxy exists on disk.
+   *
+   * The keyframe view seeks a source video, so it offers only these; the views
+   * that read stills and clips still offer everything. Separate from `sessions`
+   * rather than replacing it, because "this session exists but cannot be
+   * played" is a real state a reviewer may need to see elsewhere.
+   */
+  playable: string[];
+  /**
    * What the ETL probed about the source video, or null for a tree that has
    * no readable swing to take it from.
    *

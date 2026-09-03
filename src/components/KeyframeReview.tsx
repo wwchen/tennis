@@ -10,6 +10,7 @@ import {
   END_MODES,
   END_MODE_LABELS,
   PAD_STEPS,
+  SHORTCUTS,
   axisTicks,
   clock,
   nearestSwing,
@@ -69,6 +70,25 @@ interface Props {
   onSelect?: (id: string) => void;
 }
 
+/**
+ * The hidden-swing set for a session, or an empty one.
+ *
+ * Every failure reads as "nothing hidden": a private window, storage disabled,
+ * or a value some other tool wrote. That errs toward showing MORE than the
+ * reviewer asked for, which is recoverable; the opposite would silently hide
+ * swings they never chose to hide.
+ */
+function readHidden(key: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
 export function KeyframeReview({
   clips,
   proxyUrl,
@@ -83,6 +103,9 @@ export function KeyframeReview({
 }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const rail = useRef<HTMLDivElement>(null);
+  // Clicked by the `e` shortcut: a download needs a real anchor activation, so
+  // the key drives the same element rather than duplicating the URL building.
+  const exportRef = useRef<HTMLAnchorElement>(null);
 
   const windows = useMemo(() => windowsFor(clips), [clips]);
   const [idx, setIdx] = useState(0);
@@ -103,6 +126,46 @@ export function KeyframeReview({
   /** Set by "Keep playing": drops the window bound until the next selection. */
   const [unbounded, setUnbounded] = useState(false);
   const [tab, setTab] = useState<'swings' | 'details'>('swings');
+  const [showKeys, setShowKeys] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
+  /**
+   * Swings the reviewer has hidden, by id.
+   *
+   * Kept per session in `localStorage` rather than written to `user-edit.json`:
+   * hiding is a view preference — "stop showing me this while I work through
+   * the session" — and the ETL's `verdict` vocabulary means something stronger
+   * and permanent. Promoting a hidden swing to `verdict: duplicate` is the
+   * right follow-up, but conflating the two would record a judgement the
+   * reviewer did not make.
+   */
+  const hideKey = `shot-lab:hidden:${session}`;
+  const [hidden, setHidden] = useState<Set<string>>(() => readHidden(hideKey));
+  // Re-read when the session changes, during render rather than in an effect:
+  // the same reset-on-input-change pattern the selection uses, and it avoids
+  // painting one frame of the previous session's hidden set.
+  const [seenHideKey, setSeenHideKey] = useState(hideKey);
+  if (seenHideKey !== hideKey) {
+    setSeenHideKey(hideKey);
+    setHidden(readHidden(hideKey));
+  }
+
+  const toggleHidden = useCallback(
+    (id: string) => {
+      setHidden((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        try {
+          localStorage.setItem(hideKey, JSON.stringify([...next]));
+        } catch {
+          // Storage full or blocked: the session still works, it just will not
+          // be remembered. Not worth interrupting the reviewer over.
+        }
+        return next;
+      });
+    },
+    [hideKey],
+  );
 
   // Switching session swaps the whole swing list and reloads the element to 0,
   // but `idx` is component state and survived — so the rail highlighted swing 16
@@ -193,10 +256,29 @@ export function KeyframeReview({
     return () => cancelAnimationFrame(raf);
   }, [stopAtWindowEnd]);
 
+  /**
+   * The next index in `step` direction that is not hidden.
+   *
+   * Hiding has to bind navigation, not just the list: a hidden swing that
+   * arrows and auto-advance still land on has not been hidden in any sense the
+   * reviewer meant. Falls back to `from` when everything in that direction is
+   * hidden, so the selection never runs off the end.
+   */
+  const skipHidden = useCallback(
+    (from: number, step: number): number => {
+      if (showHidden || step === 0) return from;
+      let i = from;
+      while (i >= 0 && i < windows.length && hidden.has(windows[i].id)) i += step;
+      return i >= 0 && i < windows.length ? i : from;
+    },
+    [windows, hidden, showHidden],
+  );
+
   /** Seek to a window and play it. The only path that moves the selection. */
   const goto = useCallback(
     (next: number, playRate = 1) => {
-      const clamped = Math.max(0, Math.min(windows.length - 1, next));
+      const wanted = Math.max(0, Math.min(windows.length - 1, next));
+      const clamped = skipHidden(wanted, next >= idx ? 1 : -1);
       const target = windows[clamped];
       if (target === undefined) return;
       const { startMs } = playWindow(target, durationMs, padS);
@@ -216,7 +298,7 @@ export function KeyframeReview({
       // seek still landed, so the right frame is on screen, merely paused.
       void el.play().catch(() => undefined);
     },
-    [windows, durationMs, padS, onSelect],
+    [windows, durationMs, padS, onSelect, skipHidden, idx],
   );
 
   /** Replay the current window, optionally slowed. */
@@ -285,11 +367,19 @@ export function KeyframeReview({
         replay(1);
       } else if (e.key === 's' || e.key === 'S') {
         replay(SLOW_RATE);
+      } else if (e.key === 'h' || e.key === 'H') {
+        if (current !== undefined) toggleHidden(current.id);
+      } else if (e.key === 'e' || e.key === 'E') {
+        exportRef.current?.click();
+      } else if (e.key === '?') {
+        setShowKeys((v) => !v);
+      } else if (e.key === 'Escape') {
+        setShowKeys(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goto, idx, toggle, replay]);
+  }, [goto, idx, toggle, replay, current, toggleHidden]);
 
   // Keep the selected row in view without yanking the rail on every frame.
   useEffect(() => {
@@ -304,6 +394,19 @@ export function KeyframeReview({
     if (el === null || bounds === null || !el.paused) return;
     if (el.currentTime * 1000 < bounds.startMs) el.currentTime = bounds.startMs / 1000;
   }, [bounds]);
+
+  // The picker lists only playable sessions, but the app still LOADS whichever
+  // session the tree lists first — `IMG_0304`, which has no source video. That
+  // left the picker showing one session while the view rendered another's empty
+  // state. If the loaded session cannot be played here, move to one that can.
+  //
+  // Calling a prop rather than setting local state, so this is a request to the
+  // owner of the selection, not a second copy of it. It settles in one step:
+  // the session it asks for is in the list, so the condition is false next time.
+  const playableSession = sessions.length > 0 && !sessions.includes(session) ? sessions[0] : null;
+  useEffect(() => {
+    if (playableSession !== null) onSession(playableSession);
+  }, [playableSession, onSession]);
 
   const header = (
     <header style={S.header}>
@@ -350,6 +453,22 @@ export function KeyframeReview({
 
   return (
     <div style={S.root}>
+      {showKeys && (
+        <div style={S.keysScrim} onClick={() => setShowKeys(false)}>
+          <div style={S.keysCard} onClick={(e) => e.stopPropagation()}>
+            <div style={S.keysHead}>
+              <span style={S.endTitle}>Keyboard</span>
+              <span style={S.label}>esc to close</span>
+            </div>
+            {SHORTCUTS.map((k) => (
+              <div key={k.what} style={S.keysRow}>
+                <kbd style={S.kbd}>{k.label}</kbd>
+                <span style={{ fontSize: 13 }}>{k.what}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {header}
 
       <div style={S.body}>
@@ -429,18 +548,16 @@ export function KeyframeReview({
                         <span style={S.endTitle}>
                           {current === undefined ? '—' : shortId(current.id)}
                         </span>
-                        <span style={S.label}>
-                          {endMode !== 'next' || idx >= windows.length - 1
-                            ? 'End of window'
-                            : held
-                              ? 'Countdown held'
-                              : `Next in ${Math.max(0, countdown / 1000).toFixed(1)}s`}
-                        </span>
+                        {endMode === 'next' && idx < windows.length - 1 && (
+                          <span style={S.label}>
+                            {held ? 'held' : `next in ${Math.max(0, countdown / 1000).toFixed(1)}s`}
+                          </span>
+                        )}
                       </div>
                       <div style={S.endRow}>
                         <span onClick={() => replay(1)} style={S.click}>
                           <Button variant="primary" size="sm" iconStart="refresh" iconHref={ICONS}>
-                            Replay
+                            Replay (r)
                           </Button>
                         </span>
                         <span onClick={() => replay(SLOW_RATE)} style={S.click}>
@@ -450,7 +567,7 @@ export function KeyframeReview({
                             iconStart="refresh"
                             iconHref={ICONS}
                           >
-                            {SLOW_RATE}×
+                            Replay {SLOW_RATE}× (s)
                           </Button>
                         </span>
                         {/* The one-off twin of the standing `continue` mode:
@@ -494,7 +611,7 @@ export function KeyframeReview({
           </div>
 
           <div style={S.transport}>
-            <span onClick={() => goto(idx - 1)} title="Previous swing — ←" style={S.click}>
+            <span onClick={() => goto(idx - 1)} title="Previous swing (←)" style={S.click}>
               <Button
                 variant="tertiary"
                 size="sm"
@@ -511,25 +628,20 @@ export function KeyframeReview({
                 iconStart={playing ? 'pause' : 'play'}
                 iconHref={ICONS}
               >
-                {playing ? 'Pause' : atEnd ? 'Replay' : 'Play'}
+                {playing ? 'Pause' : atEnd ? 'Replay' : 'Play'} (space)
               </Button>
             </span>
-            <span onClick={() => replay(1)} title="Restart window — r" style={S.click}>
-              <Button
-                variant="tertiary"
-                size="sm"
-                iconOnly
-                iconStart="refresh"
-                aria-label="Restart window"
-                iconHref={ICONS}
-              />
-            </span>
-            <span onClick={() => replay(SLOW_RATE)} title="Slow-mo replay — s" style={S.click}>
-              <Button variant="tertiary" size="sm" iconHref={ICONS}>
-                {SLOW_RATE}×
+            <span onClick={() => replay(1)} title="Replay the window" style={S.click}>
+              <Button variant="tertiary" size="sm" iconStart="refresh" iconHref={ICONS}>
+                Replay (r)
               </Button>
             </span>
-            <span onClick={() => goto(idx + 1)} title="Next swing — →" style={S.click}>
+            <span onClick={() => replay(SLOW_RATE)} title="Replay slowly" style={S.click}>
+              <Button variant="tertiary" size="sm" iconStart="refresh" iconHref={ICONS}>
+                Replay {SLOW_RATE}× (s)
+              </Button>
+            </span>
+            <span onClick={() => goto(idx + 1)} title="Next swing (→)" style={S.click}>
               <Button
                 variant="tertiary"
                 size="sm"
@@ -592,11 +704,12 @@ export function KeyframeReview({
                   endMs: current.endMs,
                   padS,
                 })}
-                title="Download this swing as a video file"
+                ref={exportRef}
+                title="Download this swing as a video file (e)"
                 style={S.click}
               >
                 <Button variant="tertiary" size="sm" iconStart="download" iconHref={ICONS}>
-                  Export
+                  Export (e)
                 </Button>
               </a>
             )}
@@ -696,6 +809,17 @@ export function KeyframeReview({
             <div style={{ flex: 1 }} />
             <span style={S.mono}>{counter}</span>
           </div>
+          {hidden.size > 0 && (
+            <div style={S.hiddenBar}>
+              <span style={S.mono}>{hidden.size} hidden</span>
+              <div style={{ flex: 1 }} />
+              <span onClick={() => setShowHidden((v) => !v)} style={S.click}>
+                <Button variant="tertiary" size="sm">
+                  {showHidden ? 'Hide them' : 'Show them'}
+                </Button>
+              </span>
+            </div>
+          )}
           {tab === 'details' && (
             <div style={S.railList}>
               <SwingMetadata
@@ -707,33 +831,58 @@ export function KeyframeReview({
             </div>
           )}
           <div ref={rail} style={{ ...S.railList, display: tab === 'swings' ? undefined : 'none' }}>
-            {windows.map((w, i) => (
-              <div
-                key={w.id}
-                onClick={() => goto(i)}
-                style={{ ...S.row, background: i === idx ? 'var(--gray-200)' : 'transparent' }}
-              >
-                <div style={S.rowText}>
+            {windows.map((w, i) => {
+              const isHidden = hidden.has(w.id);
+              // Kept MOUNTED when filtered out, not removed: the selection is
+              // scrolled into view by index into this list's children, and a
+              // list that renumbers as swings are hidden would scroll to the
+              // wrong row.
+              if (isHidden && !showHidden) return <div key={w.id} style={{ display: 'none' }} />;
+              return (
+                <div
+                  key={w.id}
+                  onClick={() => goto(i)}
+                  style={{
+                    ...S.row,
+                    background: i === idx ? 'var(--gray-200)' : 'transparent',
+                    opacity: isHidden ? 0.45 : 1,
+                  }}
+                >
+                  <div style={S.rowText}>
+                    <span
+                      style={{
+                        ...S.rowId,
+                        color: i === idx ? 'var(--gray-900)' : 'var(--gray-700)',
+                        textDecoration: isHidden ? 'line-through' : undefined,
+                      }}
+                    >
+                      {shortId(w.id)}
+                    </span>
+                    <span style={S.rowAt}>
+                      {clock(w.startMs)} · {((w.endMs - w.startMs) / 1000).toFixed(1)}s
+                    </span>
+                  </div>
+                  <div style={{ flex: 1 }} />
                   <span
-                    style={{
-                      ...S.rowId,
-                      color: i === idx ? 'var(--gray-900)' : 'var(--gray-700)',
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleHidden(w.id);
                     }}
+                    title={isHidden ? 'Show this swing' : 'Hide this swing (h)'}
+                    style={S.rowHide}
                   >
-                    {shortId(w.id)}
-                  </span>
-                  <span style={S.rowAt}>
-                    {clock(w.startMs)} · {((w.endMs - w.startMs) / 1000).toFixed(1)}s
+                    {isHidden ? 'show' : 'hide'}
                   </span>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <div style={S.railFoot}>
-            <span>← → step</span>
-            <span>space pause</span>
-            <span>r restart</span>
-            <span>s slow</span>
+            <span onClick={() => setShowKeys(true)} style={{ ...S.click, cursor: 'pointer' }}>
+              <Button variant="tertiary" size="sm">
+                ? shortcuts
+              </Button>
+            </span>
           </div>
         </aside>
       </div>
@@ -949,17 +1098,66 @@ const S: Record<string, CSSProperties> = {
   rowText: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 },
   rowId: { fontFamily: 'var(--th-mono)', fontSize: 12, letterSpacing: '0.02em' },
   rowAt: { fontFamily: 'var(--th-mono)', fontSize: 11, color: 'var(--gray-500)' },
-  railFoot: {
-    flex: 'none',
-    padding: '11px 16px',
-    borderTop: '1px solid var(--gray-200)',
-    display: 'flex',
-    gap: 14,
+  rowHide: {
     fontFamily: 'var(--th-mono)',
     fontSize: 10,
     letterSpacing: '0.06em',
     textTransform: 'uppercase',
     color: 'var(--gray-500)',
+    cursor: 'pointer',
+    padding: '2px 4px',
+  },
+  hiddenBar: {
+    flex: 'none',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '6px 12px',
+    borderBottom: '1px solid var(--gray-200)',
+  },
+  keysScrim: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 50,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(16,19,14,0.55)',
+  },
+  keysCard: {
+    width: 320,
+    maxWidth: '90%',
+    padding: 20,
+    borderRadius: 10,
+    background: 'var(--gray-50)',
+    border: '1px solid var(--gray-300)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  keysHead: {
+    display: 'flex',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  keysRow: { display: 'flex', alignItems: 'center', gap: 12 },
+  kbd: {
+    minWidth: 42,
+    textAlign: 'center',
+    fontFamily: 'var(--th-mono)',
+    fontSize: 11,
+    padding: '3px 6px',
+    borderRadius: 4,
+    background: 'var(--gray-200)',
+    border: '1px solid var(--gray-300)',
+  },
+  railFoot: {
+    flex: 'none',
+    padding: '11px 16px',
+    borderTop: '1px solid var(--gray-200)',
+    display: 'flex',
+    justifyContent: 'center',
   },
   empty: {
     display: 'flex',

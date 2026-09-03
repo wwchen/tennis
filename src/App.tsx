@@ -75,7 +75,7 @@ export default function App() {
           settings={state.settings}
           detection={state.detection}
           session={state.session ?? '—'}
-          sessions={state.sessions}
+          sessions={state.playable}
           onSession={switchSession}
         />
       </div>
