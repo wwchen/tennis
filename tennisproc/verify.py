@@ -50,7 +50,29 @@ MIN_DETECTED_FRAMES = 4
 ONSET_WINDOW_FRACTION = 0.5
 # A wrist that jumps implausibly far between frames is a detector glitch, not
 # a limb: cap it rather than letting one bad frame dominate peak speed.
-SPEED_CAP = 40.0
+#
+# 40.0 was far too low and did real damage. Re-measured over 278 cached pose
+# tracks with the cap lifted, peak wrist speed runs p50 38.2, p90 70.3, p99
+# 81.8, max 123 -- so the old cap sat at the MEDIAN and flattened 63% of the
+# shipped corpus onto one value. Two consequences, both measured:
+#
+#   * `wrist_peak_speed` stopped being a usable dimension. Anything comparing
+#     two swings by it was comparing 40.0 with 40.0.
+#   * Worse, `choose_hitting_side` picks the faster wrist with a strict `>`
+#     and tries "left" first, so every tie became "left". With the cap, 33%
+#     of tracks tie; without it, 0% do. Across the shipped corpus that reads
+#     as 90.9% left-handed among capped swings against 51.6% among uncapped
+#     ones -- roughly 620 swings with the wrong arm recorded, and with
+#     `contact_offset`/`contact_height` therefore measured on the free arm.
+#     That is the exact fault this module's docstring describes fixing once
+#     already; the cap reintroduced it through a different door.
+#
+# The teleport this was meant to catch is already handled upstream, and
+# better: `wrist_speeds` skips any triple spanning a `pose.BODY_JUMP`, which
+# is why the uncapped maximum is 123 rather than unbounded. So this is now a
+# backstop against arithmetic nonsense, set well above anything observed,
+# rather than a threshold that decides anything.
+SPEED_CAP = 150.0
 
 
 class Measured:
@@ -100,6 +122,15 @@ class Measured:
             "torso_height": _round(self.torso_height),
             "contact_offset": _round(self.contact_offset),
             "contact_height": _round(self.contact_height),
+            # Where on court the player was, at contact. Measured all along and
+            # thrown away at this line: `dedupe_swings` decides whether two
+            # detections are one player from exactly this number, so without it
+            # on disk that decision could not be audited after the fact, and
+            # nothing downstream could tell a cross-court rally from one player
+            # hitting twice. Frame-normalized like every other x here, NOT in
+            # torso heights -- it is a position, and the torso scale that makes
+            # two positions comparable belongs with the pair, not the point.
+            "center_x": _round(self.center_x),
         }
 
 
@@ -170,6 +201,7 @@ def choose_hitting_side(series, torso, aspect=1.0):
     Not by reach. See the module docstring: reach selects the free arm.
     """
     best = (None, -1.0, None)
+    tied = False
     for side, index in (("left", pose_mod.L_WRIST),
                         ("right", pose_mod.R_WRIST)):
         speeds = wrist_speeds(series, index, torso, aspect)
@@ -178,6 +210,22 @@ def choose_hitting_side(series, torso, aspect=1.0):
         peak_ms, peak = max(speeds, key=lambda row: row[1])
         if peak > best[1]:
             best = (side, peak, peak_ms)
+            tied = False
+        elif peak == best[1] and peak > 0:
+            # Exactly equal NON-ZERO peaks mean this measurement cannot tell
+            # the arms apart. Silently keeping whichever was tried first is
+            # what turned a saturated speed into a 91%-left corpus; with
+            # SPEED_CAP raised this is unreachable on real footage, and if it
+            # ever fires again it should be visible rather than decided by
+            # loop order.
+            #
+            # Zero is excluded because it is not that case: a player standing
+            # still ties at 0.0 on both wrists, and "nobody swung" is already
+            # said better, and earlier, by `wrist_too_slow`. Nulling the side
+            # there would relabel every standing player as `no_wrist_track`.
+            tied = True
+    if tied:
+        return (None, best[1], best[2])
     return best
 
 

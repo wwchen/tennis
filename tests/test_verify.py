@@ -467,3 +467,42 @@ class AspectRatio(unittest.TestCase):
         self.assertAlmostEqual(verify.frame_aspect(track), 320 / 240.0)
         track.frame_size = None
         self.assertEqual(verify.frame_aspect(track), 1.0)
+
+
+class SpeedCapAndHittingSide(unittest.TestCase):
+    """The cap must not decide which arm swung.
+
+    SPEED_CAP was 40.0, which sat at the MEDIAN of real peak wrist speed
+    (re-measured over 278 cached pose tracks: p50 38.2, p90 70.3, max 123). It
+    flattened 63% of the shipped corpus onto one value, and because
+    `choose_hitting_side` compares with a strict `>` and tries "left" first,
+    every resulting tie became "left" -- 90.9% left among capped swings against
+    51.6% among uncapped ones.
+    """
+
+    def test_the_cap_sits_above_real_swings_not_among_them(self):
+        # If the cap ever drops back among real speeds it silently starts
+        # deciding handedness again.
+        self.assertGreater(verify.SPEED_CAP, 123.0)
+
+    def test_equal_non_zero_peaks_do_not_silently_become_left(self):
+        speeds = [(0, 10.0), (40, 10.0)]
+
+        def fake(series, index, torso, aspect=1.0):
+            return speeds
+
+        original = verify.wrist_speeds
+        verify.wrist_speeds = fake
+        try:
+            side, peak, _ = verify.choose_hitting_side([], torso=0.1)
+        finally:
+            verify.wrist_speeds = original
+        self.assertIsNone(side, "a tie must be reported, not resolved by loop order")
+        self.assertEqual(peak, 10.0)
+
+    def test_a_standing_player_still_reads_as_too_slow(self):
+        # Both wrists tie at 0.0 when nobody moves. That is not "cannot tell
+        # the arms apart", it is "nobody swung", and `wrist_too_slow` says so
+        # better and earlier than `no_wrist_track` would.
+        got = verify.measure_slot(track_from([body()] * 9), 0, config.Settings())
+        self.assertEqual(got.reason, verify.WRIST_TOO_SLOW)

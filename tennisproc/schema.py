@@ -246,6 +246,11 @@ def _check_measurements(c, m, path):
     for name in ("wrist_peak_speed", "torso_height", "contact_offset",
                  "contact_height"):
         c.field(m, name, path, _NUM, optional=True)
+    # Checked only when present, for the same reason as `source.modified`:
+    # `optional=True` means "may be null", never "may be absent", so requiring
+    # this would fail every one of the 2505 swings written before it existed.
+    if "center_x" in m:
+        c.field(m, "center_x", path, _NUM, optional=True)
     units = c.block(m, "units", path)
     if units is not None:
         for name in ("length", "speed"):
