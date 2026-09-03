@@ -11,12 +11,15 @@ import {
   END_MODE_LABELS,
   PAD_STEPS,
   SHORTCUTS,
+  SPEED_STEPS,
   axisTicks,
   clock,
   nearestSwing,
   outsideWindow,
   playWindow,
+  rateLabel,
   remainingMs,
+  stepSpeed,
   timelinePercent,
   windowProgress,
   windowsFor,
@@ -41,9 +44,6 @@ import {
 
 /** How long the end-of-window card counts down before advancing, in ms. */
 const HOLD_MS = 4000;
-
-/** The slow-motion replay rate. */
-const SLOW_RATE = 0.35;
 
 interface Props {
   clips: Clip[];
@@ -144,10 +144,30 @@ export function KeyframeReview({
   // the same reset-on-input-change pattern the selection uses, and it avoids
   // painting one frame of the previous session's hidden set.
   const [seenHideKey, setSeenHideKey] = useState(hideKey);
+  const starKey = `shot-lab:starred:${session}`;
+  const [starred, setStarred] = useState<Set<string>>(() => readHidden(starKey));
   if (seenHideKey !== hideKey) {
     setSeenHideKey(hideKey);
     setHidden(readHidden(hideKey));
+    setStarred(readHidden(starKey));
   }
+
+  const toggleStar = useCallback(
+    (id: string) => {
+      setStarred((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        try {
+          localStorage.setItem(starKey, JSON.stringify([...next]));
+        } catch {
+          // See `toggleHidden`: not worth interrupting the reviewer over.
+        }
+        return next;
+      });
+    },
+    [starKey],
+  );
 
   const toggleHidden = useCallback(
     (id: string) => {
@@ -276,7 +296,7 @@ export function KeyframeReview({
 
   /** Seek to a window and play it. The only path that moves the selection. */
   const goto = useCallback(
-    (next: number, playRate = 1) => {
+    (next: number, playRate?: number) => {
       const wanted = Math.max(0, Math.min(windows.length - 1, next));
       const clamped = skipHidden(wanted, next >= idx ? 1 : -1);
       const target = windows[clamped];
@@ -287,22 +307,38 @@ export function KeyframeReview({
       setCountdown(0);
       setHeld(false);
       setUnbounded(false);
-      setRate(playRate);
+      const useRate = playRate ?? rate;
+      setRate(useRate);
       onSelect?.(target.id);
 
       const el = video.current;
       if (el === null) return;
-      el.playbackRate = playRate;
+      el.playbackRate = useRate;
       el.currentTime = startMs / 1000;
       // Autoplay can be refused before the page has been interacted with. The
       // seek still landed, so the right frame is on screen, merely paused.
       void el.play().catch(() => undefined);
     },
-    [windows, durationMs, padS, onSelect, skipHidden, idx],
+    [windows, durationMs, padS, onSelect, skipHidden, idx, rate],
   );
 
-  /** Replay the current window, optionally slowed. */
-  const replay = useCallback((playRate: number) => goto(idx, playRate), [goto, idx]);
+  /** Replay the current window at whatever rate is currently set. */
+  const replay = useCallback(() => goto(idx, rate), [goto, idx, rate]);
+
+  /**
+   * Change the playback rate, on the element as well as in state.
+   *
+   * Applied to the live element rather than waiting for the next `goto`, so
+   * `<` while a swing is playing slows THAT swing — which is the moment a
+   * reviewer reaches for it.
+   */
+  const nudgeSpeed = useCallback((step: number) => {
+    setRate((r) => {
+      const next = stepSpeed(r, step);
+      if (video.current !== null) video.current.playbackRate = next;
+      return next;
+    });
+  }, []);
 
   const toggle = useCallback(() => {
     const el = video.current;
@@ -316,7 +352,7 @@ export function KeyframeReview({
     // first — otherwise play runs from wherever the playhead happens to be,
     // which after a session change is the top of the video.
     if (atEnd || (bounds !== null && outsideWindow(el.currentTime * 1000, bounds.startMs, bounds.endMs))) {
-      replay(1);
+      replay();
       return;
     }
     void el.play().catch(() => undefined);
@@ -364,10 +400,18 @@ export function KeyframeReview({
         e.preventDefault();
         toggle();
       } else if (e.key === 'r' || e.key === 'R') {
-        replay(1);
+        replay();
+      } else if (e.key === '<' || e.key === ',') {
+        // Both, because `<` needs shift on most layouts and a reviewer reaching
+        // for "slower" mid-swing should not have to think about which.
+        e.preventDefault();
+        nudgeSpeed(-1);
+      } else if (e.key === '>' || e.key === '.') {
+        e.preventDefault();
+        nudgeSpeed(1);
       } else if (e.key === 's' || e.key === 'S') {
-        replay(SLOW_RATE);
-      } else if (e.key === 'h' || e.key === 'H') {
+        if (current !== undefined) toggleStar(current.id);
+      } else if (e.key === 'x' || e.key === 'X') {
         if (current !== undefined) toggleHidden(current.id);
       } else if (e.key === 'e' || e.key === 'E') {
         exportRef.current?.click();
@@ -379,7 +423,7 @@ export function KeyframeReview({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goto, idx, toggle, replay, current, toggleHidden]);
+  }, [goto, idx, toggle, replay, current, toggleHidden, toggleStar, nudgeSpeed]);
 
   // Keep the selected row in view without yanking the rail on every frame.
   useEffect(() => {
@@ -489,7 +533,10 @@ export function KeyframeReview({
               />
 
               <div style={S.badgeRow}>
-                <span style={S.badge}>{current === undefined ? '—' : shortId(current.id)}</span>
+                <span style={S.badge}>
+                  {current !== undefined && starred.has(current.id) ? '★ ' : ''}
+                  {current === undefined ? '—' : shortId(current.id)}
+                </span>
                 <span style={S.badgeDim}>
                   {bounds === null
                     ? '—'
@@ -555,19 +602,9 @@ export function KeyframeReview({
                         )}
                       </div>
                       <div style={S.endRow}>
-                        <span onClick={() => replay(1)} style={S.click}>
+                        <span onClick={() => replay()} style={S.click}>
                           <Button variant="primary" size="sm" iconStart="refresh" iconHref={ICONS}>
                             Replay (r)
-                          </Button>
-                        </span>
-                        <span onClick={() => replay(SLOW_RATE)} style={S.click}>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            iconStart="refresh"
-                            iconHref={ICONS}
-                          >
-                            Replay {SLOW_RATE}× (s)
                           </Button>
                         </span>
                         {/* The one-off twin of the standing `continue` mode:
@@ -631,16 +668,32 @@ export function KeyframeReview({
                 {playing ? 'Pause' : atEnd ? 'Replay' : 'Play'} (space)
               </Button>
             </span>
-            <span onClick={() => replay(1)} title="Replay the window" style={S.click}>
+            <span onClick={() => replay()} title="Replay the window" style={S.click}>
               <Button variant="tertiary" size="sm" iconStart="refresh" iconHref={ICONS}>
                 Replay (r)
               </Button>
             </span>
-            <span onClick={() => replay(SLOW_RATE)} title="Replay slowly" style={S.click}>
-              <Button variant="tertiary" size="sm" iconStart="refresh" iconHref={ICONS}>
-                Replay {SLOW_RATE}× (s)
-              </Button>
-            </span>
+            <div style={S.padGroup}>
+              <span
+                onClick={() => nudgeSpeed(-1)}
+                title="Slower (<)"
+                style={{ ...S.click, opacity: rate === SPEED_STEPS[0] ? 0.4 : 1 }}
+              >
+                <Button variant="tertiary" size="sm">
+                  &lt;
+                </Button>
+              </span>
+              <span style={S.rateBadge}>{rateLabel(rate)}</span>
+              <span
+                onClick={() => nudgeSpeed(1)}
+                title="Faster (>)"
+                style={{ ...S.click, opacity: rate === SPEED_STEPS[SPEED_STEPS.length - 1] ? 0.4 : 1 }}
+              >
+                <Button variant="tertiary" size="sm">
+                  &gt;
+                </Button>
+              </span>
+            </div>
             <span onClick={() => goto(idx + 1)} title="Next swing (→)" style={S.click}>
               <Button
                 variant="tertiary"
@@ -809,15 +862,21 @@ export function KeyframeReview({
             <div style={{ flex: 1 }} />
             <span style={S.mono}>{counter}</span>
           </div>
-          {hidden.size > 0 && (
+          {(hidden.size > 0 || starred.size > 0) && (
             <div style={S.hiddenBar}>
-              <span style={S.mono}>{hidden.size} hidden</span>
-              <div style={{ flex: 1 }} />
-              <span onClick={() => setShowHidden((v) => !v)} style={S.click}>
-                <Button variant="tertiary" size="sm">
-                  {showHidden ? 'Hide them' : 'Show them'}
-                </Button>
+              <span style={S.mono}>
+                {starred.size > 0 && `${starred.size} starred`}
+                {starred.size > 0 && hidden.size > 0 && ' · '}
+                {hidden.size > 0 && `${hidden.size} hidden`}
               </span>
+              <div style={{ flex: 1 }} />
+              {hidden.size > 0 && (
+                <span onClick={() => setShowHidden((v) => !v)} style={S.click}>
+                  <Button variant="tertiary" size="sm">
+                    {showHidden ? 'Hide them' : 'Show them'}
+                  </Button>
+                </span>
+              )}
             </div>
           )}
           {tab === 'details' && (
@@ -866,12 +925,25 @@ export function KeyframeReview({
                   <span
                     onClick={(e) => {
                       e.stopPropagation();
+                      toggleStar(w.id);
+                    }}
+                    title={starred.has(w.id) ? 'Unstar this swing (s)' : 'Star this swing (s)'}
+                    style={{
+                      ...S.rowMark,
+                      color: starred.has(w.id) ? 'var(--gray-900)' : 'var(--gray-400)',
+                    }}
+                  >
+                    {starred.has(w.id) ? '★' : '☆'}
+                  </span>
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
                       toggleHidden(w.id);
                     }}
-                    title={isHidden ? 'Show this swing' : 'Hide this swing (h)'}
-                    style={S.rowHide}
+                    title={isHidden ? 'Show this swing (x)' : 'Hide this swing (x)'}
+                    style={S.rowMark}
                   >
-                    {isHidden ? 'show' : 'hide'}
+                    {isHidden ? '+' : '×'}
                   </span>
                 </div>
               );
@@ -1098,14 +1170,22 @@ const S: Record<string, CSSProperties> = {
   rowText: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 },
   rowId: { fontFamily: 'var(--th-mono)', fontSize: 12, letterSpacing: '0.02em' },
   rowAt: { fontFamily: 'var(--th-mono)', fontSize: 11, color: 'var(--gray-500)' },
-  rowHide: {
+  rateBadge: {
+    fontFamily: 'var(--th-mono)',
+    fontSize: 11,
+    letterSpacing: '0.04em',
+    color: 'var(--gray-700)',
+    minWidth: 34,
+    textAlign: 'center',
+  },
+  rowMark: {
     fontFamily: 'var(--th-mono)',
     fontSize: 10,
     letterSpacing: '0.06em',
     textTransform: 'uppercase',
     color: 'var(--gray-500)',
     cursor: 'pointer',
-    padding: '2px 4px',
+    padding: '2px 5px',
   },
   hiddenBar: {
     flex: 'none',

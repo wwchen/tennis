@@ -257,13 +257,51 @@ export const END_MODE_LABELS: Record<EndMode, { label: string; title: string }> 
  * against. Keeping them in three hand-synced places is how a UI ends up
  * advertising a key it no longer binds.
  */
-export const SHORTCUTS: { key: string; label: string; what: string }[] = [
-  { key: '\u2190', label: '\u2190', what: 'Previous swing' },
-  { key: '\u2192', label: '\u2192', what: 'Next swing' },
-  { key: ' ', label: 'space', what: 'Play / pause' },
-  { key: 'r', label: 'r', what: 'Replay the window' },
-  { key: 's', label: 's', what: 'Replay slowly' },
-  { key: 'e', label: 'e', what: 'Export this swing' },
-  { key: 'h', label: 'h', what: 'Hide / show this swing' },
-  { key: '?', label: '?', what: 'This list' },
+export const SHORTCUTS: { label: string; what: string }[] = [
+  { label: '\u2190 \u2192', what: 'Previous / next swing' },
+  { label: 'space', what: 'Play / pause' },
+  { label: 'r', what: 'Replay the window' },
+  { label: '< >', what: 'Slower / faster' },
+  { label: 's', what: 'Star this swing' },
+  { label: 'x', what: 'Hide this swing' },
+  { label: 'e', what: 'Export this swing' },
+  { label: '?', what: 'This list' },
 ];
+
+/**
+ * Playback rates `<` and `>` step through.
+ *
+ * Weighted below 1x on purpose: this is a tool for reading a swing, and the
+ * question it answers -- where the racket was at contact -- is only legible
+ * slowed down. The two rates above 1x exist for moving THROUGH a session rather
+ * than studying one shot, which is a different job the same control can do.
+ *
+ * 0.1 is the floor because Chrome mutes audio below 0.0625 and stutters badly
+ * approaching it; the contact sound is part of what a reviewer is judging.
+ */
+export const SPEED_STEPS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2] as const;
+
+/**
+ * The next rate in `step` direction, clamped at both ends.
+ *
+ * Clamped rather than wrapped: a reviewer holding `<` to reach the slowest
+ * rate should arrive and stay there, not roll over to 2x and lose the frame
+ * they were studying.
+ */
+export function stepSpeed(rate: number, step: number): number {
+  const i = SPEED_STEPS.indexOf(rate as (typeof SPEED_STEPS)[number]);
+  // An unknown rate (set before these steps existed, say) resolves to the
+  // nearest step rather than snapping to 1x and losing the reviewer's place.
+  const from =
+    i >= 0
+      ? i
+      : SPEED_STEPS.reduce(
+          (best, r, j) => (Math.abs(r - rate) < Math.abs(SPEED_STEPS[best] - rate) ? j : best),
+          0,
+        );
+  return SPEED_STEPS[Math.max(0, Math.min(SPEED_STEPS.length - 1, from + step))];
+}
+
+/** `1x`, `0.35x`, `0.1x` — trailing zeros trimmed so the badge stays narrow. */
+export const rateLabel = (rate: number): string =>
+  `${Number(rate.toFixed(2))}\u00d7`;

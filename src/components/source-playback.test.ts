@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip } from '@/domain/types';
 import {
+  SPEED_STEPS,
   axisTicks,
   clock,
   nearestSwing,
   outsideWindow,
   playWindow,
+  rateLabel,
   remainingMs,
+  stepSpeed,
   timelinePercent,
   windowProgress,
   windowsFor,
@@ -287,5 +290,41 @@ describe('outsideWindow', () => {
   it('treats the end as outside, so resuming there restarts the window', () => {
     expect(outsideWindow(28_000, 24_500, 28_000)).toBe(true);
     expect(outsideWindow(30_000, 24_500, 28_000)).toBe(true);
+  });
+});
+
+describe('stepSpeed', () => {
+  it('steps down and up through the rates', () => {
+    expect(stepSpeed(1, -1)).toBe(0.75);
+    expect(stepSpeed(0.75, -1)).toBe(0.5);
+    expect(stepSpeed(1, 1)).toBe(1.5);
+  });
+
+  it('clamps at both ends rather than wrapping', () => {
+    // Holding `<` to reach the slowest rate should arrive and stay, not roll
+    // over to 2x and throw away the frame being studied.
+    expect(stepSpeed(0.1, -1)).toBe(0.1);
+    expect(stepSpeed(2, 1)).toBe(2);
+  });
+
+  it('resolves an unknown rate to the nearest step, not to 1x', () => {
+    // 0.35 was the old fixed slow rate and can still be in a persisted state.
+    expect(stepSpeed(0.35, 0)).toBe(0.25);
+    expect(stepSpeed(0.35, 1)).toBe(0.5);
+  });
+
+  it('keeps every step a rate a browser will actually play', () => {
+    // Chrome mutes below 0.0625 and stutters near it; contact sound is part of
+    // what is being judged.
+    for (const r of SPEED_STEPS) expect(r).toBeGreaterThanOrEqual(0.1);
+  });
+});
+
+describe('rateLabel', () => {
+  it('trims trailing zeros so the badge stays narrow', () => {
+    expect(rateLabel(1)).toBe('1×');
+    expect(rateLabel(0.5)).toBe('0.5×');
+    expect(rateLabel(0.25)).toBe('0.25×');
+    expect(rateLabel(1.5)).toBe('1.5×');
   });
 });
