@@ -347,6 +347,18 @@ def validate_session(doc):
                 if not _is(count, _INT) or count < 0:
                     c.add(where, "expected non-negative int, got %r" % (count,))
 
+    # The full-length playable transcode the review app seeks in. Optional:
+    # absent from every tree written before proxies existed, and from any
+    # session whose source video is no longer on disk to transcode. A reader
+    # that finds no proxy falls back to the per-swing clips.
+    if doc.get("proxy") is not None:
+        proxy = c.block(doc, "proxy", "<root>")
+        if proxy is not None:
+            c.field(proxy, "file", "proxy", (str,))
+            for name in ("width", "height", "duration_ms", "bytes"):
+                c.field(proxy, name, "proxy", _INT, non_negative=True)
+            c.field(proxy, "fps", "proxy", _NUM, non_negative=True)
+
     players = c.block(doc, "players", "<root>")
     if players is not None:
         c.field(players, "mode", "players", (str,), enum=PLAYER_MODES)

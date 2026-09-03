@@ -116,6 +116,14 @@ class Settings:
     clip_height: int = 0          # 0 = keep the source resolution
     clip_crf: int = 26
 
+    # The session proxy: one browser-playable transcode of the WHOLE source,
+    # which the review app seeks in. Defaults keep the source resolution and
+    # frame rate -- the proxy exists to change the codec, not the footage.
+    proxy: bool = True
+    proxy_crf: int = 20           # libx264 only; videotoolbox uses a bitrate
+    proxy_height: int = 0         # 0 = keep the source resolution
+    proxy_fps: float = 0.0        # 0 = keep the source frame rate
+
     # --- frames ----------------------------------------------------------
     # Native fps over a tight span: a human relabelling the true contact
     # frame cannot do it on a sparse grid, since the ball moves feet between
@@ -203,6 +211,12 @@ class Settings:
             errs.append("clip_height must be >= 0")
         if not 0 <= self.clip_crf <= 51:
             errs.append("clip_crf must be 0..51")
+        if not 0 <= self.proxy_crf <= 51:
+            errs.append("proxy_crf must be 0..51")
+        if self.proxy_height < 0:
+            errs.append("proxy_height must be >= 0")
+        if self.proxy_fps < 0:
+            errs.append("proxy_fps must be >= 0 (0 means the source rate)")
         if self.detector not in ("vision", "audio"):
             errs.append("detector must be 'vision' or 'audio'")
         if self.scan_fps <= 0:

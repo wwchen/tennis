@@ -12,8 +12,10 @@ import { CompareTable, FrameGrid } from '@/components/CompareView';
 import { CatalogView } from '@/components/CatalogView';
 import { DetailView } from '@/components/DetailView';
 import { Inspector } from '@/components/Inspector';
+import { KeyframeReview } from '@/components/KeyframeReview';
 
 const VIEW_OPTIONS = [
+  { value: 'keyframes', label: 'Keyframes', icon: 'play' },
   { value: 'compare', label: 'Compare', icon: 'list' },
   { value: 'catalog', label: 'Catalog', icon: 'grid' },
 ];
@@ -57,6 +59,25 @@ export default function App() {
 
   const showDetail = ui.view === 'detail' && detailClip !== undefined;
   const shared = { roster, comments: doc.comments, ui, dispatch };
+
+  if (ui.view === 'keyframes') {
+    return (
+      <div style={{ height: '100vh', background: 'var(--gray-100)' }}>
+        <KeyframeReview
+          clips={doc.clips}
+          {...(state.proxy === null || state.session === null
+            ? {}
+            : { proxyUrl: `/api/media/${state.session}/${state.proxy.file}` })}
+          // The SOURCE's duration, not the proxy's: they differ by a frame or
+          // two, and every swing timestamp was measured against the source.
+          durationMs={state.source?.duration_ms ?? state.proxy?.duration_ms ?? 0}
+          session={state.session ?? '—'}
+          sessions={state.sessions}
+          onSession={switchSession}
+        />
+      </div>
+    );
+  }
 
   return (
     <div

@@ -229,3 +229,84 @@ def render_swing(video, dest_dir, rect, contact_ms, source, settings,
             "stage": None,
         })
     return trim, frames
+
+
+def build_proxy(video, dest, crf=20, height=0, fps=0):
+    """Transcode the WHOLE source to a browser-playable file. No cuts.
+
+    The review app plays this and seeks to each swing's `source_start_ms`, so
+    the one property that matters is that the timeline is untouched: no `-ss`,
+    no `-t`, no `-r` unless asked. Frame N of the proxy is frame N of the
+    source, and every timestamp in `metadata.json` addresses it directly with
+    no offset arithmetic.
+
+    Why transcode at all, when the point is to review the source unedited:
+    iPhone video is 10-bit HEVC, which browsers decode in software. Measured on
+    an 864MB 1080x1920@60 source, Chromium managed 29 fps of a 60 fps file --
+    0.49x realtime, with zero dropped frames, from an already-buffered region.
+    The same footage as 8-bit H.264 ran ~50 fps. So the choice is not
+    "unedited vs re-encoded", it is "re-encoded or half speed": the pixels are
+    re-compressed, the timeline is not.
+
+    `h264_videotoolbox` where it exists (~5x realtime on Apple silicon),
+    `libx264` otherwise. Both write 8-bit yuv420p High profile, which every
+    browser hardware-decodes, and `avc1` rather than `hvc1` so the container
+    advertises what it holds. `+faststart` puts the moov atom first, so the
+    element can seek on the first range request instead of fetching the tail.
+    """
+    filters = ["format=yuv420p"]
+    # Never upscale, and keep dimensions even for yuv420p.
+    if height:
+        filters.insert(0, "scale=-2:%d" % height)
+    else:
+        filters.insert(0, "scale=trunc(iw/2)*2:trunc(ih/2)*2")
+
+    cmd = ["ffmpeg", "-v", "error", "-i", str(video),
+           # Video and audio only: iPhone .MOV carries timed-metadata and
+           # spatial-audio tracks that no browser demuxer wants, and a stray
+           # data stream is enough to make one refuse the file.
+           "-map", "0:v:0", "-map", "0:a:0?",
+           "-vf", ",".join(filters)]
+    if fps:
+        cmd += ["-r", str(fps)]
+
+    if _has_encoder("h264_videotoolbox"):
+        cmd += ["-c:v", "h264_videotoolbox", "-profile:v", "high",
+                # videotoolbox is a bitrate encoder; it ignores -crf. This is
+                # the rough visual equal of the libx264 crf below at 1080p.
+                "-b:v", "12M"]
+    else:
+        cmd += ["-c:v", "libx264", "-profile:v", "high", "-crf", str(crf),
+                "-preset", "veryfast"]
+
+    cmd += ["-tag:v", "avc1", "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart", "-y", str(dest)]
+    _run(cmd)
+
+    if not os.path.exists(dest):
+        raise RenderError("proxy not written: %s" % dest)
+
+    info = probe_mod.probe(dest)
+    return {
+        "file": os.path.basename(str(dest)),
+        "width": info["width"],
+        "height": info["height"],
+        "fps": info["fps"],
+        "duration_ms": info["duration_ms"],
+        "bytes": os.path.getsize(dest),
+    }
+
+
+def _has_encoder(name):
+    """Whether this ffmpeg build carries `name`, cached per process."""
+    cache = getattr(_has_encoder, "_cache", None)
+    if cache is None:
+        cache = _has_encoder._cache = {}
+    if name not in cache:
+        try:
+            out = subprocess.run(["ffmpeg", "-v", "quiet", "-encoders"],
+                                 capture_output=True).stdout
+            cache[name] = name.encode() in out
+        except OSError:
+            cache[name] = False
+    return cache[name]

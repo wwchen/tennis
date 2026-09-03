@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   closeSync,
   constants,
+  createReadStream,
   existsSync,
   fstatSync,
   lstatSync,
@@ -386,7 +387,17 @@ function readSession(root: string, requested?: string) {
   // the route that serves every other swing beside it.
   const first = swings.length > 0 ? swings[0].doc.source : undefined;
   const source = isObject(first) ? first : null;
-  return { session, sessions, swings, source };
+
+  // The session's playable video, read from the session document rather than
+  // a swing: it describes the session, and unlike `source` it has no reason to
+  // be denormalized into 108 copies. Null covers three cases the app treats
+  // alike — a tree written before proxies, a session killed before its document
+  // was written, and one whose source video was gone at transcode time.
+  const sessionDoc = readJson(join(root, session, 'metadata.json'));
+  const rawProxy = isObject(sessionDoc) ? sessionDoc.proxy : undefined;
+  const proxy = isObject(rawProxy) && typeof rawProxy.file === 'string' ? rawProxy : null;
+
+  return { session, sessions, swings, source, proxy };
 }
 
 /**
@@ -442,7 +453,10 @@ function resolveWriteTarget(
  * and only a path. That is inherent to checking a tree by name, and this
  * middleware is dev-only.
  */
-export function readMedia(root: string, rel: string): { body: Buffer; type: string } | null {
+export function openMedia(
+  root: string,
+  rel: string,
+): { fd: number; size: number; type: string } | null {
   const full = safeJoin(root, rel);
   if (full === null) return null;
 
@@ -455,16 +469,89 @@ export function readMedia(root: string, rel: string): { body: Buffer; type: stri
   }
   try {
     // A directory opens happily on Linux; only the descriptor can say what it is.
-    if (!fstatSync(fd).isFile()) return null;
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) {
+      closeSync(fd);
+      return null;
+    }
     return {
-      body: readFileSync(fd),
+      fd,
+      size: stat.size,
       type: MIME[extname(full).toLowerCase()] ?? 'application/octet-stream',
     };
   } catch {
+    closeSync(fd);
+    return null;
+  }
+}
+
+/**
+ * Whole-file read, for callers that want the bytes rather than a stream.
+ *
+ * The right shape for a `metadata.json` or a 40 KB still, and the wrong one for
+ * video — see `parseRange` — so the media route no longer goes through it.
+ */
+export function readMedia(root: string, rel: string): { body: Buffer; type: string } | null {
+  const opened = openMedia(root, rel);
+  if (opened === null) return null;
+  try {
+    return { body: readFileSync(opened.fd), type: opened.type };
+  } catch {
     return null;
   } finally {
-    closeSync(fd);
+    closeSync(opened.fd);
   }
+}
+
+/**
+ * A `Range` header against a known size, as a byte interval.
+ *
+ * `<video>` cannot seek without this. A browser asked to scrub an 8-minute
+ * source sends `Range: bytes=41943040-` for the moment it wants; a server that
+ * ignores the header and answers 200 with the whole file leaves the element
+ * downloading from zero to reach a swing at 6:00, and Safari declines to play
+ * at all. Answering 206 turns a seek into one short read — measured at 24-36ms
+ * into an 864MB source, against a whole-file read of the same file.
+ *
+ * Only the single-interval form is honoured. Multi-range (`bytes=0-9,20-29`) is
+ * legal HTTP that no video element sends, so it is refused outright rather than
+ * half-implemented into a response that claims to be what was asked for.
+ *
+ * Returns null when there is no usable header, meaning the caller should answer
+ * 200 with the whole file.
+ */
+export function parseRange(
+  header: string | undefined,
+  size: number,
+): { start: number; end: number } | 'unsatisfiable' | null {
+  if (header === undefined) return null;
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (match === null) return null;
+
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === '' && rawEnd === '') return null;
+
+  // A suffix range (`bytes=-500`) asks for the LAST n bytes. An empty file has
+  // no last byte, so no suffix over it can be satisfied.
+  if (rawStart === '') {
+    const wanted = Number(rawEnd);
+    if (wanted === 0 || size === 0) return 'unsatisfiable';
+    return { start: Math.max(0, size - wanted), end: size - 1 };
+  }
+
+  const start = Number(rawStart);
+  // `start === size` is out of range, not an empty tail: the last valid offset
+  // is `size - 1`. This is the case that must 416 rather than answer zero bytes
+  // and let the element conclude it reached the end of the video.
+  if (start >= size) return 'unsatisfiable';
+
+  // An absent end means "to the last byte". One past the end is clamped rather
+  // than refused, which is what RFC 9110 requires.
+  const end = rawEnd === '' ? size - 1 : Math.min(Number(rawEnd), size - 1);
+  if (end < start) return 'unsatisfiable';
+
+  return { start, end };
 }
 
 export default function shotLab(): Plugin {
@@ -493,16 +580,63 @@ export default function shotLab(): Plugin {
         }
       });
 
+      // Streamed, not buffered, and Range-aware: this route serves the session's
+      // full source video, which is measured in hundreds of megabytes. Reading
+      // one into a Buffer per request is both an allocation the dev server does
+      // not survive repeating and, without `Content-Range`, a video the browser
+      // cannot seek. `createReadStream` takes the descriptor `openMedia` already
+      // validated, so the bytes sent come from the inode that was checked rather
+      // than from whatever the path names by the time the read happens.
       server.middlewares.use('/api/media', (req, res) => {
         const rel = decodeURIComponent((req.url ?? '').split('?')[0]).replace(/^\/+/, '');
-        const media = readMedia(OUT_ROOT(), rel);
+        const media = openMedia(OUT_ROOT(), rel);
         if (media === null) {
           res.statusCode = 404;
           res.end();
           return;
         }
-        res.setHeader('Content-Type', media.type);
-        res.end(media.body);
+
+        const { fd, size, type } = media;
+        const range = parseRange(req.headers.range, size);
+
+        if (range === 'unsatisfiable') {
+          closeSync(fd);
+          res.statusCode = 416;
+          res.setHeader('Content-Range', `bytes */${size}`);
+          res.end();
+          return;
+        }
+
+        res.setHeader('Content-Type', type);
+        // Advertised on every response, not just partial ones: it is how the
+        // element learns it may seek at all before it has asked for a range.
+        res.setHeader('Accept-Ranges', 'bytes');
+
+        const start = range === null ? 0 : range.start;
+        const end = range === null ? size - 1 : range.end;
+        if (range !== null) {
+          res.statusCode = 206;
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+        }
+        // Zero-length is legal for an empty file; `end - start + 1` is then 0.
+        res.setHeader('Content-Length', size === 0 ? 0 : end - start + 1);
+
+        if (req.method === 'HEAD' || size === 0) {
+          closeSync(fd);
+          res.end();
+          return;
+        }
+
+        const stream = createReadStream('', { fd, start, end, autoClose: true });
+        // `autoClose` closes the descriptor on end AND on error, so the only
+        // leak left to guard is the client vanishing mid-stream — which emits
+        // neither on the stream itself.
+        res.on('close', () => stream.destroy());
+        stream.on('error', () => {
+          res.statusCode = 500;
+          res.end();
+        });
+        stream.pipe(res);
       });
 
       server.middlewares.use('/api/swings', (req, res) => {

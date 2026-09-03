@@ -15,6 +15,7 @@ import {
   docHash,
   listSessions,
   overlayEdit,
+  parseRange,
   readMedia,
   readSession,
   resolveWriteTarget,
@@ -656,5 +657,81 @@ describe('the source block on the payload', () => {
   it('is null when no swing could be read', () => {
     rmSync(join(swingDir, 'metadata.json'));
     expect(readSession(tmpDir)!.source).toBeNull();
+  });
+});
+
+/**
+ * The seam the whole seek-based review rests on: without a correct 206 the
+ * source video is a file the browser downloads from zero, not one it can jump
+ * around in.
+ */
+describe('parseRange', () => {
+  const SIZE = 1000;
+
+  it('is null with no header, so the caller answers 200 with the whole file', () => {
+    expect(parseRange(undefined, SIZE)).toBeNull();
+  });
+
+  it('reads the open-ended form a seeking video element actually sends', () => {
+    expect(parseRange('bytes=500-', SIZE)).toEqual({ start: 500, end: 999 });
+  });
+
+  it('reads a closed interval', () => {
+    expect(parseRange('bytes=0-499', SIZE)).toEqual({ start: 0, end: 499 });
+  });
+
+  it('clamps an end past the last byte rather than refusing it', () => {
+    // RFC 9110: an end at or beyond the current length is not an error.
+    expect(parseRange('bytes=900-99999', SIZE)).toEqual({ start: 900, end: 999 });
+  });
+
+  it('reads a suffix range as the LAST n bytes', () => {
+    // How a demuxer fetches the moov atom of a file that carries it at the end.
+    expect(parseRange('bytes=-500', SIZE)).toEqual({ start: 500, end: 999 });
+  });
+
+  it('clamps an oversized suffix to the whole file', () => {
+    expect(parseRange('bytes=-99999', SIZE)).toEqual({ start: 0, end: 999 });
+  });
+
+  it('refuses a start at the size — the last valid offset is size - 1', () => {
+    // The case that must 416: answering 0 bytes with a 206 tells the element it
+    // reached the end of the video, and playback stops short of the last swing.
+    expect(parseRange('bytes=1000-', SIZE)).toBe('unsatisfiable');
+  });
+
+  it('refuses a start past the size', () => {
+    expect(parseRange('bytes=5000-6000', SIZE)).toBe('unsatisfiable');
+  });
+
+  it('refuses a backwards interval', () => {
+    expect(parseRange('bytes=800-200', SIZE)).toBe('unsatisfiable');
+  });
+
+  it('refuses any range over an empty file', () => {
+    expect(parseRange('bytes=0-', 0)).toBe('unsatisfiable');
+    expect(parseRange('bytes=-10', 0)).toBe('unsatisfiable');
+  });
+
+  it('refuses a zero-length suffix', () => {
+    expect(parseRange('bytes=-0', SIZE)).toBe('unsatisfiable');
+  });
+
+  it('ignores multi-range rather than serving one interval as if it were all', () => {
+    // Legal HTTP that no video element sends. Honouring only the first part
+    // would answer a request with less than it asked for, under a 206 that
+    // claims otherwise; falling back to the whole file is honest.
+    expect(parseRange('bytes=0-9,20-29', SIZE)).toBeNull();
+  });
+
+  it('ignores a unit that is not bytes, and outright junk', () => {
+    expect(parseRange('items=0-9', SIZE)).toBeNull();
+    expect(parseRange('bytes=abc', SIZE)).toBeNull();
+    expect(parseRange('bytes=-', SIZE)).toBeNull();
+    expect(parseRange('', SIZE)).toBeNull();
+  });
+
+  it('tolerates surrounding whitespace', () => {
+    expect(parseRange('  bytes=10-20  ', SIZE)).toEqual({ start: 10, end: 20 });
   });
 });

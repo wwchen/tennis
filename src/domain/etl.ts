@@ -168,6 +168,7 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
     duration: formatDuration(doc.trim.source_end_ms - doc.trim.source_start_ms),
     sourceStartMs: doc.trim.source_start_ms,
     sourceEndMs: doc.trim.source_end_ms,
+    contactMs: doc.detection.contact_ms,
     triaged: doc.edit?.reviewed === true,
     grade: qualityToGrade(doc.labels.quality),
     note: doc.labels.notes ?? '',

@@ -22,6 +22,7 @@ that every clip, crop, frame and timestamp is produced regardless.
 import os
 
 from . import audio, crop, players, probe, render, scan, schema, session, tracks
+from .errors import TennisprocError
 from . import pose as pose_mod
 from . import verify as verify_mod
 
@@ -185,6 +186,37 @@ def dedupe_swings(accepted, min_gap_s):
     return kept
 
 
+def stage_proxy(video, root, settings, report=None):
+    """Transcode the whole source once, for the review app to seek in.
+
+    Returns the proxy block, or None when one was not produced. Never fatal:
+    the swings, their frames and every timestamp are already on disk by the
+    time this runs, and a session that cannot be transcoded is still a
+    reviewable session -- it just falls back to per-swing clips. Losing a whole
+    run's detection work to a codec problem at the last step would be the worse
+    trade.
+    """
+    if not settings.proxy:
+        return None
+
+    dest = os.path.join(root, session.PROXY_FILE)
+    try:
+        info = render.build_proxy(video, dest,
+                                  crf=settings.proxy_crf,
+                                  height=settings.proxy_height,
+                                  fps=settings.proxy_fps)
+    except (TennisprocError, OSError) as exc:
+        if report:
+            report.say("proxy: skipped (%s)" % exc)
+        return None
+
+    if report:
+        report.say("proxy: %s %dx%d %.1ffps %.0fMB"
+                   % (info["file"], info["width"], info["height"],
+                      info["fps"], info["bytes"] / 1e6))
+    return info
+
+
 def run(video, outdir, settings, report=None, raw_path=None, limit=0):
     """The whole ETL. Returns the session document."""
     report = report or Reporter(verbose=False)
@@ -289,8 +321,9 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
                  "rendered": len(refs),
                  "rejected": sum(histogram.values()),
                  "reject_histogram": histogram}
+    proxy = stage_proxy(video, root, settings, report)
     doc = session.build_session_doc(source, settings, detection, players_info,
-                                    refs)
+                                    refs, proxy=proxy)
     errors = schema.validate_session(doc)
     if errors:
         raise RuntimeError("built an invalid session doc: %s" % errors[:3])

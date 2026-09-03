@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import type { Clip, Grade, Phase, Selection, Stroke, View } from '@/domain/types';
 import { ADD_PLAYER, ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
 import { SEED_NEXT_COMMENT_ID, SEED_REMOVED_STACK, seedClips, seedComments } from '@/domain/seed';
-import type { EtlSource, SwingEntry } from '@/domain/etl-types';
+import type { EtlProxy, EtlSource, SwingEntry } from '@/domain/etl-types';
 import type { SkippedSwing } from '@/domain/etl';
 import { toUserEdit } from '@/domain/etl-write';
 import type { Doc } from './persistence';
@@ -77,6 +77,13 @@ export interface State {
   /** What the ETL probed about the source video. Not persisted. */
   source: EtlSource | null;
   /**
+   * The session's full-length playable video, or null when there is none.
+   *
+   * Null means the review falls back to per-swing clips: an older tree, or a
+   * session whose source video was gone when the proxy would have been built.
+   */
+  proxy: EtlProxy | null;
+  /**
    * The session the reviewer asked for, or null for "whichever comes first".
    *
    * Separate from `session`, which is what the server answered with. The load
@@ -103,6 +110,7 @@ export type Action =
       session: string;
       sessions?: string[];
       source?: EtlSource | null;
+      proxy?: EtlProxy | null;
       skipped?: SkippedSwing[];
     }
   | { type: 'requestSession'; session: string }
@@ -154,7 +162,7 @@ const freshDoc = (): Doc => ({
 });
 
 const initialUi = (): Ui => ({
-  view: 'compare',
+  view: 'keyframes',
   playerFilter: ALL_PLAYERS,
   strokeFilter: ALL_STROKES,
   gradeFilter: ALL_RATINGS,
@@ -189,6 +197,7 @@ export const initialState = (): State => ({
   session: null,
   sessions: [],
   source: null,
+  proxy: null,
   requested: null,
   skipped: [],
 });
@@ -221,6 +230,7 @@ export function reducer(state: State, action: Action): State {
         session: action.session,
         sessions: action.sessions ?? [action.session],
         source: action.source ?? null,
+        proxy: action.proxy ?? null,
         skipped: action.skipped ?? [],
       };
     case 'requestSession':
@@ -493,6 +503,7 @@ export function useShotLab() {
           session: payload.session,
           sessions: payload.sessions,
           source: payload.source,
+          proxy: payload.proxy,
           skipped: payload.skipped,
         });
       }

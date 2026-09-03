@@ -22,7 +22,11 @@ export type Stroke = (typeof STROKES)[number];
 /** Shown where a stroke would go on a clip the ETL left unlabelled. */
 export const UNTAGGED_STROKE = 'untagged';
 
-export type View = 'compare' | 'catalog' | 'detail';
+/**
+ * `keyframes` is the primary view: the source video with a tick per swing.
+ * The other three predate it and read pre-cut clips.
+ */
+export type View = 'keyframes' | 'compare' | 'catalog' | 'detail';
 
 export interface Frame {
   /** Index within the clip, 0-based over EVERY frame the ETL extracted.
@@ -70,6 +74,17 @@ export interface Clip {
    */
   sourceStartMs?: number;
   sourceEndMs?: number;
+  /**
+   * The detector's contact moment, in source-video time.
+   *
+   * The instant the window was built around, so it is the one worth marking
+   * when the window itself is in doubt: a swing whose contact sits hard against
+   * an edge of its window is one the detector timed badly, and that is visible
+   * at a glance on the scrubber rather than only by watching it.
+   *
+   * Absent on seeded clips, which have no detector behind them.
+   */
+  contactMs?: number;
   /** True once a human has confirmed or corrected any of the auto tags. */
   triaged: boolean;
   grade: Grade | null;

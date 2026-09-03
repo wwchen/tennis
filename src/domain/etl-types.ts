@@ -172,6 +172,31 @@ export interface SessionPayload {
    * session document at all — IMG_0306 and IMG_0307 were both in that state.
    */
   source: EtlSource | null;
+  /**
+   * The session's full-length playable video, or null when there is none.
+   *
+   * Null on trees written before proxies existed, and on any session whose
+   * source video was gone at transcode time. The review app plays this and
+   * seeks within it; with no proxy it falls back to the per-swing clips.
+   */
+  proxy: EtlProxy | null;
+}
+
+/**
+ * The `proxy` block of a SessionDoc: one transcode of the WHOLE source.
+ *
+ * Uncut by construction, so `trim.source_start_ms` addresses it directly with
+ * no offset arithmetic — the reason a swing whose detected window is wrong can
+ * still be scrubbed past, which a pre-cut clip could never allow.
+ */
+export interface EtlProxy {
+  /** Basename, resolved against the session directory. */
+  file: string;
+  width: number;
+  height: number;
+  fps: number;
+  duration_ms: number;
+  bytes: number;
 }
 
 /** The `source` block of a SwingDoc, as `probe.probe()` writes it. */
