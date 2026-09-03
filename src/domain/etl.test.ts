@@ -224,7 +224,11 @@ describe('adaptSession isolates a swing it cannot read', () => {
   const payloadOf = (swings: SwingEntry[]): SessionPayload => ({
     session: 'IMG_0304',
     sessions: ['IMG_0304'],
+    playable: [],
     source: null,
+    proxy: null,
+    settings: null,
+    detection: null,
     swings,
   });
 

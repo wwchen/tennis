@@ -663,7 +663,11 @@ describe('the unreadable-swing report reaches the UI', () => {
       entries: [],
       session: 'IMG_0304',
       sessions: ['IMG_0304'],
+      playable: [],
       source: null,
+      proxy: null,
+      settings: null,
+      detection: null,
       skipped,
     });
     const { result } = renderHook(() => useShotLab());
@@ -696,7 +700,11 @@ describe('switching sessions', () => {
     entries: entriesOf(),
     session,
     sessions: ['IMG_0304', 'IMG_0305'],
+    playable: [],
     source: null,
+    proxy: null,
+    settings: null,
+    detection: null,
     skipped: [],
   });
 
@@ -820,7 +828,10 @@ describe('playing a clip in the inspector', () => {
     const next = reducer(state, { type: 'playClip', clip: 'A' });
     expect(next.ui.inspectorPlaying).toBe(true);
     expect(next.ui.sel).toEqual({ clip: 'A', frame: 2 });
-    expect(next.ui.view).toBe('compare');
+    // Unchanged, rather than pinned to a literal: what this asserts is that
+    // playing does not navigate, which was true of the old default view and
+    // has to stay true of whichever view the app now opens in.
+    expect(next.ui.view).toBe(state.ui.view);
     expect(next.ui.detail).toBeNull();
   });
 
@@ -959,10 +970,12 @@ describe('playing inline in the catalog', () => {
   it('plays one card without opening the inspector panel', () => {
     // The catalog card is already the size of a player; opening a panel to
     // watch something you can see is a detour.
-    const next = reducer(initialState(), { type: 'playInline', clip: 'IMG_0305/swing_004' });
+    const before = initialState();
+    const next = reducer(before, { type: 'playInline', clip: 'IMG_0305/swing_004' });
     expect(next.ui.inlineClip).toBe('IMG_0305/swing_004');
     expect(next.ui.inspectorPlaying).toBe(false);
-    expect(next.ui.view).toBe('compare');
+    // Unchanged, not a literal — see the inspector test above.
+    expect(next.ui.view).toBe(before.ui.view);
     expect(next.ui.detail).toBeNull();
   });
 

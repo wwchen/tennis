@@ -1,5 +1,5 @@
 import type { Clip } from '@/domain/types';
-import type { EtlSource, SessionPayload, SwingEntry } from '@/domain/etl-types';
+import type { EtlProxy, EtlSource, SessionPayload, SwingEntry } from '@/domain/etl-types';
 import type { SkippedSwing } from '@/domain/etl';
 import { adaptSession } from '@/domain/etl';
 
@@ -23,7 +23,11 @@ export async function loadEtlClips(requested?: string): Promise<{
   entries: SwingEntry[];
   session: string;
   sessions: string[];
+  playable: string[];
   source: EtlSource | null;
+  proxy: EtlProxy | null;
+  settings: Record<string, unknown> | null;
+  detection: Record<string, unknown> | null;
   skipped: SkippedSwing[];
 } | null> {
   try {
@@ -43,7 +47,14 @@ export async function loadEtlClips(requested?: string): Promise<{
       entries,
       session: payload.session,
       sessions,
+      // Guarded like `sessions`: a dev server predating this key sends none.
+      playable: Array.isArray(payload.playable) ? payload.playable : sessions,
       source: payload.source ?? null,
+      // `?? null` rather than trusting the type: this is a parsed network
+      // response, and every tree written before proxies existed omits the key.
+      proxy: payload.proxy ?? null,
+      settings: payload.settings ?? null,
+      detection: payload.detection ?? null,
       skipped,
     };
   } catch {

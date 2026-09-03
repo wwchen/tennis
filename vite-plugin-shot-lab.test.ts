@@ -15,8 +15,10 @@ import {
   docHash,
   listSessions,
   overlayEdit,
+  parseRange,
   readMedia,
   readSession,
+  resolveClipCut,
   resolveWriteTarget,
   safeJoin,
 } from './vite-plugin-shot-lab';
@@ -656,5 +658,247 @@ describe('the source block on the payload', () => {
   it('is null when no swing could be read', () => {
     rmSync(join(swingDir, 'metadata.json'));
     expect(readSession(tmpDir)!.source).toBeNull();
+  });
+});
+
+/**
+ * The seam the whole seek-based review rests on: without a correct 206 the
+ * source video is a file the browser downloads from zero, not one it can jump
+ * around in.
+ */
+describe('parseRange', () => {
+  const SIZE = 1000;
+
+  it('is null with no header, so the caller answers 200 with the whole file', () => {
+    expect(parseRange(undefined, SIZE)).toBeNull();
+  });
+
+  it('reads the open-ended form a seeking video element actually sends', () => {
+    expect(parseRange('bytes=500-', SIZE)).toEqual({ start: 500, end: 999 });
+  });
+
+  it('reads a closed interval', () => {
+    expect(parseRange('bytes=0-499', SIZE)).toEqual({ start: 0, end: 499 });
+  });
+
+  it('clamps an end past the last byte rather than refusing it', () => {
+    // RFC 9110: an end at or beyond the current length is not an error.
+    expect(parseRange('bytes=900-99999', SIZE)).toEqual({ start: 900, end: 999 });
+  });
+
+  it('reads a suffix range as the LAST n bytes', () => {
+    // How a demuxer fetches the moov atom of a file that carries it at the end.
+    expect(parseRange('bytes=-500', SIZE)).toEqual({ start: 500, end: 999 });
+  });
+
+  it('clamps an oversized suffix to the whole file', () => {
+    expect(parseRange('bytes=-99999', SIZE)).toEqual({ start: 0, end: 999 });
+  });
+
+  it('refuses a start at the size — the last valid offset is size - 1', () => {
+    // The case that must 416: answering 0 bytes with a 206 tells the element it
+    // reached the end of the video, and playback stops short of the last swing.
+    expect(parseRange('bytes=1000-', SIZE)).toBe('unsatisfiable');
+  });
+
+  it('refuses a start past the size', () => {
+    expect(parseRange('bytes=5000-6000', SIZE)).toBe('unsatisfiable');
+  });
+
+  it('refuses a backwards interval', () => {
+    expect(parseRange('bytes=800-200', SIZE)).toBe('unsatisfiable');
+  });
+
+  it('refuses any range over an empty file', () => {
+    expect(parseRange('bytes=0-', 0)).toBe('unsatisfiable');
+    expect(parseRange('bytes=-10', 0)).toBe('unsatisfiable');
+  });
+
+  it('refuses a zero-length suffix', () => {
+    expect(parseRange('bytes=-0', SIZE)).toBe('unsatisfiable');
+  });
+
+  it('ignores multi-range rather than serving one interval as if it were all', () => {
+    // Legal HTTP that no video element sends. Honouring only the first part
+    // would answer a request with less than it asked for, under a 206 that
+    // claims otherwise; falling back to the whole file is honest.
+    expect(parseRange('bytes=0-9,20-29', SIZE)).toBeNull();
+  });
+
+  it('ignores a unit that is not bytes, and outright junk', () => {
+    expect(parseRange('items=0-9', SIZE)).toBeNull();
+    expect(parseRange('bytes=abc', SIZE)).toBeNull();
+    expect(parseRange('bytes=-', SIZE)).toBeNull();
+    expect(parseRange('', SIZE)).toBeNull();
+  });
+
+  it('tolerates surrounding whitespace', () => {
+    expect(parseRange('  bytes=10-20  ', SIZE)).toEqual({ start: 10, end: 20 });
+  });
+});
+
+describe('resolveClipCut', () => {
+  // A tree with the two things the route insists on: a session proxy and a
+  // swing directory. Nothing reads the video's bytes here — the encode is
+  // ffmpeg's job and is verified against the real session, not a stub.
+  const tmpDir = join(process.cwd(), '.test-tmp-clip');
+  const root = join(tmpDir, 'out');
+  const SWING = 'IMG_0684/swings/swing_005';
+  const window = new URLSearchParams({ start: '24506', end: '28006' });
+
+  beforeEach(() => {
+    mkdirSync(join(root, 'IMG_0684', 'swings', 'swing_005'), { recursive: true });
+    writeFileSync(join(root, 'IMG_0684', 'source.mp4'), 'not really a video');
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('resolves a swing to its session proxy and the requested window', () => {
+    const cut = resolveClipCut(root, SWING, window);
+    expect(cut).toMatchObject({ startMs: 24506, endMs: 28006 });
+    expect('source' in cut && cut.source.endsWith('IMG_0684/source.mp4')).toBe(true);
+  });
+
+  it('names the download from the session and the padded start', () => {
+    // Same rule the client's `download` attribute uses, because the route
+    // imports the same function — the header is what the browser obeys.
+    const cut = resolveClipCut(root, SWING, new URLSearchParams({ ...Object.fromEntries(window), pad: '2' }));
+    expect('fileName' in cut && cut.fileName).toBe('IMG_0684_swing_005_22s.mp4');
+  });
+
+  it('widens both ends by the pad', () => {
+    const cut = resolveClipCut(root, SWING, new URLSearchParams({ start: '24506', end: '28006', pad: '1.5' }));
+    expect(cut).toMatchObject({ startMs: 23006, endMs: 29506 });
+  });
+
+  it('clamps a pad that reaches before the start of the video rather than refusing it', () => {
+    // Padding a swing at 0:00.8 by 2s is an ordinary request; the answer is the
+    // first second of the video, not a 400 and not a negative `-ss`.
+    const cut = resolveClipCut(root, SWING, new URLSearchParams({ start: '800', end: '4300', pad: '2' }));
+    expect(cut).toMatchObject({ startMs: 0, endMs: 6300 });
+  });
+
+  it('refuses a path that is not a swing directory', () => {
+    // The shape check runs before any path is built, so this never reaches
+    // `safeJoin` at all — it is the same `SWING_DIR` guard that keeps the write
+    // route inside a swing.
+    expect(resolveClipCut(root, '../../../etc/passwd', window)).toEqual({
+      status: 404,
+      error: 'not a swing directory',
+    });
+    expect(resolveClipCut(root, 'IMG_0684/../../etc', window)).toMatchObject({ status: 404 });
+  });
+
+  it('refuses a swing dir of the wrong shape', () => {
+    // `swings/swing_005/../..` and `work` alike: the directory has to be a
+    // numbered swing, not merely something under the session.
+    expect(resolveClipCut(root, 'IMG_0684/work/swing_005', window)).toMatchObject({ status: 404 });
+    expect(resolveClipCut(root, 'IMG_0684/swings/swing_abc', window)).toMatchObject({ status: 404 });
+    expect(resolveClipCut(root, 'IMG_0684', window)).toMatchObject({ status: 404 });
+  });
+
+  it('refuses a swing directory that does not exist', () => {
+    expect(resolveClipCut(root, 'IMG_0684/swings/swing_999', window)).toEqual({
+      status: 404,
+      error: 'no such swing',
+    });
+  });
+
+  it('reports a session with no proxy as 404 rather than letting ffmpeg fail', () => {
+    // A tree written before proxies existed, or a run killed mid-transcode.
+    // Nothing about the request is wrong, so it is not a 400.
+    rmSync(join(root, 'IMG_0684', 'source.mp4'));
+    expect(resolveClipCut(root, SWING, window)).toEqual({
+      status: 404,
+      error: 'no source video for this session',
+    });
+  });
+
+  it('refuses a non-numeric range', () => {
+    for (const bad of ['abc', '', '0x10', 'Infinity', '1e3', ' 24506 ']) {
+      expect(
+        resolveClipCut(root, SWING, new URLSearchParams({ start: bad, end: '28006' })),
+      ).toMatchObject({ status: 400 });
+    }
+  });
+
+  it('refuses a missing start or end instead of reading it as zero', () => {
+    // `Number(null)` is 0 and `Number('')` is 0, so a bare `Number()` would turn
+    // a dropped parameter into "the start of the video" and cut the wrong clip.
+    expect(resolveClipCut(root, SWING, new URLSearchParams({ end: '28006' }))).toMatchObject({
+      status: 400,
+    });
+    expect(resolveClipCut(root, SWING, new URLSearchParams({ start: '24506' }))).toMatchObject({
+      status: 400,
+    });
+  });
+
+  it('refuses a negative position', () => {
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ start: '-1000', end: '28006' })),
+    ).toMatchObject({ status: 400 });
+  });
+
+  it('refuses an inverted range', () => {
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ start: '28006', end: '24506' })),
+    ).toEqual({ status: 400, error: 'end must be after start' });
+  });
+
+  it('refuses a zero-length range', () => {
+    // Nothing to encode: ffmpeg given `-t 0` writes a file with no frames in it.
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ start: '24506', end: '24506' })),
+    ).toMatchObject({ status: 400 });
+  });
+
+  it('refuses a cut longer than the ceiling', () => {
+    // The cut is a synchronous re-encode; unbounded, one request spends minutes
+    // of dev-server CPU.
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ start: '0', end: '600000' })),
+    ).toMatchObject({ status: 400 });
+  });
+
+  it('measures that ceiling AFTER padding, not before', () => {
+    // 110s of window and 10s of pad a side is a 130s encode, however innocent
+    // each half looks alone.
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ start: '20000', end: '130000' })),
+    ).toMatchObject({ startMs: 20000, endMs: 130000 });
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ start: '20000', end: '130000', pad: '10' })),
+    ).toMatchObject({ status: 400 });
+  });
+
+  it('refuses an absurd position outright', () => {
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ start: '99999999999', end: '99999999999.5' })),
+    ).toMatchObject({ status: 400 });
+  });
+
+  it('refuses a malformed pad rather than quietly cutting an unpadded clip', () => {
+    // Falling back to zero would hand back a NARROWER clip than was asked for,
+    // which is the one failure mode a reviewer would not notice.
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ ...Object.fromEntries(window), pad: 'wide' })),
+    ).toMatchObject({ status: 400 });
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ ...Object.fromEntries(window), pad: '-2' })),
+    ).toMatchObject({ status: 400 });
+    expect(
+      resolveClipCut(root, SWING, new URLSearchParams({ ...Object.fromEntries(window), pad: '600' })),
+    ).toMatchObject({ status: 400 });
+  });
+
+  it('refuses a proxy reached through a symlink out of the tree', () => {
+    // `safeJoin` realpaths before the containment check, so a session directory
+    // whose `source.mp4` points at /etc/passwd cannot be handed to ffmpeg.
+    rmSync(join(root, 'IMG_0684', 'source.mp4'));
+    writeFileSync(join(tmpDir, 'outside.mp4'), 'outside');
+    symlinkSync(join(tmpDir, 'outside.mp4'), join(root, 'IMG_0684', 'source.mp4'));
+    expect(resolveClipCut(root, SWING, window)).toMatchObject({ status: 404 });
   });
 });

@@ -164,6 +164,15 @@ export interface SessionPayload {
    */
   sessions: string[];
   /**
+   * The subset of `sessions` whose proxy exists on disk.
+   *
+   * The keyframe view seeks a source video, so it offers only these; the views
+   * that read stills and clips still offer everything. Separate from `sessions`
+   * rather than replacing it, because "this session exists but cannot be
+   * played" is a real state a reviewer may need to see elsewhere.
+   */
+  playable: string[];
+  /**
    * What the ETL probed about the source video, or null for a tree that has
    * no readable swing to take it from.
    *
@@ -172,6 +181,42 @@ export interface SessionPayload {
    * session document at all — IMG_0306 and IMG_0307 were both in that state.
    */
   source: EtlSource | null;
+  /**
+   * The session's full-length playable video, or null when there is none.
+   *
+   * Null on trees written before proxies existed, and on any session whose
+   * source video was gone at transcode time. The review app plays this and
+   * seeks within it; with no proxy it falls back to the per-swing clips.
+   */
+  proxy: EtlProxy | null;
+  /**
+   * The detector's own tuning for this session, as `Settings.as_metadata()`
+   * wrote it, or null on a tree with no session document.
+   *
+   * Open-shaped on purpose: `tennisproc/config.py` owns these keys and adds to
+   * them freely (`scan_k`, `min_wrist_speed`, `pose_model`, …), and a mirror
+   * that had to be updated in lockstep would go stale silently.
+   */
+  settings: Record<string, unknown> | null;
+  /** Candidate/verified/rejected counts and the reject histogram. */
+  detection: Record<string, unknown> | null;
+}
+
+/**
+ * The `proxy` block of a SessionDoc: one transcode of the WHOLE source.
+ *
+ * Uncut by construction, so `trim.source_start_ms` addresses it directly with
+ * no offset arithmetic — the reason a swing whose detected window is wrong can
+ * still be scrubbed past, which a pre-cut clip could never allow.
+ */
+export interface EtlProxy {
+  /** Basename, resolved against the session directory. */
+  file: string;
+  width: number;
+  height: number;
+  fps: number;
+  duration_ms: number;
+  bytes: number;
 }
 
 /** The `source` block of a SwingDoc, as `probe.probe()` writes it. */

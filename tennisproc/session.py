@@ -17,6 +17,10 @@ import tempfile
 from . import schema
 
 SWINGS_DIR = "swings"
+
+# The full-length playable transcode, at the session root beside metadata.json.
+# One per session, not per swing: it IS the session's video.
+PROXY_FILE = "source.mp4"
 WORK_DIR = "work"
 
 
@@ -91,14 +95,23 @@ def build_swing_doc(swing_id, source, trim, crop_rect, contact_ms, frames,
     }
 
 
-def build_session_doc(source, settings, detection, players_info, swing_refs):
-    """The session metadata.json: one fetch for a whole session."""
+def build_session_doc(source, settings, detection, players_info, swing_refs,
+                      proxy=None):
+    """The session metadata.json: one fetch for a whole session.
+
+    `proxy` describes the full-length playable transcode the review app seeks
+    in, or is None when there is none -- an older tree, or a session whose
+    source video is gone. It is written as an explicit null rather than
+    omitted, so a reader can tell "this ETL had no proxy to offer" from "this
+    document predates proxies" without consulting the schema version.
+    """
     return {
         "schema": schema.SESSION_SCHEMA,
         "source": dict(source),
         "settings": settings.as_metadata(),
         "detection": dict(detection),
         "players": dict(players_info),
+        "proxy": dict(proxy) if proxy else None,
         "swings": list(swing_refs),
     }
 

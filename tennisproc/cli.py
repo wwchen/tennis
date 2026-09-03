@@ -25,7 +25,7 @@ import argparse
 import os
 import sys
 
-from . import config, errors, pipeline, probe, session
+from . import config, errors, pipeline, probe, render, schema, session
 
 
 def _add_settings_args(parser):
@@ -36,7 +36,14 @@ def _add_settings_args(parser):
                         "onsets exist for a swing to be dated by "
                         "(default %(default)s)")
     g.add_argument("--gap", type=float, default=s.min_gap_s, dest="min_gap_s",
-                   help="collapse swings closer than this many seconds")
+                   help="collapse swings closer than this many seconds, when "
+                        "they also happened in the same place "
+                        "(default %(default)s)")
+    g.add_argument("--same-place", type=float, default=s.same_place_torsos,
+                   dest="same_place_torsos",
+                   help="how far apart in torso heights two contacts may be "
+                        "and still count as one player, for --gap "
+                        "(default %(default)s)")
     g.add_argument("--min-torso", type=float, default=s.min_torso,
                    help="reject bodies smaller than this fraction of frame height")
     g.add_argument("--min-wrist-speed", type=float, default=s.min_wrist_speed,
@@ -132,7 +139,8 @@ def cmd_detect(args):
                                      work_dir=None, report=report)
     accepted, histogram = pipeline.stage_verify(track_list, settings, report)
     before = len(accepted)
-    accepted = pipeline.dedupe_swings(accepted, settings.min_gap_s)
+    accepted = pipeline.dedupe_swings(accepted, settings.min_gap_s,
+                                      settings.same_place_torsos)
     if before != len(accepted):
         print("dedupe: %d -> %d" % (before, len(accepted)))
 
@@ -157,6 +165,49 @@ def cmd_run(args):
                  report=pipeline.Reporter(verbose=not args.quiet),
                  raw_path=args.video, limit=args.limit)
     return 0
+
+
+def cmd_proxy(args):
+    """Build the review app's playable source for an EXISTING output tree.
+
+    Deliberately not part of `run`: this rebuilds nothing but the video. A
+    session's swing numbering is its identity -- `user-edit.json` is keyed by
+    `swings/swing_NNN` -- so re-running detection to obtain a proxy would
+    renumber every swing and orphan every human verdict in the tree. This
+    reads the source path the tree already recorded, transcodes, and writes
+    the `proxy` block into the session document. Nothing else is touched.
+    """
+    root = args.root.rstrip("/")
+    if not os.path.isdir(root):
+        raise SystemExit("not a directory: %s" % root)
+
+    meta_path = os.path.join(root, "metadata.json")
+    if not os.path.exists(meta_path):
+        raise SystemExit("no metadata.json in %s" % root)
+    doc = session.read_json(meta_path)
+
+    video = args.video or doc.get("source", {}).get("path")
+    if not video or not os.path.exists(video):
+        raise SystemExit(
+            "source video not found: %s\n"
+            "  The tree records it as %r. Pass --video if it lives elsewhere."
+            % (video, doc.get("source", {}).get("path")))
+
+    dest = os.path.join(root, session.PROXY_FILE)
+    if os.path.exists(dest) and not args.force:
+        print("%s: proxy exists, skipping (use --force to rebuild)" % root)
+        return
+
+    info = render.build_proxy(video, dest, crf=args.crf, height=args.height,
+                              fps=args.fps)
+    doc["proxy"] = info
+    errors = schema.validate_session(doc)
+    if errors:
+        raise SystemExit("proxy block did not validate: %s" % errors[:3])
+    session.write_json(meta_path, doc)
+    print("%s: %dx%d %.1ffps %.0fMB"
+          % (root, info["width"], info["height"], info["fps"],
+             info["bytes"] / 1e6))
 
 
 def cmd_validate(args):
@@ -221,6 +272,16 @@ def build_parser():
                    help="audio stage only when used with --pose-backend=stub")
     _add_settings_args(p)
     p.set_defaults(func=cmd_detect)
+
+    p = subs.add_parser("proxy",
+                        help="build the playable source for an existing tree")
+    p.add_argument("root", help="out/<video-stem>")
+    p.add_argument("--video", help="source video, if not where the tree says")
+    p.add_argument("--force", action="store_true", help="rebuild an existing proxy")
+    p.add_argument("--crf", type=int, default=20)
+    p.add_argument("--height", type=int, default=0, help="0 keeps the source size")
+    p.add_argument("--fps", type=float, default=0.0, help="0 keeps the source rate")
+    p.set_defaults(func=cmd_proxy)
 
     p = subs.add_parser("validate", help="check an output tree")
     p.add_argument("root", help="out/<video-stem>")

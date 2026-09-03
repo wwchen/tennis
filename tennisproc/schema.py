@@ -246,6 +246,11 @@ def _check_measurements(c, m, path):
     for name in ("wrist_peak_speed", "torso_height", "contact_offset",
                  "contact_height"):
         c.field(m, name, path, _NUM, optional=True)
+    # Checked only when present, for the same reason as `source.modified`:
+    # `optional=True` means "may be null", never "may be absent", so requiring
+    # this would fail every one of the 2505 swings written before it existed.
+    if "center_x" in m:
+        c.field(m, "center_x", path, _NUM, optional=True)
     units = c.block(m, "units", path)
     if units is not None:
         for name in ("length", "speed"):
@@ -346,6 +351,18 @@ def validate_session(doc):
                     c.add(where, "unknown reject reason")
                 if not _is(count, _INT) or count < 0:
                     c.add(where, "expected non-negative int, got %r" % (count,))
+
+    # The full-length playable transcode the review app seeks in. Optional:
+    # absent from every tree written before proxies existed, and from any
+    # session whose source video is no longer on disk to transcode. A reader
+    # that finds no proxy falls back to the per-swing clips.
+    if doc.get("proxy") is not None:
+        proxy = c.block(doc, "proxy", "<root>")
+        if proxy is not None:
+            c.field(proxy, "file", "proxy", (str,))
+            for name in ("width", "height", "duration_ms", "bytes"):
+                c.field(proxy, name, "proxy", _INT, non_negative=True)
+            c.field(proxy, "fps", "proxy", _NUM, non_negative=True)
 
     players = c.block(doc, "players", "<root>")
     if players is not None:

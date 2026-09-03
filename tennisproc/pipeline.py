@@ -22,6 +22,7 @@ that every clip, crop, frame and timestamp is produced regardless.
 import os
 
 from . import audio, crop, players, probe, render, scan, schema, session, tracks
+from .errors import TennisprocError
 from . import pose as pose_mod
 from . import verify as verify_mod
 
@@ -158,8 +159,68 @@ def stage_verify(track_list, settings, report=None):
     return accepted, histogram
 
 
-def dedupe_swings(accepted, min_gap_s):
-    """Collapse accepted swings closer than min_gap_s, keeping the fastest.
+def _anchor(pair):
+    """The instant a swing is filed under.
+
+    The ANCHORED contact, not the raw onset: a bounce onset and its strike
+    onset are far apart as onsets and nearly identical once pose has moved
+    both to the swing, which is exactly the pair dedupe should collapse.
+    """
+    return pair[1].contact_ms if pair[1].contact_ms is not None \
+        else pair[0].contact_ms
+
+
+def _apart_in_torsos(a, b):
+    """How far two contacts sit from each other across the court.
+
+    In torso heights, so a pair at the back of the court compares with a pair
+    near the camera. Unmeasurable positions return infinity, i.e. "assume two
+    different people": the accepted path always sets both fields, and if that
+    ever stops being true, shipping a duplicate beats deleting a real swing.
+    """
+    if a.center_x is None or b.center_x is None:
+        return float("inf")
+    torso = ((a.torso_height or 0.0) + (b.torso_height or 0.0)) / 2.0
+    if torso <= 0:
+        return float("inf")
+    return abs(a.center_x - b.center_x) / torso
+
+
+def _strike_confidence(pair):
+    """Which of two detections of one swing is the real strike.
+
+    The loudness of the onset the swing is anchored on, in MADs above the
+    audio median. A racket strike is the loudest thing in its second; a
+    duplicate is anchored on whatever else was audible -- the ball reaching
+    the fence, the next ball leaving the machine -- so it is quieter.
+    Measured against the 76 feed-slot collisions described in
+    `Settings.min_gap_s`, this picks the on-lattice detection 58 times.
+
+    Wrist speed, which this used to decide on alone, picks it 38 times and
+    cannot decide at all in 23 of them: `verify.SPEED_CAP` clips peak speed at
+    40.0 and 1575 of the 2505 shipped swings (63%) sit exactly on the cap, so
+    "keep the fastest" was a coin flip on nearly a third of the pairs. It
+    stays as the tiebreak for a detector run with no onset strengths.
+    """
+    track, measured = pair
+    peak = track.candidate.get("onset_peak")
+    return (peak if peak is not None else -1.0,
+            measured.wrist_peak_speed or 0.0)
+
+
+def dedupe_swings(accepted, min_gap_s, same_place_torsos, pre_s=1.5):
+    """Collapse one swing reported twice, keeping the louder strike.
+
+    Two tests, both of which must hold before a pair is collapsed: the
+    contacts are closer together than `min_gap_s`, and they happened within
+    `same_place_torsos` of each other on court. Together they say "one player
+    cannot hit twice that fast", which is true, rather than "no two shots
+    happen that close together", which is not -- two players rally as fast as
+    1.0s apart. See `Settings.min_gap_s` for both numbers.
+
+    `pre_s` is the window's lead, which decides how far apart a pair can be
+    before keeping the LATER of the two would cut the earlier contact out of
+    the clip entirely. See the choice below.
 
     Run after verification rather than before, so a real shot is never
     discarded in favour of a nearby noise that pose would have rejected.
@@ -167,22 +228,69 @@ def dedupe_swings(accepted, min_gap_s):
     if not accepted:
         return []
     gap_ms = min_gap_s * 1000.0
-    # Ordered and compared on the ANCHORED contact: a bounce onset and its
-    # strike onset are far apart as onsets and nearly identical once pose has
-    # moved both to the swing, which is exactly the pair dedupe should collapse.
-    def anchor(pair):
-        return pair[1].contact_ms if pair[1].contact_ms is not None \
-            else pair[0].contact_ms
 
-    ordered = sorted(accepted, key=anchor)
+    ordered = sorted(accepted, key=_anchor)
     kept = [ordered[0]]
-    for track, measured in ordered[1:]:
-        if anchor((track, measured)) - anchor(kept[-1]) < gap_ms:
-            if measured.wrist_peak_speed > kept[-1][1].wrist_peak_speed:
-                kept[-1] = (track, measured)
+    for pair in ordered[1:]:
+        previous = kept[-1]
+        same_moment = _anchor(pair) - _anchor(previous) < gap_ms
+        same_place = (_apart_in_torsos(previous[1], pair[1])
+                      <= same_place_torsos)
+        if same_moment and same_place:
+            # Which member is the real strike is genuinely uncertain -- every
+            # signal on hand lands between 50% and 61% over the feed-slot
+            # collisions, which at that sample size is not distinguishable from
+            # a coin flip. So the choice is made to be SAFE rather than right:
+            # the kept window must still contain the other contact, because a
+            # reviewer judges what is on screen, not which millisecond the
+            # metadata calls contact.
+            #
+            # The window is asymmetric -- `pre_s` before, `post_s` after -- so
+            # the two choices are not equally safe. Keeping the earlier member
+            # covers the other contact for gaps up to `post_s`; keeping the
+            # later covers only `pre_s`. Above `pre_s` the later member's
+            # window starts AFTER the earlier contact, so if that was the real
+            # strike it is not in the clip at all. There the earlier member
+            # wins regardless of confidence; below it, confidence decides.
+            separation_ms = _anchor(pair) - _anchor(previous)
+            later_would_clip = separation_ms > pre_s * 1000.0
+            if (not later_would_clip
+                    and _strike_confidence(pair) > _strike_confidence(previous)):
+                kept[-1] = pair
         else:
-            kept.append((track, measured))
+            kept.append(pair)
     return kept
+
+
+def stage_proxy(video, root, settings, report=None):
+    """Transcode the whole source once, for the review app to seek in.
+
+    Returns the proxy block, or None when one was not produced. Never fatal:
+    the swings, their frames and every timestamp are already on disk by the
+    time this runs, and a session that cannot be transcoded is still a
+    reviewable session -- it just falls back to per-swing clips. Losing a whole
+    run's detection work to a codec problem at the last step would be the worse
+    trade.
+    """
+    if not settings.proxy:
+        return None
+
+    dest = os.path.join(root, session.PROXY_FILE)
+    try:
+        info = render.build_proxy(video, dest,
+                                  crf=settings.proxy_crf,
+                                  height=settings.proxy_height,
+                                  fps=settings.proxy_fps)
+    except (TennisprocError, OSError) as exc:
+        if report:
+            report.say("proxy: skipped (%s)" % exc)
+        return None
+
+    if report:
+        report.say("proxy: %s %dx%d %.1ffps %.0fMB"
+                   % (info["file"], info["width"], info["height"],
+                      info["fps"], info["bytes"] / 1e6))
+    return info
 
 
 def run(video, outdir, settings, report=None, raw_path=None, limit=0):
@@ -206,7 +314,9 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
     accepted, histogram = stage_verify(track_list, settings, report)
 
     before = len(accepted)
-    accepted = dedupe_swings(accepted, settings.min_gap_s)
+    accepted = dedupe_swings(accepted, settings.min_gap_s,
+                             settings.same_place_torsos,
+                             pre_s=settings.pre_s)
     if before != len(accepted):
         histogram["duplicate"] = histogram.get("duplicate", 0) + (
             before - len(accepted))
@@ -289,8 +399,9 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
                  "rendered": len(refs),
                  "rejected": sum(histogram.values()),
                  "reject_histogram": histogram}
+    proxy = stage_proxy(video, root, settings, report)
     doc = session.build_session_doc(source, settings, detection, players_info,
-                                    refs)
+                                    refs, proxy=proxy)
     errors = schema.validate_session(doc)
     if errors:
         raise RuntimeError("built an invalid session doc: %s" % errors[:3])
