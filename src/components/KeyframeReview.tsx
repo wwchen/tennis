@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { Clip } from '@/domain/types';
 import { shortId } from '@/domain/types';
-import { Button, ICONS, Select, Toggle, checkedOf, valueOf } from '@/lds';
+import { Button, ICONS, Select, valueOf } from '@/lds';
 import type { EtlSource } from '@/domain/etl-types';
 import { SwingMetadata } from './SwingMetadata';
 import { clipExportFileName, clipExportUrl } from './clip-export';
 import {
+  END_MODES,
+  END_MODE_LABELS,
   PAD_STEPS,
   axisTicks,
   clock,
@@ -17,6 +19,7 @@ import {
   timelinePercent,
   windowProgress,
   windowsFor,
+  type EndMode,
 } from './source-playback';
 
 /**
@@ -84,11 +87,17 @@ export function KeyframeReview({
   const windows = useMemo(() => windowsFor(clips), [clips]);
   const [idx, setIdx] = useState(0);
   const [padS, setPadS] = useState<number>(0);
-  const [autoAdvance, setAutoAdvance] = useState(false);
+  const [endMode, setEndMode] = useState<EndMode>('stop');
   const [rate, setRate] = useState(1);
   const [playing, setPlaying] = useState(false);
   const [cursorMs, setCursorMs] = useState(0);
   const [atEnd, setAtEnd] = useState(false);
+  // A DEADLINE, not a remaining count. Decrementing a counter by a fixed step
+  // per timer tick assumes the tick is punctual, and a background tab clamps
+  // `setTimeout` to about a second — so a 4s countdown stepping 100ms at a time
+  // took 40s there and looked stalled. Against a deadline a late timer simply
+  // finds the time already passed and advances at once.
+  const [deadline, setDeadline] = useState(0);
   const [countdown, setCountdown] = useState(0);
   const [held, setHeld] = useState(false);
   /** Set by "Keep playing": drops the window bound until the next selection. */
@@ -133,8 +142,10 @@ export function KeyframeReview({
     unbounded: false,
   });
   useEffect(() => {
-    boundary.current = { endMs: bounds?.endMs ?? Infinity, unbounded };
-  }, [bounds, unbounded]);
+    // 'continue' is folded into `unbounded` here rather than checked in the
+    // watcher, so there is one flag deciding whether the boundary bites.
+    boundary.current = { endMs: bounds?.endMs ?? Infinity, unbounded: unbounded || endMode === 'continue' };
+  }, [bounds, unbounded, endMode]);
 
   const stopAtWindowEnd = useCallback(() => {
     const el = video.current;
@@ -143,6 +154,7 @@ export function KeyframeReview({
     if (free || el.currentTime * 1000 < endMs) return;
     el.pause();
     setAtEnd(true);
+    setDeadline(Date.now() + HOLD_MS);
     setCountdown(HOLD_MS);
   }, []);
 
@@ -241,17 +253,18 @@ export function KeyframeReview({
   // Auto-advance, once the end card has counted down. Held while the pointer is
   // over the card, so reading it does not cost the swing.
   useEffect(() => {
-    if (!atEnd || !autoAdvance || held) return;
+    if (!atEnd || endMode !== 'next' || held) return;
     if (idx >= windows.length - 1) return;
     const timer = setTimeout(() => {
-      // Both the countdown and the advance happen on the timer: advancing from
+      // Both the readout and the advance happen on the timer: advancing from
       // the effect body instead makes selecting a swing a render-time side
       // effect, which cascades renders and trips react-hooks/set-state-in-effect.
-      if (countdown <= 0) goto(idx + 1);
-      else setCountdown((c) => c - 100);
+      const left = deadline - Date.now();
+      if (left <= 0) goto(idx + 1);
+      else setCountdown(left);
     }, 100);
     return () => clearTimeout(timer);
-  }, [atEnd, autoAdvance, held, countdown, idx, windows.length, goto]);
+  }, [atEnd, endMode, held, countdown, deadline, idx, windows.length, goto]);
 
   // Keyboard, as the design specifies: arrows step, space pauses, r restarts,
   // s slows. Ignored while a field has focus, so typing a note is not transport.
@@ -375,7 +388,7 @@ export function KeyframeReview({
                 <span style={S.badgeCount}>
                   {bounds === null || unbounded
                     ? clock(cursorMs, true)
-                    : `${(remainingMs(cursorMs, bounds.endMs) / 1000).toFixed(1)}s left`}
+                    : `${(remainingMs(cursorMs, bounds.startMs, bounds.endMs) / 1000).toFixed(1)}s left`}
                 </span>
               </div>
 
@@ -396,6 +409,7 @@ export function KeyframeReview({
                     onMouseEnter={() => setHeld(true)}
                     onMouseLeave={() => {
                       setHeld(false);
+                      setDeadline(Date.now() + HOLD_MS);
                       setCountdown(HOLD_MS);
                     }}
                   >
@@ -404,7 +418,7 @@ export function KeyframeReview({
                         style={{
                           ...S.endBarFill,
                           width:
-                            autoAdvance && idx < windows.length - 1
+                            endMode === 'next' && idx < windows.length - 1
                               ? `${(100 - (Math.max(0, countdown) / HOLD_MS) * 100).toFixed(1)}%`
                               : '0%',
                         }}
@@ -416,7 +430,7 @@ export function KeyframeReview({
                           {current === undefined ? '—' : shortId(current.id)}
                         </span>
                         <span style={S.label}>
-                          {!autoAdvance || idx >= windows.length - 1
+                          {endMode !== 'next' || idx >= windows.length - 1
                             ? 'End of window'
                             : held
                               ? 'Countdown held'
@@ -439,7 +453,9 @@ export function KeyframeReview({
                             {SLOW_RATE}×
                           </Button>
                         </span>
-                        {/* The answer to a window that cut the shot short. */}
+                        {/* The one-off twin of the standing `continue` mode:
+                            this swing only, without changing what happens at
+                            the end of the next one. */}
                         <span onClick={keepPlaying} style={S.click}>
                           <Button variant="secondary" size="sm" iconStart="play" iconHref={ICONS}>
                             Keep playing
@@ -537,13 +553,21 @@ export function KeyframeReview({
               ))}
             </div>
 
-            <span style={{ display: 'inline-flex', flex: 'none' }}>
-              <Toggle
-                label="Auto-advance"
-                checked={autoAdvance}
-                onChange={(e: Event) => setAutoAdvance(checkedOf(e))}
-              />
-            </span>
+            <div style={S.padGroup}>
+              <span style={S.label}>At end</span>
+              {END_MODES.map((m) => (
+                <span
+                  key={m}
+                  onClick={() => setEndMode(m)}
+                  title={END_MODE_LABELS[m].title}
+                  style={S.click}
+                >
+                  <Button variant={m === endMode ? 'secondary' : 'tertiary'} size="sm">
+                    {END_MODE_LABELS[m].label}
+                  </Button>
+                </span>
+              ))}
+            </div>
             <div style={{ flex: 1 }} />
             {current !== undefined && (
               // The pad goes with it: the exported file is the window as it is

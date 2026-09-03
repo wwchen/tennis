@@ -189,15 +189,28 @@ export function axisTicks(durationMs: number, target = 8): number[] {
 }
 
 /**
- * Milliseconds left in the window, floored at zero.
+ * Milliseconds left in the window, measured from INSIDE it.
  *
- * Surfaced because the previous UI gave no answer to "when does this stop?"
- * beyond a 3px bar: the window end was enforced but invisible, so a swing
- * playing on read as the app having lost track of the boundary rather than as
- * three seconds still to run.
+ * Surfaced because the UI gave no answer to "when does this stop?" beyond a 3px
+ * bar: the window end was enforced but invisible, so a swing playing on read as
+ * the app having lost track of the boundary rather than as three seconds still
+ * to run.
+ *
+ * The cursor is clamped into `[startMs, endMs]` rather than subtracted raw,
+ * which is the whole fix here. Before a swing has started playing the element
+ * still reports `currentTime` 0, so a bare `endMs - cursorMs` returned the
+ * window's END TIMESTAMP: a 3.5s window at 0:23.4-0:26.9 read "26.9s left".
+ * That is not a rounding error but a different quantity entirely — a position
+ * in the source wearing the label of a duration.
+ *
+ * Clamped, a playhead before the window reports the window's full length (it
+ * has all of it still to run) and one past the end reports zero.
  */
-export const remainingMs = (cursorMs: number, endMs: number): number =>
-  Math.max(0, endMs - cursorMs);
+export const remainingMs = (cursorMs: number, startMs: number, endMs: number): number => {
+  const span = Math.max(0, endMs - startMs);
+  const inside = Math.max(startMs, Math.min(cursorMs, endMs));
+  return Math.min(span, Math.max(0, endMs - inside));
+};
 
 /**
  * Whether the playhead is outside the window that is supposed to be playing.
@@ -213,3 +226,24 @@ export const remainingMs = (cursorMs: number, endMs: number): number =>
  */
 export const outsideWindow = (cursorMs: number, startMs: number, endMs: number): boolean =>
   cursorMs < startMs || cursorMs >= endMs;
+
+
+/**
+ * What happens when playback reaches the end of a swing's window.
+ *
+ * An explicit three-way choice rather than an auto-advance checkbox, because
+ * the checkbox only ever described one of the three and left the other two to
+ * be discovered: "off" silently meant stop, and continuing past the boundary
+ * was reachable only through a button on a card that appeared after stopping.
+ * A reviewer scanning a session and one studying a single shot want different
+ * defaults, and neither should have to find that out by experiment.
+ */
+export const END_MODES = ['stop', 'continue', 'next'] as const;
+export type EndMode = (typeof END_MODES)[number];
+
+/** The label and meaning of each mode, for the control and its tooltips. */
+export const END_MODE_LABELS: Record<EndMode, { label: string; title: string }> = {
+  stop: { label: 'Stop', title: 'Pause at the end of the window' },
+  continue: { label: 'Continue', title: 'Keep playing into the rest of the video' },
+  next: { label: 'Next', title: 'Advance to the next swing after a countdown' },
+};

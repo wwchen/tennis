@@ -245,14 +245,30 @@ describe('axisTicks', () => {
 
 describe('remainingMs', () => {
   it('counts down to the window end', () => {
-    expect(remainingMs(24_500, 28_000)).toBe(3_500);
-    expect(remainingMs(27_900, 28_000)).toBe(100);
+    expect(remainingMs(24_500, 24_500, 28_000)).toBe(3_500);
+    expect(remainingMs(27_900, 24_500, 28_000)).toBe(100);
   });
 
   it('floors at zero rather than reporting negative time left', () => {
     // The boundary overshoots by up to ~150ms on the timeupdate path, so the
     // cursor is routinely PAST the end by the time this is read.
-    expect(remainingMs(28_154, 28_000)).toBe(0);
+    expect(remainingMs(28_154, 24_500, 28_000)).toBe(0);
+  });
+
+  it('reports the whole window before it has started, not the end timestamp', () => {
+    // The bug this exists to prevent: the element reports currentTime 0 until a
+    // swing is played, and `endMs - 0` rendered a 3.5s window at 0:23.4-0:26.9
+    // as "26.9s left" — the window's END POSITION labelled as a duration.
+    expect(remainingMs(0, 23_400, 26_900)).toBe(3_500);
+    expect(remainingMs(10_000, 23_400, 26_900)).toBe(3_500);
+  });
+
+  it('never exceeds the window length', () => {
+    expect(remainingMs(0, 400_000, 403_500)).toBe(3_500);
+  });
+
+  it('is zero for a window with no length', () => {
+    expect(remainingMs(0, 28_000, 28_000)).toBe(0);
   });
 });
 
