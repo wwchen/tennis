@@ -193,28 +193,33 @@ and it also explains detections that look like a bad racket box and are
 actually a bad wrist: of racket boxes more than 1.9 torso from the wrist, a
 quarter were on the player and only the wrist was wrong.
 
-**The swap also removes candidates that were never swings.** RTMPose finds
-fewer: 77 accepted on IMG_0684 against MediaPipe's 108, which looks like lost
-recall until the two sets are refereed by something neither backend can see.
-A real strike should have a ball in flight at the racket; a split-step should
-not. Scoring both sets over identical frames, so that the ball detector's
-session-to-session unreliability cancels:
+**The swap also removes candidates that were never swings, and finds more real
+ones.** RTMPose accepts fewer: 796 across the eleven re-processed sessions
+against MediaPipe's 858, which reads as lost recall until something neither
+backend can see is asked to judge. A real strike should have a ball in flight
+at the racket; a split-step should not. Scored over identical frames, so the
+ball detector's session-to-session unreliability cancels:
 
-| candidate set | n | racket found | ball in flight | ball at the racket |
-|---|---|---|---|---|
-| MediaPipe | 108 | 73% | 57% | 31% |
-| RTMPose | 77 | 62% | 81% | **43%** |
+| candidate set | candidates | strikes found | strike rate |
+|---|---|---|---|
+| MediaPipe | 858 | 249 | 29% |
+| RTMPose | 796 | **273** | **34%** |
 
-**The absolute number of strikes is the same in both: 33.** The 31 candidates
-RTMPose drops contain none of them. Note the racket rate falls while the ball
-rate rises, which is the signature expected of the surviving set being
-mid-swing -- a racket in motion blurs and gets harder to detect, a stationary
-one held in front of a player at rest does not.
+**62 fewer candidates and 24 more strikes.** Better in 8 of 11 sessions. The
+gain is not only filtering: a strike is recognised by a ball sitting at the
+RACKET, and the racket is found relative to the WRIST, so better anchors
+surface strikes that were always in the footage and previously went
+unrecognised.
 
-This is one session, and "ball at the racket" is itself a partial test: it
-fires on 43% of a set that is certainly more than 43% real swings, so read it
-as a relative measure between two candidate sets, never as an absolute count
-of strikes.
+Three sessions go the other way -- IMG_0687 (-13 points), IMG_0691 (-6),
+IMG_0695 (-1). IMG_0687 also has the second-lowest racket rate in the corpus
+and IMG_0695 the lowest ball rate, so the anomalies may share a cause. It is
+not known.
+
+Read the strike rate as relative, never absolute. A 34% rate does not mean
+two thirds of swings are fake: the test fires only when a racket AND a moving
+ball are both found AND within a torso height of each other, so it is a
+comparison between two candidate sets over the same frames and nothing more.
 
 **Device matters more than model size.** Seconds per frame, and the resulting
 whole-video scan pass (5016 frames at 10 fps over a 502 s session):
@@ -285,6 +290,13 @@ candidate scoring 21 was confirmed by eye to be a real ball. Dead balls score
 **That lift does not survive a change of session, and this is the weakest
 claim on the page.** Re-run over 24 swings each of four other sessions, using
 the shipped rules:
+
+Those figures were all measured on MediaPipe anchors, and are therefore a
+floor rather than a value: re-run over all eleven sessions on RTMPose anchors,
+the racket is found on **70%** of swings and a ball in flight on **67%**,
+against the 62-66% and 53% below. Per session the racket runs 48-82% and the
+ball 35-82%; neither spread is explained by orientation, and player size
+correlates only weakly (r=+0.54, n=5, with one clear counter-example).
 
 | session | shape | racket found | ball at contact | ball at control | lift |
 |---|---|---|---|---|---|
