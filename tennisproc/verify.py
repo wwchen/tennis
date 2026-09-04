@@ -295,6 +295,7 @@ def measure_slot(track, slot, settings):
     wrist_index = (pose_mod.L_WRIST if side == "left" else pose_mod.R_WRIST)
     index = track.nearest_index(contact_ms, slot)
     at_contact = series[index][1]
+    aspect = frame_aspect(track)
     mid_x = at_contact.center_x()
     wrist_x, wrist_y = at_contact.xy(wrist_index)
     shoulder_y = (at_contact.points[pose_mod.L_SHOULDER][1]
@@ -306,7 +307,22 @@ def measure_slot(track, slot, settings):
         wrist_peak_speed=peak_speed,
         torso_height=torso,
         # Signed: negative means contact happened left of the midline.
-        contact_offset=(wrist_x - mid_x) / torso,
+        #
+        # `aspect` is the same correction `wrist_speeds` applies, and for the
+        # same reason: x is normalized to the frame's width and torso to its
+        # height, so a bare ratio measures a horizontal distance in
+        # width-fractions and divides it by a vertical scale in
+        # height-fractions. Without it the number is not in torso heights at
+        # all, it is in torso heights times the frame's aspect ratio -- and
+        # this corpus is 20 landscape sessions against 5 portrait ones, so
+        # that factor differs by 3.16x between them.
+        #
+        # Measured over all 2505 shipped swings: median |contact_offset| is
+        # 0.227 on the 16:9 sessions and 0.618 on the 9:16 ones, a 2.7x split
+        # with no physical meaning. Multiplied by aspect they become 0.403 and
+        # 0.348 -- a ratio of 1.16, which is what one player filmed two ways
+        # should look like.
+        contact_offset=(wrist_x - mid_x) * aspect / torso,
         # Negative means above the shoulder, since y grows downward.
         contact_height=(wrist_y - shoulder_y) / torso,
         peak_ms=peak_ms,

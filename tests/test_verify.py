@@ -468,6 +468,48 @@ class AspectRatio(unittest.TestCase):
         track.frame_size = None
         self.assertEqual(verify.frame_aspect(track), 1.0)
 
+    def test_contact_offset_is_the_same_shot_filmed_two_ways(self):
+        """The same landmarks shot portrait and landscape must measure alike.
+
+        `contact_offset` is a horizontal distance over a vertical scale, so it
+        needs the aspect term for exactly the reason `wrist_speeds` does. It
+        did not have one, and the corpus is 20 landscape sessions against 5
+        portrait: across all 2505 shipped swings, median |contact_offset| read
+        0.227 on the 16:9 sessions against 0.618 on the 9:16 ones -- a 2.7x
+        split that is a property of the camera, not the player. Multiplied by
+        the aspect they become 0.403 and 0.348, a ratio of 1.16.
+        """
+        settings = config.Settings(min_torso=0.045, min_wrist_speed=0.45,
+                                   pose_window_s=0.40)
+        offsets = {}
+        for name, size in (("landscape", (1920, 1080)),
+                           ("portrait", (1080, 1920))):
+            # contact two frames past the middle, so the hitting wrist is
+            # genuinely off the midline there -- at the middle frame `swinging`
+            # puts it exactly on cx and every offset is 0.
+            track = track_from(swinging(n=9, sweep=0.5), contact_ms=1198)
+            track.frame_size = size
+            measured = verify.measure_slot(track, 0, settings)
+            self.assertTrue(measured.ok, measured.reason)
+            offsets[name] = measured.contact_offset
+        # Identical normalized landmarks, so the pixel geometry differs only by
+        # each frame's aspect: divide it back out and the two must agree.
+        self.assertAlmostEqual(offsets["landscape"] / (1920 / 1080.0),
+                               offsets["portrait"] / (1080 / 1920.0), places=6)
+        self.assertGreater(abs(offsets["landscape"]), abs(offsets["portrait"]))
+
+    def test_contact_height_takes_no_aspect_term(self):
+        """Wrist y and shoulder y are both height-normalized already."""
+        settings = config.Settings(min_torso=0.045, min_wrist_speed=0.45,
+                                   pose_window_s=0.40)
+        heights = []
+        for size in ((1920, 1080), (1080, 1920)):
+            track = track_from(swinging(n=9, sweep=0.5), contact_ms=1198)
+            track.frame_size = size
+            heights.append(verify.measure_slot(track, 0, settings)
+                           .contact_height)
+        self.assertAlmostEqual(heights[0], heights[1], places=9)
+
 
 class SpeedCapAndHittingSide(unittest.TestCase):
     """The cap must not decide which arm swung.
