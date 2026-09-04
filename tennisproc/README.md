@@ -50,6 +50,28 @@ curl --create-dirs -o models/pose_landmarker_lite.task \
 .venv/bin/python -m tennisproc validate out/IMG_0305
 ```
 
+**RTMPose is the better backend and needs no display.** It runs through
+ONNX with no `mmcv`/`mmpose` install, and models download themselves on first
+use to `~/.cache/rtmlib` (~90 MB), so there is no model file to fetch by hand:
+
+```bash
+.venv/bin/pip install rtmlib onnxruntime
+# then: --pose-backend=rtmpose
+```
+
+**Racket and ball detection is optional and off by default.** `tennis racket`
+and `sports ball` are two of COCO's eighty classes, so stock weights need no
+training and no labelling:
+
+```bash
+.venv/bin/pip install ultralytics
+# then: --objects-backend=yolo
+```
+
+`ultralytics` is AGPL-3.0 and pulls torch (~2 GB). Fine privately; a licensing
+decision if this is ever redistributed. That is why the stage is opted into
+rather than out of, and why neither package is in `requirements.txt`.
+
 ### Pose needs a logged-in GUI session
 
 MediaPipe on macOS needs a window server. Without one -- over ssh, from a
@@ -70,6 +92,7 @@ scan      pose over the whole video at 10fps -> wrist-speed peaks    (cached)
 detect    each peak takes the timestamp of its nearest audio onset
 pose      one dense landmark track per surviving candidate           (cached)
 verify    accept or reject each candidate; measure the swing
+objects   racket and ball at each contact, from COCO weights     (optional)
 render    cut the clip, extract the frames
 index     write the session document
 ```
@@ -147,6 +170,122 @@ empty court. Padding cannot fix that; the problem is the fraction of the clip
 the box was measured over, not its size. Use `--crop pose` when the frame span
 is inside the pose window, where a tight frame on the body is exactly what a
 reviewer wants.
+
+## Which pose backend
+
+Three exist: `mediapipe`, `rtmpose` and `stub`. **Prefer `rtmpose`.**
+
+MediaPipe puts the hitting wrist in the wrong place often enough to break the
+measurements built on it. Scored against a COCO-pretrained racket box -- a
+correctly located hitting wrist must sit on or beside the racket the hand is
+holding -- over the 41 IMG_0684 swings where a hand-checked racket box sat on
+the tracked player:
+
+| landmark | within 0.25 torso | within 0.5 |
+|---|---|---|
+| MediaPipe wrist the pipeline chose | 54% | 63% |
+| MediaPipe nearest of its two wrists | 63% | 73% |
+| RTMPose nearest of its two wrists | **90%** | **95%** |
+
+On 24% of those swings the MediaPipe hitting wrist sat more than a whole torso
+height from the racket. That is the failure behind crops centred on an ankle,
+and it also explains detections that look like a bad racket box and are
+actually a bad wrist: of racket boxes more than 1.9 torso from the wrist, a
+quarter were on the player and only the wrist was wrong.
+
+**Device matters more than model size.** Seconds per frame, and the resulting
+whole-video scan pass (5016 frames at 10 fps over a 502 s session):
+
+| mode | cpu | accelerated |
+|---|---|---|
+| performance | 0.373 (31.2 min) | 0.060 (5.0 min) |
+| balanced | 0.287 (24.0 min) | 0.049 (4.1 min) |
+| lightweight | 0.087 (7.3 min) | 0.026 (2.2 min) |
+
+MediaPipe scans the same session in 1.9 min. Defaulting RTMPose to CPU made
+the accurate backend 16x slower than the one it replaces; on the accelerator
+it is 2.6x, which is affordable for the accuracy. The backend picks its own
+device from onnxruntime's provider list.
+
+`RTMPoseBackend` uses rtmlib's `Wholebody` even though this package reads only
+the 17 body joints, because `Body` in `performance` mode bundles YOLOX-x
+(351 MB) as its person detector while `Wholebody` uses RTMDet: measured 0.82
+s/frame at 88% against 0.32 s/frame at 90%. The larger-sounding model is the
+cheaper one.
+
+**One trap.** CoreML cannot run the person detector's output node when that
+output is *empty* -- a frame with nobody in it gives a dynamic-shaped tensor
+with zero elements and the provider raises rather than returning nothing. The
+scan pass walks the whole video and meets frames with the player out of shot
+on every session, so this crashed a full run 40 s in. The exception is
+translated into the empty result it stands for, matched narrowly on the error
+text: catching everything there would turn a genuinely broken accelerator into
+a session that silently finds no swings.
+
+## Racket and ball
+
+`--objects-backend=yolo` writes an `objects` block into each swing document:
+racket and ball boxes in **source-display pixels**, not crop-normalized like
+`measurements`. They are found on the full frame before any crop exists, and
+converting at write time would bake in a rectangle `--crop-mode` can change.
+
+Two things are this package's own; the detector is stock and untested here,
+because testing it would be testing ultralytics.
+
+**Which racket box belongs to the player.** A raw detection is not enough. Of
+39 racket boxes sitting more than 1.9 torso heights from the hitting wrist, 0%
+were on the second person in frame, 25.6% were on the player with a misplaced
+wrist, and 74.4% were on nothing at all. A box is accepted when it is near the
+wrist **or** overlaps the tracked player, never both: 53.7% recall for the
+wrist test alone, 38.9% for the overlap test alone, **62.0% for either** --
+because the wrist test survives a bad player box and the overlap test survives
+a bad wrist.
+
+**Whether a ball is in flight.** Detection alone is nearly worthless: the court
+fills with dead balls as a session runs and the detector finds them all,
+reporting a ball at **79.2%** of control moments when nothing was being
+struck. Motion against a short background plate separates them -- a ball at
+15 m/s covers most of a torso height between frames, one lying on the court is
+in every plate frame and cancels:
+
+| motion threshold | at contact | at control (>=5 s from any shot) | lift |
+|---|---|---|---|
+| 10 | 69.4% | 45.5% | +23.9 |
+| **20** | **59.3%** | **31.7%** | **+27.6** |
+| 40 | 34.3% | 13.9% | +20.4 |
+| 50 | 16.7% | 3.0% | +13.7 |
+
+20 was checked at its own boundary rather than in the comfortable middle: a
+candidate scoring 21 was confirmed by eye to be a real ball. Dead balls score
+2-3.
+
+Neither half works alone, which is why both are required. A plate-only test
+cannot tell a ball from a shoe -- a heel is bright, convex, ball-sized at this
+scale, and moving.
+
+**Inference width is not a free knob.** Racket found within reach of the hand:
+48.1% at `--imgsz 640`, 53.7% at 1280, 53.7% at 1920. At 640 a 1080x1920 frame
+is squashed threefold and a motion-blurred racket stops looking like one; on
+the first frame this was checked against, 640 found no racket at all. 1920
+buys nothing over 1280 and costs twice the time.
+
+The confidence floor is deliberately low at 0.10. Boxes at 0.12 and 0.22 were
+both confirmed correct by eye, and raising the floor to 0.25 costs about ten
+points of recall to remove detections that are right. Confidence barely
+separates good boxes from bad here: median 0.74 near the hand against 0.67 on
+the false ones.
+
+`scripts/detect_objects.py` exports the same detections for a whole video as
+gzipped JSONL, one line per sampled frame, for drawing over playback. Sampling
+rate is the decision there: a racket interpolates smoothly at 10 fps, a ball
+does not -- below native rate it teleports, and a straight line between two
+samples passes through positions it never occupied.
+
+**Every number in these two sections comes from one session (`IMG_0684`,
+indoor, portrait, a net drill) and from a few dozen hand checks. None of it is
+yet known to generalise to the landscape or outdoor-doubles sessions, which
+are 20 of the corpus's 25. Treat them as the order of magnitude, not the
+value.**
 
 ## Tuning
 
