@@ -1,3 +1,14 @@
+/**
+ * Shown where a session name goes before one has loaded, and passed down as
+ * the session itself so the view can render its own chrome.
+ *
+ * Named rather than repeated as a literal because consumers must be able to
+ * ASK whether they have a real session: the keyframe view fetches per-session
+ * files, and firing those against a dash produced two doomed requests on every
+ * page load.
+ */
+export const NO_SESSION = '\u2014';
+
 /** The three swing phases the classifier tags. A frame between them is `null`. */
 export type Phase = 'setup' | 'contact' | 'finish';
 

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, MouseEvent } from 'react';
 import type { Clip } from '@/domain/types';
-import { shortId } from '@/domain/types';
+import { NO_SESSION, shortId } from '@/domain/types';
 import { Button, ICONS, Select, valueOf } from '@/lds';
 import type { EtlSource } from '@/domain/etl-types';
 import { SwingMetadata } from './SwingMetadata';
@@ -41,6 +41,28 @@ import {
   type ObjectsDoc,
   type VideoBox,
 } from './object-overlay';
+import {
+  CANDIDATE_COLOUR,
+  LABEL_COLOUR,
+  LABEL_WRITE_MS,
+  OFFERED_COLOUR,
+  ballCandidatesUrl,
+  ballLabelsDoc,
+  ballLabelsUrl,
+  centreOf,
+  firstFrameOf,
+  labelKey,
+  lastPosition,
+  nearestFrame,
+  parseBallLabels,
+  pickCandidate,
+  pointRect,
+  sourcePoint,
+  windowAt,
+  windowProgress as ballWindowProgress,
+  type BallCandidatesDoc,
+  type BallLabels,
+} from './ball-labels';
 
 /**
  * Review a session by seeking the SOURCE video, not by playing cut clips.
@@ -171,10 +193,43 @@ export function KeyframeReview({
   // the hidden set and the selection above use. Clearing it inside the fetch
   // effect instead would leave the old session's boxes on screen for the frame
   // between the switch and the effect running — over the new session's video.
+  /**
+   * The ball candidates to confirm, and the human's answers so far.
+   *
+   * `labels` is null until the file on disk has been READ, and the write effect
+   * below refuses to send anything while it is. That gate is the only thing
+   * standing between a session switch and an empty document overwriting somebody
+   * else's ground truth: the reset below drops the previous session's labels
+   * during render, so between the switch and the fetch landing there is a moment
+   * where an ungated writer would PUT `{}` over a full file.
+   */
+  const [candidates, setCandidates] = useState<BallCandidatesDoc | null>(null);
+  const [labels, setLabels] = useState<BallLabels | null>(null);
+  /** Set when the file exists but this build cannot read it — see the 409 route. */
+  const [labelsUnreadable, setLabelsUnreadable] = useState(false);
+  const [labelling, setLabelling] = useState(false);
+  /** Index into `candidates.frames`, which is the transport while labelling. */
+  const [frameIdx, setFrameIdx] = useState(0);
+  /** Which of this frame's candidate boxes `a` would accept. */
+  const [candIdx, setCandIdx] = useState(0);
+  // The payload last written to disk, per session, so a bare page load does not
+  // PUT back what it has only just read. Same rule and same reason as the
+  // `lastSentRef` cache in the store's `user-edit.json` write-back.
+  const sentLabels = useRef(new Map<string, string>());
+
   const [seenObjectSession, setSeenObjectSession] = useState(session);
   if (seenObjectSession !== session) {
     setSeenObjectSession(session);
     setObjects(null);
+    // Dropped for the same reason the boxes are, and with more at stake: a
+    // label is keyed by timestamp alone, so the previous session's labels
+    // carried into this one would be written to THIS session's file under keys
+    // that name moments in a different video.
+    setCandidates(null);
+    setLabels(null);
+    setLabelsUnreadable(false);
+    setLabelling(false);
+    setFrameIdx(0);
   }
   /**
    * Swings the reviewer has hidden, by id.
@@ -355,6 +410,10 @@ export function KeyframeReview({
       setCountdown(0);
       setHeld(false);
       setUnbounded(false);
+      // Selecting a swing plays it, and labelling is a paused, frame-by-frame
+      // mode — so clicking the rail or the timeline leaves the mode rather than
+      // leaving a labelling cursor pointing at a frame that has scrolled past.
+      setLabelling(false);
       const useRate = playRate ?? rate;
       setRate(useRate);
       onSelect?.(target.id);
@@ -432,12 +491,194 @@ export function KeyframeReview({
     return () => clearTimeout(timer);
   }, [atEnd, endMode, held, countdown, deadline, idx, windows.length, goto]);
 
+  /**
+   * Put the labelling cursor on a frame: seek to it, and offer a candidate.
+   *
+   * The seek is a DOM mutation from an event handler, like `goto`'s, rather than
+   * an effect watching `frameIdx` — the frame on screen and the frame being
+   * labelled must be the same one, and an effect makes that true one render
+   * late, which at a keypress per frame is a label filed against the previous
+   * picture.
+   *
+   * `labelsNow` is passed rather than read from state because the caller has
+   * just added a label and React has not re-rendered yet: anchoring the next
+   * offer on stale labels would ignore the position the human accepted a
+   * keystroke ago, which is the one thing that makes the offer worth anything.
+   */
+  const seekFrame = useCallback(
+    (frames: BallCandidatesDoc['frames'], labelsNow: BallLabels, next: number) => {
+      if (frames.length === 0) return;
+      const clamped = Math.max(0, Math.min(frames.length - 1, next));
+      const boxes = frames[clamped].ball ?? [];
+      setFrameIdx(clamped);
+      setCandIdx(Math.max(0, pickCandidate(boxes, lastPosition(frames, clamped, labelsNow))));
+      const el = video.current;
+      if (el === null) return;
+      el.pause();
+      el.currentTime = frames[clamped].ms / 1000;
+    },
+    [],
+  );
+
+  /**
+   * Record a verdict on the current frame and move to the next.
+   *
+   * The advance is the point: every one of `a`, `n` and a click is one keystroke
+   * or one click for one frame, and a separate "next" press would double the
+   * cost of a pass measured in hundreds of frames.
+   *
+   * `null` is written, not deleted — "a human looked and there is no ball here"
+   * is a label, and the absence of a key is the different claim that nobody has
+   * looked. Telling those apart is most of what these labels are for.
+   */
+  const applyLabel = useCallback(
+    (value: [number, number] | null) => {
+      const frames = candidates?.frames;
+      if (frames === undefined || labels === null) return;
+      const frame = frames[frameIdx];
+      if (frame === undefined) return;
+      const next = { ...labels, [labelKey(frame.ms)]: value };
+      setLabels(next);
+      seekFrame(frames, next, frameIdx + 1);
+    },
+    [candidates, labels, frameIdx, seekFrame],
+  );
+
+  /** Take back a verdict, leaving the frame unlabelled and the cursor on it. */
+  const clearLabel = useCallback(() => {
+    const frames = candidates?.frames;
+    if (frames === undefined || labels === null) return;
+    const frame = frames[frameIdx];
+    if (frame === undefined) return;
+    // Deleted rather than set to null: this is "nobody has looked at this
+    // frame", which is exactly what an absent key means and what a null does
+    // not. Staying on the frame is deliberate — an unlabel is a correction, and
+    // advancing would carry the reviewer away from the thing they came back to.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { [labelKey(frame.ms)]: _removed, ...rest } = labels;
+    setLabels(rest);
+  }, [candidates, labels, frameIdx]);
+
+  /** Step the labelling cursor by whole frames. */
+  const stepFrame = useCallback(
+    (delta: number) => {
+      const frames = candidates?.frames;
+      if (frames === undefined || labels === null) return;
+      seekFrame(frames, labels, frameIdx + delta);
+    },
+    [candidates, labels, frameIdx, seekFrame],
+  );
+
+  /**
+   * Jump to the first frame of the previous or next labelling window.
+   *
+   * The windows are minutes apart in the source — contact ±500ms of twenty
+   * sampled swings across eight minutes — so stepping between them by frame is
+   * not a thing anyone can do. A window is also the unit the progress readout
+   * counts, which makes it the unit a reviewer finishes.
+   */
+  const gotoLabelWindow = useCallback(
+    (delta: number) => {
+      const frames = candidates?.frames;
+      const wins = candidates?.header.windows;
+      if (frames === undefined || wins === undefined || labels === null) return;
+      const frame = frames[frameIdx];
+      const here = frame === undefined ? -1 : windowAt(wins, frame.ms);
+      const target = wins[Math.max(0, Math.min(wins.length - 1, here + delta))];
+      if (target === undefined) return;
+      const first = firstFrameOf(frames, target);
+      if (first >= 0) seekFrame(frames, labels, first);
+    },
+    [candidates, labels, frameIdx, seekFrame],
+  );
+
+  /**
+   * Take the offered candidate's CENTRE as the label.
+   *
+   * The centre and not the box: a label is a position, and the box is one
+   * detector's opinion of an extent. Anything measuring a tracker later needs a
+   * point to compare against, and deriving one from a stored box would bake
+   * this detector's idea of the ball's size into ground truth.
+   */
+  const acceptCandidate = useCallback(() => {
+    const box = candidates?.frames[frameIdx]?.ball?.[candIdx];
+    if (box === undefined) return;
+    applyLabel(centreOf(box));
+  }, [candidates, frameIdx, candIdx, applyLabel]);
+
+  /** Offer the next candidate box, for a frame where the nearest was wrong. */
+  const cycleCandidate = useCallback(() => {
+    const boxes = candidates?.frames[frameIdx]?.ball ?? [];
+    if (boxes.length === 0) return;
+    setCandIdx((i) => (i + 1) % boxes.length);
+  }, [candidates, frameIdx]);
+
+  /**
+   * Enter or leave labelling, landing on the frame nearest the playhead.
+   *
+   * Nearest, so pressing `b` while watching a swing starts labelling the window
+   * the reviewer was already looking at rather than at the top of the file.
+   * `currentTime` is read off the element instead of from `cursorMs` so this
+   * callback does not have to be rebuilt on every animation frame.
+   */
+  const toggleLabelling = useCallback(() => {
+    if (labelling) {
+      setLabelling(false);
+      return;
+    }
+    const frames = candidates?.frames;
+    // `labels === null` is "the file on disk has not been read yet", and
+    // labelling from that state would write a document built from nothing.
+    if (frames === undefined || frames.length === 0 || labels === null) return;
+    const at = nearestFrame(frames, (video.current?.currentTime ?? 0) * 1000);
+    seekFrame(frames, labels, at < 0 ? 0 : at);
+    setLabelling(true);
+  }, [labelling, candidates, labels, seekFrame]);
+
   // Keyboard, as the design specifies: arrows step, space pauses, r restarts,
   // s slows. Ignored while a field has focus, so typing a note is not transport.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      // Labelling REBINDS the arrows from swings to frames, and claims the four
+      // verdict keys, before the transport below sees them. Handled as a mode
+      // rather than as extra keys because labelling is frame-by-frame work: a
+      // reviewer confirming sixty frames of a window should not be reaching for
+      // a second pair of keys to step through them.
+      if (labelling) {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const delta = e.key === 'ArrowRight' ? 1 : -1;
+          if (e.shiftKey) gotoLabelWindow(delta);
+          else stepFrame(delta);
+          return;
+        }
+        if (e.key === 'a' || e.key === 'A') {
+          acceptCandidate();
+          return;
+        }
+        if (e.key === 'n' || e.key === 'N') {
+          applyLabel(null);
+          return;
+        }
+        if (e.key === 'c' || e.key === 'C') {
+          cycleCandidate();
+          return;
+        }
+        if (e.key === 'Backspace') {
+          // Prevented because in a browser Backspace outside a field is still
+          // "go back" on some setups, and losing a labelling pass to a
+          // navigation is the one mistake this key must not be able to make.
+          e.preventDefault();
+          clearLabel();
+          return;
+        }
+      }
+      if (e.key === 'b' || e.key === 'B') {
+        toggleLabelling();
+        return;
+      }
       if (e.key === 'ArrowRight') {
         e.preventDefault();
         goto(idx + 1);
@@ -467,11 +708,30 @@ export function KeyframeReview({
         setShowKeys((v) => !v);
       } else if (e.key === 'Escape') {
         setShowKeys(false);
+        // The way out of the mode for a reviewer who does not remember `b`.
+        setLabelling(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goto, idx, toggle, replay, current, toggleHidden, toggleStar, nudgeSpeed]);
+  }, [
+    goto,
+    idx,
+    toggle,
+    replay,
+    current,
+    toggleHidden,
+    toggleStar,
+    nudgeSpeed,
+    labelling,
+    toggleLabelling,
+    stepFrame,
+    gotoLabelWindow,
+    acceptCandidate,
+    applyLabel,
+    cycleCandidate,
+    clearLabel,
+  ]);
 
   // Keep the selected row in view without yanking the rail on every frame.
   useEffect(() => {
@@ -503,6 +763,81 @@ export function KeyframeReview({
       .catch(() => undefined);
     return () => stop.abort();
   }, [session]);
+
+  // The ball candidates, on the same terms as the object export above: refetched
+  // per session, abandoned on the way out, and every failure landing on `null`,
+  // which is the same state as "the candidate pass was never run over this
+  // session". Most sessions have none — the pass covers a hand-picked sample —
+  // so a session with no labelling controls is the ordinary case, not a fault.
+  useEffect(() => {
+    // Not before a session has loaded. `session` carries NO_SESSION until then,
+    // and fetching against it produced two aborted requests on every page load.
+    if (session === NO_SESSION) return undefined;
+    const stop = new AbortController();
+    fetch(ballCandidatesUrl(session), { signal: stop.signal })
+      .then((r) => (r.ok ? (r.json() as Promise<BallCandidatesDoc>) : null))
+      .then(setCandidates)
+      .catch(() => undefined);
+    return () => stop.abort();
+  }, [session]);
+
+  // The labels already on disk. A 404 is "nobody has labelled this session yet"
+  // and starts an empty pass; a 409 is a file this build cannot parse, which is
+  // somebody's ground truth in a shape it must not overwrite, so labelling stays
+  // off and says why. Every other failure leaves `labels` null, which the write
+  // effect below reads as "not loaded" and refuses to send from.
+  useEffect(() => {
+    if (session === NO_SESSION) return undefined;
+    const stop = new AbortController();
+    fetch(ballLabelsUrl(session), { signal: stop.signal })
+      .then(async (r) => {
+        if (r.status === 404) return {};
+        if (!r.ok) return null;
+        return parseBallLabels(await (r.json() as Promise<unknown>))?.labels ?? null;
+      })
+      .then((loaded) => {
+        if (loaded === null) {
+          setLabelsUnreadable(true);
+          return;
+        }
+        // Seeded here, not on the first write: without it the very next run of
+        // the write effect would PUT the document it has just read straight back
+        // to disk, from a page load with no human action behind it.
+        sentLabels.current.set(session, JSON.stringify(ballLabelsDoc(session, loaded)));
+        setLabels(loaded);
+      })
+      .catch(() => undefined);
+    return () => stop.abort();
+  }, [session]);
+
+  /**
+   * Write the labels back, shortly after the last one.
+   *
+   * Debounced rather than written per keypress because a labelling pass is a
+   * keypress per frame, and the file is the whole session — but the debounce is
+   * short (`LABEL_WRITE_MS`) because the quantity it bounds is human work at
+   * risk, not requests per second. Twenty minutes of labelling lost to a reload
+   * would be unforgivable; half a second of it is a frame nobody minds redoing.
+   */
+  useEffect(() => {
+    if (labels === null) return;
+    const payload = JSON.stringify(ballLabelsDoc(session, labels));
+    if (sentLabels.current.get(session) === payload) return;
+    const timer = setTimeout(() => {
+      void fetch(ballLabelsUrl(session), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
+        .then((res) => {
+          // `fetch` resolves for 4xx/5xx too, and caching a rejected payload as
+          // sent would retire those labels permanently.
+          if (res.ok) sentLabels.current.set(session, payload);
+        })
+        .catch(() => undefined);
+    }, LABEL_WRITE_MS);
+    return () => clearTimeout(timer);
+  }, [labels, session]);
 
   /**
    * Re-read the element's box and the picture's size inside it.
@@ -635,6 +970,40 @@ export function KeyframeReview({
           confFloor,
         );
 
+  // The labelling cursor: which frame, what the detector offered on it, and
+  // what the human has said about it so far. All null when the mode is off or
+  // the session has no candidate file, which is most of them.
+  const labelFrame = labelling ? (candidates?.frames[frameIdx] ?? null) : null;
+  const labelBoxes = labelFrame?.ball ?? [];
+  // `undefined` is "nobody has looked at this frame" and `null` is "a human
+  // looked and there was no ball". The readout below keeps them apart, because
+  // they are the two different things this whole file exists to record.
+  const labelAt = labelFrame === null ? undefined : labels?.[labelKey(labelFrame.ms)];
+  const labelWins = candidates?.header.windows ?? [];
+  const labelWinIdx = labelFrame === null ? -1 : windowAt(labelWins, labelFrame.ms);
+  const labelWin = labelWinIdx < 0 ? null : labelWins[labelWinIdx];
+  const labelDone =
+    labelWin === null || candidates === null
+      ? null
+      : ballWindowProgress(candidates.frames, labelWin, labels ?? {});
+
+  /**
+   * Correct the detector: put the ball where the human says it is.
+   *
+   * The click is measured against the ELEMENT and then mapped through
+   * `content`, which is where the picture actually sits inside its letterbox —
+   * the same rectangle the boxes are drawn against, so a click that lands on a
+   * candidate box records that box's position. A click on the letterbox bars
+   * records nothing rather than a ball clamped to the edge of the frame.
+   */
+  const placeLabel = (e: MouseEvent<HTMLVideoElement>) => {
+    if (content === null || candidates === null) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const point = sourcePoint(e.clientX - r.left, e.clientY - r.top, content, candidates.header);
+    if (point === null) return;
+    applyLabel(point);
+  };
+
   return (
     <div style={S.root}>
       {showKeys && (
@@ -644,11 +1013,19 @@ export function KeyframeReview({
               <span style={S.endTitle}>Keyboard</span>
               <span style={S.label}>esc to close</span>
             </div>
-            {SHORTCUTS.map((k) => (
-              <div key={k.what} style={S.keysRow}>
-                <kbd style={S.kbd}>{k.label}</kbd>
-                <span style={{ fontSize: 13 }}>{k.what}</span>
-              </div>
+            {SHORTCUTS.map((k, i) => (
+              <Fragment key={k.what}>
+                {/* A heading before the first mode entry, because these REPLACE
+                    the arrows above rather than adding to them — a flat list
+                    would show `← →` twice with two meanings and no rule. */}
+                {k.mode === 'ball' && SHORTCUTS[i - 1]?.mode !== 'ball' && (
+                  <div style={S.keysGroup}>While labelling the ball</div>
+                )}
+                <div style={S.keysRow}>
+                  <kbd style={S.kbd}>{k.label}</kbd>
+                  <span style={{ fontSize: 13 }}>{k.what}</span>
+                </div>
+              </Fragment>
             ))}
           </div>
         </div>
@@ -666,8 +1043,13 @@ export function KeyframeReview({
                 // away the buffer that makes a 9ms seek possible.
                 src={proxyUrl}
                 playsInline
-                style={S.video}
-                onClick={toggle}
+                // A crosshair while labelling, because the click means something
+                // else there: it places the ball rather than toggling playback.
+                style={labelling ? { ...S.video, cursor: 'crosshair' } : S.video}
+                onClick={(e) => {
+                  if (labelling) placeLabel(e);
+                  else toggle();
+                }}
                 onLoadedMetadata={measure}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
@@ -706,6 +1088,76 @@ export function KeyframeReview({
                 </div>
               )}
 
+              {/*
+                What there is to confirm on THIS frame, and what has been
+                confirmed. Drawn over the same picture rectangle as the object
+                overlay above and with `pointerEvents: none` for the same
+                reason — a click anywhere on the stage has to reach the video,
+                which is what turns "the box is wrong" into one click on the
+                right spot rather than a hunt for a gap between boxes.
+              */}
+              {labelling && content !== null && candidates !== null && (
+                <div style={S.overlay}>
+                  {labelBoxes.map((box, i) => {
+                    const r = boxRect(box, content, candidates.header);
+                    const offered = i === candIdx;
+                    return (
+                      // Index-keyed, like the overlay above: a detection has no
+                      // identity, and `candIdx` addresses this list by position.
+                      <div
+                        key={`cand-${i}`}
+                        style={{
+                          ...S.box,
+                          left: r.left,
+                          top: r.top,
+                          width: r.width,
+                          height: r.height,
+                          borderColor: offered ? OFFERED_COLOUR : CANDIDATE_COLOUR,
+                          borderWidth: offered ? 2 : 1,
+                        }}
+                      >
+                        {offered && (
+                          <span style={{ ...S.boxLabel, color: OFFERED_COLOUR }}>
+                            a · {box[4].toFixed(2)}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {labelAt !== undefined && labelAt !== null && (
+                    // A crosshair, not a box: the label IS a point, and drawing
+                    // it as a rectangle would suggest a size no human recorded.
+                    <div
+                      style={{
+                        ...S.crosshair,
+                        ...pointRect(labelAt, content, candidates.header),
+                      }}
+                    />
+                  )}
+                </div>
+              )}
+
+              {labelling && (
+                <div style={S.labelBar}>
+                  <span style={S.badge}>
+                    {labelWinIdx < 0 ? 'window —' : `window ${labelWinIdx + 1}/${labelWins.length}`}
+                  </span>
+                  {labelDone !== null && (
+                    <span style={S.badgeDim}>
+                      {labelDone.labelled}/{labelDone.total} labelled ·{' '}
+                      {labelDone.total - labelDone.labelled} left
+                    </span>
+                  )}
+                  <span style={S.badgeDim}>
+                    {labelAt === undefined
+                      ? 'unlabelled'
+                      : labelAt === null
+                        ? 'no ball'
+                        : `${labelAt[0].toFixed(0)}, ${labelAt[1].toFixed(0)}`}
+                  </span>
+                </div>
+              )}
+
               <div style={S.badgeRow}>
                 <span style={S.badge}>
                   {current !== undefined && starred.has(current.id) ? '★ ' : ''}
@@ -732,7 +1184,11 @@ export function KeyframeReview({
                 </span>
               </div>
 
-              {!playing && !atEnd && (
+              {/* Not while labelling: the video is paused for every frame of a
+                  labelling pass by definition, so the pill would be a permanent
+                  overlay saying something the reviewer already knows — and it
+                  swallows the click that places the ball. */}
+              {!playing && !atEnd && !labelling && (
                 <div style={S.pausedWrap} onClick={toggle}>
                   <div style={S.pausedPill}>Paused</div>
                 </div>
@@ -926,6 +1382,47 @@ export function KeyframeReview({
                   </span>
                 ))}
               </div>
+            )}
+
+            {/*
+              Only for a session the candidate pass has been run over, on the
+              same terms as the Boxes controls above: the button is the only
+              thing that says the mode exists, and offering it where there is
+              nothing to confirm would advertise a blank frame-stepper.
+            */}
+            {candidates !== null && (
+              <div style={S.padGroup}>
+                <span
+                  onClick={toggleLabelling}
+                  title={`Confirm or correct the ball, frame by frame (b) — ${candidates.header.windows.length} windows at native rate`}
+                  style={S.click}
+                >
+                  <Button variant={labelling ? 'primary' : 'tertiary'} size="sm">
+                    {labelling ? 'Labelling ball' : 'Label ball (b)'}
+                  </Button>
+                </span>
+                {labelling && labelDone !== null && (
+                  <span style={S.mono}>
+                    {labelDone.labelled}/{labelDone.total} · {labelDone.total - labelDone.labelled}{' '}
+                    left
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/*
+              The one failure worth saying out loud. Everything else about this
+              feature degrades to "no controls"; this one means a `ball-labels.json`
+              exists that this build cannot parse, and the app is deliberately
+              refusing to start a pass that would replace it.
+            */}
+            {labelsUnreadable && (
+              <span
+                style={S.label}
+                title="ball-labels.json exists but is not a document this build can read, so labelling is off rather than overwriting it"
+              >
+                ball labels unreadable
+              </span>
             )}
 
             <div style={S.padGroup}>
@@ -1252,6 +1749,27 @@ const S: Record<string, CSSProperties> = {
   // simply the element's own coordinate space.
   overlay: { position: 'absolute', inset: 0, pointerEvents: 'none' },
   box: { position: 'absolute', border: '2px solid', borderRadius: 2 },
+  // A 9px ring centred on the point by the negative margins. Small on purpose:
+  // a ball is about 20px across on this footage, so a marker much bigger than
+  // this covers the thing the reviewer is checking it against.
+  crosshair: {
+    position: 'absolute',
+    width: 9,
+    height: 9,
+    marginLeft: -5,
+    marginTop: -5,
+    borderRadius: '50%',
+    border: `2px solid ${LABEL_COLOUR}`,
+  },
+  labelBar: {
+    position: 'absolute',
+    left: 16,
+    bottom: 14,
+    display: 'flex',
+    gap: 8,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
   boxLabel: {
     position: 'absolute',
     left: 0,
@@ -1428,6 +1946,10 @@ const S: Record<string, CSSProperties> = {
   keysCard: {
     width: 320,
     maxWidth: '90%',
+    // The list is now two groups and outgrows a short window; capped and
+    // scrolled rather than clipped by the card's own rounding.
+    maxHeight: '82vh',
+    overflowY: 'auto',
     padding: 20,
     borderRadius: 10,
     background: 'var(--gray-50)',
@@ -1443,6 +1965,16 @@ const S: Record<string, CSSProperties> = {
     marginBottom: 4,
   },
   keysRow: { display: 'flex', alignItems: 'center', gap: 12 },
+  keysGroup: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTop: '1px solid var(--gray-200)',
+    fontFamily: 'var(--th-mono)',
+    fontSize: 10,
+    letterSpacing: '0.09em',
+    textTransform: 'uppercase',
+    color: 'var(--gray-500)',
+  },
   kbd: {
     minWidth: 42,
     textAlign: 'center',

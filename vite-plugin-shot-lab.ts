@@ -23,6 +23,8 @@ import type { Plugin, ViteDevServer } from 'vite';
 import { clipExportFileName } from './src/components/clip-export';
 import type { ObjectsDoc } from './src/components/object-overlay';
 import { parseObjectsJsonl } from './src/components/object-overlay';
+import type { BallCandidatesDoc, BallLabelsDoc } from './src/components/ball-labels';
+import { parseBallCandidates, parseBallLabels } from './src/components/ball-labels';
 
 /**
  * Serves the `tennisproc` output tree to the review app in dev.
@@ -33,8 +35,30 @@ import { parseObjectsJsonl } from './src/components/object-overlay';
 
 const OUT_ROOT = () => resolve(process.env.SHOT_LAB_OUT ?? 'out');
 
-/** The one filename the app is allowed to write. */
+/** The one filename the app is allowed to write inside a SWING directory. */
 const WRITABLE = 'user-edit.json';
+
+/**
+ * The one filename the app is allowed to write inside a SESSION directory.
+ *
+ * Session-level, and deliberately not a swing-level file: it is keyed by source
+ * timestamp precisely so that re-running detection — which renumbers every
+ * `swings/swing_NNN` — cannot orphan it. Putting it under a swing would undo
+ * that in the filesystem while the keys still claimed otherwise.
+ */
+const BALL_LABELS = 'ball-labels.json';
+
+/**
+ * The windowed, native-rate ball candidates for a session.
+ *
+ * Fixed here for `OBJECTS`' reason: the name is joined onto a path and only
+ * `scripts/detect_ball_candidates.py` has ever written it. A DIFFERENT file from
+ * `OBJECTS` above, which is a uniform 10fps sample of the whole video for the
+ * playback overlay — this one is 60fps and covers contact ±500ms of a sample of
+ * swings, because confirming a detection is only possible at the rate the ball
+ * was actually filmed at.
+ */
+const BALL_CANDIDATES = join('work', 'ball-candidates.jsonl.gz');
 
 /**
  * The only shape a write target may have: `<session>/swings/swing_NNN`.
@@ -489,21 +513,99 @@ function readSession(root: string, requested?: string) {
  * comes from this file, never from the request.
  */
 export function readObjects(root: string, session: string): ObjectsDoc | null {
+  const text = readSessionGzip(root, session, OBJECTS);
+  return text === null ? null : parseObjectsJsonl(text);
+}
+
+/**
+ * A gzipped export inside a session directory, decompressed, or null.
+ *
+ * `session` is checked against `listSessions` rather than joined onto a path,
+ * the same guard `?session=` uses, so no traversal or absolute path is
+ * expressible through it. `rel` comes from this file, never from the request.
+ */
+function readSessionGzip(root: string, session: string, rel: string): string | null {
   if (!listSessions(root).includes(session)) return null;
-  const full = safeJoin(root, join(session, OBJECTS));
+  const full = safeJoin(root, join(session, rel));
   if (full === null) return null;
 
-  let text: string;
   try {
     // Bounded because `gunzipSync` otherwise allocates whatever the stream
     // claims. A native-rate export of a nine-minute session is about 30k lines
     // and well under 20MB, so this is an order of magnitude of headroom rather
     // than a limit any real file approaches.
-    text = gunzipSync(readFileSync(full), { maxOutputLength: 256 * 1024 * 1024 }).toString('utf-8');
+    return gunzipSync(readFileSync(full), { maxOutputLength: 256 * 1024 * 1024 }).toString('utf-8');
   } catch {
     return null;
   }
-  return parseObjectsJsonl(text);
+}
+
+/**
+ * The ball candidates for a session, decompressed and parsed.
+ *
+ * Null covers every "there is nothing to label here" case alike, for
+ * `readObjects`' reason: the candidate pass is run over a hand-picked sample of
+ * sessions, so most have none, and that is not an error a reviewer can act on.
+ *
+ * A HALF-WRITTEN file is not one of those cases and must not become one. The
+ * export takes minutes of GPU time and is written as it goes, so a truncated
+ * final line is its ordinary state while it is being produced — `parseBallCandidates`
+ * keeps every complete line before it, and labelling those is real work.
+ */
+export function readBallCandidates(root: string, session: string): BallCandidatesDoc | null {
+  const text = readSessionGzip(root, session, BALL_CANDIDATES);
+  return text === null ? null : parseBallCandidates(text);
+}
+
+/**
+ * Where a session's `ball-labels.json` lives, or the status to answer with.
+ *
+ * Separate from the routes for `resolveWriteTarget`'s reason: these are the
+ * checks that keep the route inside a real session directory, and reaching them
+ * only through a live dev server means they are tested only as far as somebody
+ * remembers to stand one up.
+ *
+ * The session name is checked against `listSessions` and never joined onto a
+ * path from the request, so `../` and an absolute path are both inexpressible.
+ * The final component is then checked for a symlink, because a write follows one
+ * — a planted `ball-labels.json -> metadata.json` would otherwise let this route
+ * overwrite ETL output, exactly as it would through `/api/swings`. A target that
+ * does not exist yet is the normal first write.
+ */
+export function resolveBallLabels(
+  root: string,
+  session: string,
+): { target: string } | { status: 403 | 404 } {
+  if (!listSessions(root).includes(session)) return { status: 404 };
+  const dir = safeJoin(root, session);
+  if (dir === null || !statSync(dir).isDirectory()) return { status: 404 };
+
+  const target = join(dir, BALL_LABELS);
+  if (lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink() === true) {
+    return { status: 403 };
+  }
+  return { target };
+}
+
+/**
+ * The labels already on disk for a session, or the status to answer with.
+ *
+ * "No file yet" (404) and "a file this version cannot read" (409) are kept
+ * apart, and that distinction is the whole reason this returns a status rather
+ * than a nullable document. The first is the ordinary state of every session
+ * nobody has labelled, and the app must open on an empty pass there. The second
+ * is somebody's ground truth in a shape this build does not understand — a
+ * future schema, a hand edit, a half-written file — and answering 404 to it
+ * would invite the client to start from empty and PUT the whole thing away.
+ */
+export type BallLabelsRead = { doc: BallLabelsDoc } | { status: 403 | 404 | 409 };
+
+export function readBallLabels(root: string, session: string): BallLabelsRead {
+  const resolved = resolveBallLabels(root, session);
+  if (!('target' in resolved)) return resolved;
+  if (!existsSync(resolved.target)) return { status: 404 };
+  const doc = parseBallLabels(readJson(resolved.target));
+  return doc === null ? { status: 409 } : { doc };
 }
 
 /**
@@ -758,6 +860,24 @@ export function parseRange(
   return { start, end };
 }
 
+/**
+ * The session name a `/api/<route>/<session>` URL addresses, or null.
+ *
+ * Null for a path that cannot be decoded — a lone `%` is not a valid escape and
+ * throws URIError — which is a 400 rather than a lookup of the raw bytes.
+ *
+ * The name is never joined onto a path by any caller: every one of them checks
+ * it against `listSessions` first, which is what makes traversal and absolute
+ * paths inexpressible through these routes.
+ */
+function sessionFromUrl(url: string | undefined): string | null {
+  try {
+    return decodeURIComponent((url ?? '').split('?')[0]).replace(/^\/+/, '');
+  } catch {
+    return null;
+  }
+}
+
 export default function shotLab(): Plugin {
   return {
     name: 'shot-lab-etl',
@@ -792,11 +912,8 @@ export default function shotLab(): Plugin {
       // says nothing, which is why this returns no body to distinguish "never
       // run" from "half-written" — neither changes what the app can do.
       server.middlewares.use('/api/objects', (req, res) => {
-        let session: string;
-        try {
-          session = decodeURIComponent((req.url ?? '').split('?')[0]).replace(/^\/+/, '');
-        } catch {
-          // A lone `%` is not a valid escape and throws URIError.
+        const session = sessionFromUrl(req.url);
+        if (session === null) {
           res.statusCode = 400;
           res.end();
           return;
@@ -818,6 +935,135 @@ export default function shotLab(): Plugin {
         }
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify(doc));
+      });
+
+      // `GET /api/ball-candidates/<session>` — the windowed, native-rate ball
+      // detections a human confirms or corrects in the labelling mode.
+      //
+      // 404 is the ORDINARY answer, as it is for `/api/objects`: the candidate
+      // pass runs over a hand-picked sample of sessions. The client shows no
+      // labelling controls at all rather than saying so.
+      server.middlewares.use('/api/ball-candidates', (req, res) => {
+        const session = sessionFromUrl(req.url);
+        if (session === null) {
+          res.statusCode = 400;
+          res.end();
+          return;
+        }
+
+        let doc;
+        try {
+          doc = readBallCandidates(OUT_ROOT(), session);
+        } catch {
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end('{"error":"could not read the ball candidates"}');
+          return;
+        }
+        if (doc === null) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(doc));
+      });
+
+      // `GET|PUT /api/ball-labels/<session>` — the human's ground-truth ball
+      // positions for a whole session.
+      //
+      // One route for both, because they address the same single file, and it is
+      // one file per SESSION rather than per swing: the labels are keyed by
+      // source timestamp so that re-detection, which renumbers every swing
+      // directory, cannot orphan them.
+      //
+      // The PUT replaces the file wholesale. That is safe only because the
+      // client refuses to send anything until it has read what is already there
+      // — and because a document this build cannot parse answers 409 above
+      // rather than 404, so "start from empty" is never the client's reading of
+      // somebody else's labels.
+      server.middlewares.use('/api/ball-labels', (req, res) => {
+        const session = sessionFromUrl(req.url);
+        if (session === null) {
+          res.statusCode = 400;
+          res.end();
+          return;
+        }
+
+        if (req.method === 'GET') {
+          let read;
+          try {
+            read = readBallLabels(OUT_ROOT(), session);
+          } catch {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end('{"error":"could not read the ball labels"}');
+            return;
+          }
+          if (!('doc' in read)) {
+            res.statusCode = read.status;
+            res.end();
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(read.doc));
+          return;
+        }
+
+        if (req.method !== 'PUT') {
+          res.statusCode = 405;
+          res.end();
+          return;
+        }
+
+        const resolved = resolveBallLabels(OUT_ROOT(), session);
+        if (!('target' in resolved)) {
+          res.statusCode = resolved.status;
+          res.end(
+            resolved.status === 403 ? '{"error":"refusing to write through a symlink"}' : undefined,
+          );
+          return;
+        }
+        const { target } = resolved;
+
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          let doc: BallLabelsDoc | null = null;
+          try {
+            doc = parseBallLabels(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+          } catch {
+            doc = null;
+          }
+          // Validated here, unlike `/api/swings`, which writes whatever JSON
+          // parses. This file has no schema on the ETL side to catch a bad
+          // document later: it IS the ground truth, and every later measurement
+          // of a tracker is only as good as it. A body that is not a label
+          // document is a bug in the client, not a reviewer's work at risk.
+          if (doc === null) {
+            res.statusCode = 400;
+            res.end('{"error":"not a ball-labels document"}');
+            return;
+          }
+          // The name in the body must be the one in the URL. Nothing derived
+          // from the body reaches the path, so this cannot be a traversal —
+          // it is `readSession`'s rule about answering with a session other
+          // than the one asked for, applied to the write side: a mismatch means
+          // labels are about to be filed under a session they did not come from.
+          if (doc.session !== session) {
+            res.statusCode = 409;
+            res.end('{"error":"labels are for a different session"}');
+            return;
+          }
+          try {
+            writeFileSync(target, JSON.stringify(doc, null, 1) + '\n');
+            res.statusCode = 204;
+            res.end();
+          } catch {
+            res.statusCode = 500;
+            res.end('{"error":"could not write the ball labels"}');
+          }
+        });
       });
 
       // Streamed, not buffered, and Range-aware: this route serves the session's
@@ -1063,6 +1309,8 @@ export {
   listSessions,
   overlayEdit,
   readSession,
+  BALL_CANDIDATES,
+  BALL_LABELS,
   OBJECTS,
   resolveWriteTarget,
   safeJoin,
