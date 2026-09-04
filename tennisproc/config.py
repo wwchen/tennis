@@ -281,8 +281,8 @@ class Settings:
             errs.append("player_count must be 0 (auto), 1 or 2")
         # Only what make_backend() can actually build. "none" used to pass
         # here and then raise PoseError several stages later.
-        if self.pose_backend not in ("mediapipe", "stub"):
-            errs.append("pose_backend must be mediapipe or stub")
+        if self.pose_backend not in ("mediapipe", "rtmpose", "stub"):
+            errs.append("pose_backend must be mediapipe, rtmpose or stub")
         if self.crop_pad < 0:
             errs.append("crop_pad must be >= 0")
         if self.limit < 0:

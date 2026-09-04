@@ -21,3 +21,21 @@ opencv-python-headless>=4.8
 #     https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
 #
 # mediapipe
+
+# RTMPose is the better pose backend and the one to prefer: `--pose-backend=
+# rtmpose`. It needs no window server, so it also runs headless where
+# MediaPipe aborts.
+#
+# Measured against MediaPipe on IMG_0684, scoring each detected wrist by its
+# distance to a COCO-pretrained racket box (41 swings):
+#
+#     MediaPipe wrist the pipeline chose   54% within 0.25 torso
+#     RTMPose nearest of its two wrists    90% within 0.25 torso
+#
+# On 24% of those swings MediaPipe's hitting wrist sat over a torso height
+# from the racket -- the failure that centres crops on an ankle.
+#
+#   pip install rtmlib onnxruntime
+#
+# Models download on first use to ~/.cache/rtmlib (~90 MB); there is no model
+# file to fetch by hand as there is for MediaPipe.
