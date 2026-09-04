@@ -114,6 +114,26 @@ RACKET_OFFSETS = (-4, -2, 0, 2, 4)
 # 73% to 62% moving to a cleaner candidate set, because a swinging racket blurs
 # and a stationary one does not. "A racket was found" is weak evidence AGAINST
 # a swing, which is why it is not the test.
+#
+# The threshold was fitted on one session and then checked on three others
+# against a signal that knows nothing about racket motion -- whether a ball in
+# flight sits at the racket. Pooled over 302 swings the distribution is
+# bimodal and its SPARSEST bin is 0.10-0.15, which is where the fitted value
+# already sat:
+#
+#     0.00-0.05  24    0.15-0.20   14
+#     0.05-0.10  27    0.20-0.30   43
+#     0.10-0.15   9 <- 0.30-0.50  131
+#                     0.50+        54
+#
+# And the independent signal agrees: below the threshold a ball sits at the
+# racket on 20% of swings, at or above it on 43%. Positive in all four
+# sessions (+51, +26, +24, +18 points), including the one with the corpus's
+# worst ball detection.
+#
+# The direction is solid; the MAGNITUDE is not a fixed property. The lift is
+# far larger on the session the threshold was fitted on, and the ball detector
+# is itself session-dependent -- see BALL_MOTION.
 RACKET_MOVING = 0.15
 
 # Blob area in torso heights squared. A 6.7 cm ball against a ~48 cm torso

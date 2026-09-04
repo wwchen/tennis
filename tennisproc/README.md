@@ -334,6 +334,26 @@ points of recall to remove detections that are right. Confidence barely
 separates good boxes from bad here: median 0.74 near the hand against 0.67 on
 the false ones.
 
+**Was the racket actually swung?** `objects.RACKET_MOVING` is 0.15 torso
+heights per frame, measured as the peak displacement of the racket box across
+five frames spanning contact. Against 40 hand-audited candidates of IMG_0684 --
+16 the player bouncing in ready position between machine feeds, 24 real swings
+-- the groups barely overlap: non-swings peak at 0.144 and real swings sit at a
+median of 0.365. At 0.15 every non-swing in that sample is cut and 79% of real
+swings kept.
+
+Checked on three further sessions against a signal that knows nothing about
+racket motion -- whether a ball in flight sits at the racket. Pooled over 302
+swings the distribution is bimodal and its sparsest bin is **0.10-0.15**, where
+the fitted threshold already sat; and a ball is at the racket on 20% of swings
+below it against 43% at or above, positive in all four sessions (+51, +26,
++24, +18 points). The direction generalises. The magnitude does not: the lift
+is much larger on the session the threshold came from.
+
+Fewer than two racket sightings reports nothing rather than zero. "Never
+found" and "did not move" are different claims, and about a third of swings
+carry no racket at all.
+
 `scripts/detect_objects.py` exports the same detections for a whole video as
 gzipped JSONL, one line per sampled frame, for drawing over playback. Sampling
 rate is the decision there: a racket interpolates smoothly at 10 fps, a ball
