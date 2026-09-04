@@ -647,6 +647,63 @@ stops meaning the same person the moment two players change ends. That is why
   detector's instant but cannot move it. That needs `--fps 0`.
 - **The recall number is not the one it looks like.** See below.
 
+### Ball flight paths: three approaches that do not work
+
+The ball is found independently at each frame and nothing links the detections
+into a trajectory. That is a real gap -- a ball reversing direction dates
+contact unambiguously, without the audio's ambiguity between a strike and a
+bounce -- and three off-the-shelf routes to it were tried and measured. All
+three fail, each for a different and identifiable reason.
+
+**Sampling rate first.** `scripts/detect_objects.py` defaults to `--fps 10`,
+which is right for drawing a racket and useless for a ball: at 15 m/s the ball
+covers ~90 px per frame here, so consecutive 10 fps samples are ~540 px apart
+and cannot be associated with each other at all. Anything below is measured at
+native rate (`--fps 0`).
+
+**What the detections look like.** Over a 30 s window of IMG_0684 at native
+rate, 73% of frames carry at least one ball and 94% of the gaps between
+detections are a single frame -- the detector is nearly continuous. But only
+**8.5% of detections are moving** (>0.20 torso/frame). The other 91% are the
+dead balls that accumulate on court: 69% are below 0.05 torso/frame. Any linker
+must reject those first or it will thread the court furniture into
+thousand-frame "flights".
+
+**1. TrackNet's published weights do not transfer.** It is the domain-specific
+choice, built for tennis, stacking three frames precisely because a single
+blurred streak is not separable. Run on a 16:9 band cropped around the player,
+it reports a ball on 76% of frames -- and that number is meaningless: 72% of
+its detections land within 200 px of one fixed point, the vertical spread is
+196 px, and the median step between consecutive detections is 0.04 torso
+heights. Visually it parks on the net post while the real ball crosses the
+frame. Its weights are trained on 1280x720 broadcast footage, elevated and
+behind the baseline; this footage is a phone at net height, portrait. Cropping
+fixes the aspect and cannot fix the viewpoint.
+
+**2 and 3. ByteTrack and BoT-SORT cannot associate this ball, and no parameter
+changes that.** Both ship with ultralytics and both were run over the same
+window on validated detections. Each produced 22 tracks of three or more
+detections, **none of them a flight** -- every survivor is a dead ball with a
+median step of 0.03-0.06 torso. Track ids reached ~500, meaning the flying ball
+got a fresh id on nearly every frame and was never linked to its own past.
+
+The cause is structural. Both associate boxes by IoU overlap. A ball box is
+~20 px across and moves 90 px between frames, up to 290 px at p99 -- four to
+fourteen box-widths, so **IoU is exactly zero** on every consecutive pair.
+Tuning `angle_weight` or `min_track_len` helps objects that still overlap a
+little; nothing helps a zero. These trackers are built for dense, slow,
+overlapping boxes, and a tennis ball is outside that envelope by construction.
+
+**What would work**, if this is picked up: association by DISTANCE rather than
+IoU, with a velocity-consistency gate and tolerance for the one- and two-frame
+gaps where the ball crosses the player, the net cord or a court line. A
+prototype of exactly that recovered flights that consecutive-frame linking
+discarded -- on one confirmed strike the ball was found at frames
+26, 27, 28, _, 30, 31, _, _, 34, and a linker demanding consecutive detections
+returned a three-point path and threw the flight away. The alternative is
+fine-tuning TrackNet on this footage, which needs the ball labels the COCO
+route was chosen to avoid.
+
 ### The recall trap
 
 `tests/fixtures/known_shots.json` holds **354 shot times** over three
