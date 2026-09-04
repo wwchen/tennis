@@ -404,7 +404,38 @@ class RTMPoseBackend(PoseBackend):
 
     name = "rtmpose"
 
-    def __init__(self, mode="performance", device="cpu",
+    @staticmethod
+    def _best_device():
+        """Whatever accelerator onnxruntime actually offers, else CPU.
+
+        Worth 6x and it is not close. Measured over 16 frames of IMG_0684,
+        seconds per frame and the resulting whole-video scan pass (5016 frames
+        at 10 fps over a 502 s session):
+
+            mode          cpu              accelerated
+            performance   0.373 (31.2 min) 0.060 (5.0 min)
+            balanced      0.287 (24.0 min) 0.049 (4.1 min)
+            lightweight   0.087 ( 7.3 min) 0.026 (2.2 min)
+
+        For scale, MediaPipe scans at 4.5x realtime, or 1.9 min. Defaulting to
+        CPU made the accurate backend 16x slower than the one it replaces,
+        which is the difference between a usable default and an unusable one.
+
+        Probed through onnxruntime rather than torch: rtmlib runs on ONNX and
+        this package must not acquire a torch dependency to pick a device.
+        """
+        try:
+            import onnxruntime
+            providers = onnxruntime.get_available_providers()
+        except Exception:
+            return "cpu"
+        if "CoreMLExecutionProvider" in providers:
+            return "mps"
+        if "CUDAExecutionProvider" in providers:
+            return "cuda"
+        return "cpu"
+
+    def __init__(self, mode="performance", device=None,
                  backend="onnxruntime", min_confidence=0.3):
         try:
             from rtmlib import Wholebody
@@ -414,7 +445,9 @@ class RTMPoseBackend(PoseBackend):
                 "`pip install rtmlib onnxruntime`; models download on first "
                 "use to ~/.cache/rtmlib." % exc)
         self.min_confidence = min_confidence
-        self._model = Wholebody(mode=mode, backend=backend, device=device)
+        self.device = device or self._best_device()
+        self._model = Wholebody(mode=mode, backend=backend,
+                                device=self.device)
 
     def detect(self, frame, timestamp_ms=None):
         # timestamp_ms is accepted for the interface and unused: like

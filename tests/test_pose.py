@@ -264,3 +264,31 @@ class CocoToLandmarks(unittest.TestCase):
         """Unknown names must fail here, not several stages later."""
         with self.assertRaises(pose.PoseError):
             pose.make_backend("rtmpose-typo")
+
+
+class RTMPoseDevice(unittest.TestCase):
+    """Device selection, which is worth 6x and was shipped wrong once.
+
+    RTMPoseBackend originally hardcoded device="cpu", making the accurate
+    backend 31 minutes per scan pass against MediaPipe's 1.9 -- 16x slower
+    than the thing it replaces. The accelerated path is 5.0 min.
+    """
+
+    def test_falls_back_to_cpu_when_onnxruntime_is_absent(self):
+        real = __import__("builtins").__import__
+
+        def no_onnx(name, *a, **kw):
+            if name == "onnxruntime":
+                raise ImportError("not installed")
+            return real(name, *a, **kw)
+
+        import builtins
+        builtins.__import__ = no_onnx
+        try:
+            self.assertEqual(pose.RTMPoseBackend._best_device(), "cpu")
+        finally:
+            builtins.__import__ = real
+
+    def test_returns_a_name_rtmlib_accepts(self):
+        self.assertIn(pose.RTMPoseBackend._best_device(),
+                      ("cpu", "mps", "cuda"))
