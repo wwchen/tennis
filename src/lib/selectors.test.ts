@@ -21,6 +21,7 @@ const doc = (): Doc => ({
 
 const ui = (patch: Partial<Ui> = {}): Ui => ({
   view: 'compare',
+  swungOnly: false,
   inspectorPlaying: false,
   sourceMetaOpen: false,
   inlineClip: null,
@@ -451,5 +452,48 @@ describe('the selected clip is findable', () => {
     const state = { ...base, doc: { ...base.doc, clips: [clip] } };
     const played = reducer(state, { type: 'playClip', clip: clip.id });
     expect(played.ui.sel?.clip).toBe(clip.id);
+  });
+});
+
+describe('the unswung-racket filter', () => {
+  const withRacket = (id: string, swung?: boolean): Clip => ({
+    ...seedClips()[0],
+    id,
+    objects: {
+      racket: { x: 0, y: 0, w: 10, h: 10, ...(swung === undefined ? {} : { swung }) },
+      ball: null,
+    },
+  });
+
+  const docOf = (clips: Clip[]): Doc => ({ ...doc(), clips });
+
+  it('drops a candidate whose racket was seen and did not move', () => {
+    const got = visibleClips(docOf([withRacket('still', false)]), ui({ swungOnly: true }));
+    expect(got).toHaveLength(0);
+  });
+
+  it('keeps one whose racket was swung', () => {
+    const got = visibleClips(docOf([withRacket('swung', true)]), ui({ swungOnly: true }));
+    expect(got.map((c) => c.id)).toEqual(['swung']);
+  });
+
+  it('keeps one whose racket was never located', () => {
+    // "Not found" is not "did not move". A third of swings carry no racket and
+    // hiding them would drop real strikes on a detector miss.
+    const got = visibleClips(docOf([withRacket('unknown', undefined)]), ui({ swungOnly: true }));
+    expect(got.map((c) => c.id)).toEqual(['unknown']);
+  });
+
+  it('keeps a clip with no objects block at all', () => {
+    // Every swing rendered before the detector existed, and every run with
+    // --objects-backend=none.
+    const bare = { ...seedClips()[0], id: 'bare', objects: undefined };
+    const got = visibleClips(docOf([bare]), ui({ swungOnly: true }));
+    expect(got.map((c) => c.id)).toEqual(['bare']);
+  });
+
+  it('changes nothing when the toggle is off', () => {
+    const clips = [withRacket('a', false), withRacket('b', true), withRacket('c', undefined)];
+    expect(visibleClips(docOf(clips), ui({ swungOnly: false }))).toHaveLength(3);
   });
 });

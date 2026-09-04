@@ -231,6 +231,25 @@ export interface ObjectBox {
 }
 
 /** @see Clip.objects */
+export interface RacketBox extends ObjectBox {
+  /**
+   * How far the racket moved per frame across the contact window, in torso
+   * heights. @see RACKET_SWUNG
+   */
+  motion?: number;
+  /**
+   * Whether that displacement cleared the threshold — i.e. whether the racket
+   * was actually swung.
+   *
+   * Absent, not false, when the racket was seen in fewer than two frames.
+   * "Never found" and "did not move" are different claims and only one of them
+   * is evidence; treating the first as the second would flag every occluded
+   * swing as fake.
+   */
+  swung?: boolean;
+}
+
+/** @see Clip.objects */
 export interface BallBox extends ObjectBox {
   /**
    * How far this box's pixels deviate from a short background plate, 0-255.
@@ -253,9 +272,24 @@ export interface ClipObjects {
   /** Which backend found these, e.g. `yolo/coco`. */
   detector?: string;
   /** Null when the detector looked and found none. Not the same as absent. */
-  racket: ObjectBox | null;
+  racket: RacketBox | null;
   ball: BallBox | null;
 }
+
+/**
+ * The racket displacement above which the racket was swung, torso heights per
+ * frame. Mirrors `objects.RACKET_MOVING`.
+ *
+ * Measured over 40 hand-audited candidates: candidates that were NOT swings
+ * (the player bouncing in ready position between machine feeds) peak at 0.144,
+ * while real swings sit at a median of 0.365. The two barely overlap.
+ *
+ * Note the signal is displacement and not presence. Racket detection RATE goes
+ * the other way — it FELL from 73% to 62% on a cleaner candidate set, because
+ * a swinging racket blurs and a stationary one does not — so "a racket was
+ * found" is weak evidence against a swing rather than for one.
+ */
+export const RACKET_SWUNG = 0.15;
 
 /**
  * The `motion` above which a detected ball is flying rather than lying there.

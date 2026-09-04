@@ -133,6 +133,29 @@ export function Filters({
           onChange={(e: Event) => dispatch({ type: 'setOnlyAnchor', value: checkedOf(e) })}
           hint-size="100%,24px"
         />
+        <Toggle
+          label="Hide unswung rackets"
+          checked={ui.swungOnly}
+          onChange={(e: Event) => dispatch({ type: 'setSwungOnly', value: checkedOf(e) })}
+          hint-size="100%,24px"
+        />
+        {/*
+          Hides a candidate only when the racket was SEEN across the contact
+          window and moved less than RACKET_SWUNG. A clip whose racket was
+          never located stays: not finding one is the ordinary case on about a
+          third of swings and says nothing about whether a ball was hit.
+
+          Displacement rather than presence, because presence points the wrong
+          way -- racket detection RATE fell from 73% to 62% on a cleaner
+          candidate set, a swinging racket being blurred and a stationary one
+          not. Needs `--objects-backend=yolo`; without it no clip carries the
+          field and the toggle changes nothing.
+        */}
+        <div style={{ fontSize: 12, lineHeight: 1.4, color: 'var(--gray-600)' }}>
+          Drops candidates where the racket was found and measurably still —
+          the player bouncing between feeds rather than hitting. Silent on
+          swings whose racket was never located.
+        </div>
       </div>
 
       <div

@@ -16,6 +16,7 @@ import type {
   Grade,
   ObjectBox,
   Phase,
+  RacketBox,
   Stroke,
 } from './types';
 import { frameWindow } from './window';
@@ -219,7 +220,7 @@ function objectsOf(doc: EtlSwingDoc): ClipObjects | null {
   const ball = boxOf(o.ball);
   return {
     ...(typeof o.detector === 'string' ? { detector: o.detector } : {}),
-    racket: boxOf(o.racket),
+    racket: racketOf(o.racket),
     ball:
       ball === null
         ? null
@@ -229,6 +230,24 @@ function objectsOf(doc: EtlSwingDoc): ClipObjects | null {
               ? extras(o.ball as Record<string, unknown>)
               : {}),
           },
+  };
+}
+
+/**
+ * A racket box plus `motion`/`swung`, each carried only when measured.
+ *
+ * `swung` is copied only when it is genuinely a boolean, so a malformed or
+ * absent value reads as "unknown" rather than "did not swing" — the whole
+ * distinction the ETL is careful to preserve.
+ */
+function racketOf(v: unknown): RacketBox | null {
+  const box = boxOf(v);
+  if (box === null || typeof v !== 'object' || v === null) return box;
+  const r = v as Record<string, unknown>;
+  return {
+    ...box,
+    ...(typeof r.motion === 'number' ? { motion: r.motion } : {}),
+    ...(typeof r.swung === 'boolean' ? { swung: r.swung } : {}),
   };
 }
 
