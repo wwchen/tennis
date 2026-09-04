@@ -449,12 +449,32 @@ class RTMPoseBackend(PoseBackend):
         self._model = Wholebody(mode=mode, backend=backend,
                                 device=self.device)
 
+    # CoreML cannot run the person detector's output node when that output is
+    # EMPTY -- a frame with nobody in it gives a dynamic-shaped tensor with
+    # zero elements, and the provider raises instead of returning nothing:
+    #
+    #   Input (1466) has a dynamic shape ({-1}) but the runtime shape ({0})
+    #   has zero elements. This is not supported by the CoreML EP.
+    #
+    # The same frame on CPU returns cleanly. The scan pass walks the whole
+    # video, so it meets frames with the player out of shot on every session
+    # and this crashed a full run at 40 s in. The exception IS the "no people"
+    # signal, so it is translated into the empty result it stands for --
+    # matched narrowly, because catching everything here would turn a genuine
+    # accelerator fault into a session that silently finds no swings.
+    _EMPTY_DETECTION = "zero elements"
+
     def detect(self, frame, timestamp_ms=None):
         # timestamp_ms is accepted for the interface and unused: like
         # MediaPipe in IMAGE mode, each call is independent, which is what
         # keeps slot order positional rather than tracked.
         height, width = frame.shape[:2]
-        keypoints, scores = self._model(frame)
+        try:
+            keypoints, scores = self._model(frame)
+        except Exception as exc:
+            if self._EMPTY_DETECTION not in str(exc):
+                raise
+            return []
         if keypoints is None or len(keypoints) == 0:
             return []
         found = []

@@ -292,3 +292,31 @@ class RTMPoseDevice(unittest.TestCase):
     def test_returns_a_name_rtmlib_accepts(self):
         self.assertIn(pose.RTMPoseBackend._best_device(),
                       ("cpu", "mps", "cuda"))
+
+
+class RTMPoseEmptyDetection(unittest.TestCase):
+    """A frame with nobody in it must yield no poses, not a crash.
+
+    CoreML raises rather than returning an empty tensor when the person
+    detector finds nothing, and the scan pass walks the whole video, so it
+    meets that on every session. A full run died 40 s in before this.
+    """
+
+    class Fake(pose.RTMPoseBackend):
+        def __init__(self, exc):            # no rtmlib, no model, no download
+            self.min_confidence = 0.3
+            self.device = "mps"
+            self._model = lambda frame: (_ for _ in ()).throw(exc)
+
+    def frame(self):
+        import numpy as np
+        return np.zeros((64, 32, 3), dtype=np.uint8)
+
+    def test_the_empty_detection_error_becomes_no_poses(self):
+        boom = RuntimeError("... runtime shape ({0}) has zero elements. ...")
+        self.assertEqual(self.Fake(boom).detect(self.frame()), [])
+
+    def test_any_other_failure_still_propagates(self):
+        """Catching everything would turn a broken GPU into an empty session."""
+        with self.assertRaises(RuntimeError):
+            self.Fake(RuntimeError("CUDA out of memory")).detect(self.frame())
