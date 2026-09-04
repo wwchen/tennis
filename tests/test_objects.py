@@ -275,3 +275,27 @@ class SchemaBlock(unittest.TestCase):
     def test_the_wrong_space_is_rejected(self):
         self.assertTrue(self.errors_for(
             {"space": "crop_normalized", "racket": None, "ball": None}))
+
+
+class ExportRows(unittest.TestCase):
+    """The per-frame export format for overlay playback."""
+
+    def rows(self, found):
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "scripts", "detect_objects.py")
+        spec = importlib.util.spec_from_file_location("detect_objects", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.boxes_to_rows(found)
+
+    def test_boxes_become_x_y_w_h_conf_not_corners(self):
+        """A player draws from a width, not a second corner."""
+        got = self.rows({"racket": [objects.Box(10, 20, 110, 220, 0.5)],
+                         "ball": [], "person": []})
+        self.assertEqual(got["racket"], [[10.0, 20.0, 100.0, 200.0, 0.5]])
+
+    def test_empty_classes_are_omitted_not_written_as_empty_lists(self):
+        """At native rate this file is 30k lines; empty keys are pure waste."""
+        got = self.rows({"racket": [], "ball": [], "person": []})
+        self.assertEqual(got, {})
