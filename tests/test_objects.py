@@ -49,11 +49,15 @@ class BoxGeometry(unittest.TestCase):
 
 
 class ChooseRacket(unittest.TestCase):
-    """Near the wrist OR on the player -- never both required.
+    """Near a wrist OR on the player -- never both required.
 
     Measured over 108 swings: 53.7% recall for the wrist test alone, 38.9% for
     the overlap test alone, 62.0% for either. The two fail on different
     swings, which is the whole point of taking either.
+
+    "A wrist", not "the hitting wrist": nothing upstream claims to know which
+    arm swung any more, so both hands are offered and a racket beside either
+    is the player's.
     """
 
     def setUp(self):
@@ -63,7 +67,7 @@ class ChooseRacket(unittest.TestCase):
         """An arm extended past the player's own box still holds the racket."""
         racket = box(900, 900)
         self.assertEqual(racket.overlap_fraction(self.player), 0.0)
-        got = objects.choose_racket([racket], (890, 900), self.player, TORSO)
+        got = objects.choose_racket([racket], [(890, 900)], self.player, TORSO)
         self.assertIs(got, racket)
 
     def test_accepts_a_racket_on_the_player_when_the_wrist_is_misplaced(self):
@@ -72,31 +76,50 @@ class ChooseRacket(unittest.TestCase):
         far_wrist = (550, 1390)      # pose put the wrist down at the ankle
         self.assertGreater(racket.distance_to(far_wrist),
                            objects.RACKET_REACH * TORSO)
-        got = objects.choose_racket([racket], far_wrist, self.player, TORSO)
+        got = objects.choose_racket([racket], [far_wrist], self.player, TORSO)
         self.assertIs(got, racket)
 
     def test_rejects_a_racket_that_is_neither(self):
         """74.4% of far-from-wrist boxes were on nothing at all."""
         self.assertIsNone(objects.choose_racket(
-            [box(50, 50)], (600, 1000), self.player, TORSO))
+            [box(50, 50)], [(600, 1000)], self.player, TORSO))
 
     def test_prefers_the_confident_box_among_accepted_ones(self):
         weak, strong = box(600, 950, conf=0.2), box(610, 960, conf=0.8)
-        got = objects.choose_racket([weak, strong], (600, 950),
+        got = objects.choose_racket([weak, strong], [(600, 950)],
                                     self.player, TORSO)
         self.assertIs(got, strong)
 
+    def test_either_hand_is_close_enough(self):
+        """Both wrists are passed, so the free one must not veto the racket.
+
+        The racket sits by the right hand; the left is across the body, well
+        beyond reach. Testing only the first wrist offered would miss it --
+        and which wrist comes first is exactly the choice this stage stopped
+        making.
+        """
+        racket = box(900, 900)
+        far, near = (420, 900), (890, 900)
+        self.assertGreater(racket.distance_to(far),
+                           objects.RACKET_REACH * TORSO)
+        self.assertIs(objects.choose_racket([racket], [far, near],
+                                            self.player, TORSO), racket)
+        self.assertIs(objects.choose_racket([racket], [near, far],
+                                            self.player, TORSO), racket)
+
     def test_survives_a_missing_wrist_and_a_missing_player(self):
         racket = box(550, 1000)
-        self.assertIs(objects.choose_racket([racket], None, self.player, TORSO),
+        self.assertIs(objects.choose_racket([racket], (), self.player, TORSO),
                       racket)
-        self.assertIs(objects.choose_racket([racket], (550, 1000), None, TORSO),
+        self.assertIs(objects.choose_racket([racket], (None, None),
+                                            self.player, TORSO), racket)
+        self.assertIs(objects.choose_racket([racket], [(550, 1000)], None, TORSO),
                       racket)
-        self.assertIsNone(objects.choose_racket([racket], None, None, TORSO))
+        self.assertIsNone(objects.choose_racket([racket], (), None, TORSO))
 
     def test_a_zero_torso_selects_nothing_rather_than_scaling_by_zero(self):
         self.assertIsNone(objects.choose_racket(
-            [box(550, 1000)], (550, 1000), self.player, 0.0))
+            [box(550, 1000)], [(550, 1000)], self.player, 0.0))
 
 
 class Plate(unittest.TestCase):
@@ -192,7 +215,7 @@ class Backends(unittest.TestCase):
         frame = np.zeros((1920, 1080, 3), np.uint8)
         doc = objects.measure(backend, frame, frame,
                               objects.Box(450, 850, 650, 1350),
-                              (600, 950), TORSO)
+                              [(600, 950)], TORSO)
         self.assertEqual(doc["space"], "source_display")
         self.assertEqual(doc["detector"], "stub/coco")
         self.assertIsNotNone(doc["racket"])
@@ -206,7 +229,7 @@ class Backends(unittest.TestCase):
         frame[45:55, 240:250] = 250
         backend = objects.StubObjectBackend(
             [{"racket": [racket], "ball": [ball], "person": []}])
-        doc = objects.measure(backend, frame, plate, None, (50, 50), TORSO)
+        doc = objects.measure(backend, frame, plate, None, [(50, 50)], TORSO)
         self.assertIsNotNone(doc["ball"])
         # nearest edge of the racket box to the ball centre: 245 - 100 = 145 px
         self.assertAlmostEqual(doc["ball"]["racket_distance"],

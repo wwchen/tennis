@@ -1,5 +1,4 @@
 import type { Clip, Comment, Phase, Stroke } from '@/domain/types';
-import { isSuspect } from '@/domain/types';
 import {
   ALL_PLAYERS,
   ALL_RATINGS,
@@ -54,7 +53,6 @@ export function visibleClips(doc: Doc, ui: Ui): Clip[] {
       // "Unchecked auto-tags only" — a clip drops out the moment a human
       // confirms or corrects anything on it.
       (!ui.lowOnly || !c.triaged) &&
-      (!ui.suspectOnly || isSuspect(c)) &&
       (ui.gradeFilter === ALL_RATINGS || gradeOf(c.grade).label === ui.gradeFilter),
   );
 }

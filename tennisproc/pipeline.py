@@ -198,15 +198,17 @@ def _strike_confidence(pair):
     `Settings.min_gap_s`, this picks the on-lattice detection 58 times.
 
     Wrist speed, which this used to decide on alone, picks it 38 times and
-    cannot decide at all in 23 of them: `verify.SPEED_CAP` clips peak speed at
-    40.0 and 1575 of the 2505 shipped swings (63%) sit exactly on the cap, so
-    "keep the fastest" was a coin flip on nearly a third of the pairs. It
-    stays as the tiebreak for a detector run with no onset strengths.
+    cannot decide at all in 23 of them: `verify.SPEED_CAP` was 40.0 and 1575
+    of the 2505 shipped swings (63%) sat exactly on the cap, so "keep the
+    fastest" was a coin flip on nearly a third of the pairs. The cap is 150.0
+    now and no longer flattens them, but the onset is still the better
+    evidence. Speed stays as the tiebreak for a detector run with no onset
+    strengths.
     """
     track, measured = pair
     peak = track.candidate.get("onset_peak")
     return (peak if peak is not None else -1.0,
-            measured.wrist_peak_speed or 0.0)
+            measured.peak_motion or 0.0)
 
 
 def dedupe_swings(accepted, min_gap_s, same_place_torsos, pre_s=1.5):
@@ -314,7 +316,7 @@ def stage_objects(video, accepted, source, settings, report=None):
             doc = objects_mod.measure(
                 backend, frame, plate,
                 _pose_box(track, measured, source),
-                _wrist_px(track, measured, source),
+                _wrists_px(track, measured, source),
                 (measured.torso_height or 0.0) * source["height"])
             found_racket += doc["racket"] is not None
             found_ball += doc["ball"] is not None
@@ -350,16 +352,20 @@ def _pose_box(track, measured, source):
                            x1 * source["width"], y1 * source["height"])
 
 
-def _wrist_px(track, measured, source):
-    """The hitting wrist, in source-display pixels."""
+def _wrists_px(track, measured, source):
+    """Both wrists, in source-display pixels.
+
+    Both, not the hitting one: nothing decides which arm swung any more, and a
+    racket beside either hand is this player's regardless.
+    """
     series = track.series(measured.slot)
     index = track.nearest_index(track.contact_ms, measured.slot)
-    if index is None or not series or measured.hitting_side is None:
-        return None
-    which = (pose_mod.L_WRIST if measured.hitting_side == "left"
-             else pose_mod.R_WRIST)
-    x, y = series[index][1].xy(which)
-    return (x * source["width"], y * source["height"])
+    if index is None or not series:
+        return ()
+    landmarks = series[index][1]
+    return tuple((landmarks.xy(w)[0] * source["width"],
+                  landmarks.xy(w)[1] * source["height"])
+                 for w in (pose_mod.L_WRIST, pose_mod.R_WRIST))
 
 
 def stage_proxy(video, root, settings, report=None):

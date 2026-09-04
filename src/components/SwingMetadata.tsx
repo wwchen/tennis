@@ -1,13 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import type { EtlSource } from '@/domain/etl-types';
 import type { Clip, ObjectBox } from '@/domain/types';
-import {
-  BALL_IN_FLIGHT,
-  SUSPECT_ARM,
-  SUSPECT_SPEED,
-  isSuspect,
-  sourceRange,
-} from '@/domain/types';
+import { BALL_IN_FLIGHT, sourceRange } from '@/domain/types';
 import { Tag } from '@/lds';
 import { Mono } from './shared';
 
@@ -203,10 +197,6 @@ function Detector({ clip }: { clip: Clip }) {
 
 function Measured({ clip }: { clip: Clip }) {
   const m = clip.measurements;
-  // Both halves come from `isSuspect`, not from a second copy of the rule — the
-  // filter in the catalog and the flag here have to agree, and the thresholds
-  // were tuned over 329 swings on the understanding that there is one of them.
-  const suspect = isSuspect(clip);
   const scored = clip.frames.filter((f) => f.poseScore !== undefined);
 
   return (
@@ -216,61 +206,28 @@ function Measured({ clip }: { clip: Clip }) {
           <Row label="pose" value={NOT_MEASURED} absent />
           <Note>
             The ETL wrote no measurements for this swing — pose never locked onto a body,
-            so there is nothing to judge the swing's speed or shape against.
+            so nothing here is known about who was in frame or where they stood.
           </Note>
         </>
       ) : (
         <>
           <Row
-            label="wrist peak"
-            title="Peak wrist speed, in torso heights per second. Saturates at 40."
-            value={`${m.wristSpeed.toFixed(1)} th/s`}
-          />
-          <Row
-            label="arm offset"
-            title="Hitting wrist's distance from the body midline at contact, in torso heights"
-            value={`${m.armOffset.toFixed(2)} th`}
-          />
-          <Row
-            label="contact height"
-            title="Contact's height within the crop, 0 at the top edge"
-            absent={m.contactHeight === undefined}
-            value={m.contactHeight === undefined ? NOT_MEASURED : m.contactHeight.toFixed(2)}
-          />
-          <Row
             label="torso height"
-            title="The scale the numbers above are measured in, as a fraction of the crop"
+            title="How large the tracked player was, as a fraction of the crop"
             absent={m.torsoHeight === undefined}
             value={m.torsoHeight === undefined ? NOT_MEASURED : m.torsoHeight.toFixed(3)}
           />
           <Row
-            label="hitting side"
-            absent={m.hittingSide === undefined}
-            value={m.hittingSide ?? NOT_MEASURED}
+            label="court position"
+            title="Where across the frame the player stood at contact, 0 at the left edge"
+            absent={m.centerX === undefined}
+            value={m.centerX === undefined ? NOT_MEASURED : m.centerX.toFixed(3)}
           />
           <Row
             label="pose frames"
             title="Pose is decoded over a narrower window than the stills are extracted over, so most frames carry no score"
             value={`${scored.length} of ${clip.frames.length} scored`}
           />
-          {suspect && (
-            <>
-              <Row
-                label="flag"
-                value={
-                  <Tag size="sm" hue="yellow" emphasis="strong" hint-size="auto,18px">
-                    suspect
-                  </Tag>
-                }
-              />
-              <Note>
-                Wrist slower than {SUSPECT_SPEED} torso-heights/s <em>and</em> still within{' '}
-                {SUSPECT_ARM} of the body midline — the signature of a body standing still
-                rather than a swing. A sorting aid, not a verdict: a genuine drop shot
-                measures the same way.
-              </Note>
-            </>
-          )}
         </>
       )}
     </Section>

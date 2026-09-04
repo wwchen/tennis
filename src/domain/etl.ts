@@ -142,30 +142,26 @@ export const mediaUrlFor = (session: string, dir: string, file: string): string 
  * ETL. Neither is a placeholder to be filled with a guess.
  */
 /**
- * The two numbers the row shows, or null if the ETL did not measure them.
+ * What the verifier measured, or null if it measured nothing.
  *
  * `measurements` is typed as an open record because the schema marks every
  * field in it optional, so each one is checked at the value rather than trusted
- * from the type. A swing missing either number is reported as unmeasured
- * instead of half-measured: `isSuspect` needs both to say anything.
+ * from the type. Present-but-empty is a real state and stays distinct from
+ * absent: the block being there says pose locked onto a body, which is what the
+ * panel's "no measurements" note is about, and every individual field is
+ * missing on some vintage of tree.
+ *
+ * `wrist_peak_speed`, `contact_offset`, `contact_height` and `hitting_side` are
+ * deliberately NOT read, though 2505 shipped swings still carry them. They said
+ * which arm swung and where it met the ball, on a rule that was never verified;
+ * reading them here would put that claim back on screen. See `verify.py`.
  */
 function measurementsOf(doc: EtlSwingDoc): ClipMeasurements | null {
   const m = doc.measurements;
   if (m === null || typeof m !== 'object') return null;
-  const speed = m.wrist_peak_speed;
-  const arm = m.contact_offset;
-  if (typeof speed !== 'number' || typeof arm !== 'number') return null;
-  // The three below are reported, not judged, so a missing one costs only its
-  // own row — unlike the two above, whose absence makes `isSuspect` unanswerable
-  // and so makes the whole block unmeasured.
   return {
-    wristSpeed: speed,
-    armOffset: arm,
     ...(typeof m.torso_height === 'number' ? { torsoHeight: m.torso_height } : {}),
-    ...(typeof m.contact_height === 'number' ? { contactHeight: m.contact_height } : {}),
-    ...(m.hitting_side === 'left' || m.hitting_side === 'right'
-      ? { hittingSide: m.hitting_side }
-      : {}),
+    ...(typeof m.center_x === 'number' ? { centerX: m.center_x } : {}),
   };
 }
 

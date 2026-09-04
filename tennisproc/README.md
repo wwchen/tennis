@@ -459,10 +459,11 @@ sessions where the result is least verifiable, being distant outdoor doubles.
 
 **Which member survives is chosen for coverage, not for correctness.** Nothing
 the pipeline measures identifies the real strike: over the feed-slot collisions
-`onset_peak`, `|contact_offset|`, `torso_height` and `wrist_peak_speed` all
-score between 50% and 61%, which at that sample size is a coin flip.
-`wrist_peak_speed` is the worst of them, because `verify.SPEED_CAP` clips at
-40.0 and 1575 of 2505 swings (63%) sit exactly on the cap. So `dedupe_swings`
+`onset_peak`, `torso_height` and the wrist-motion peak all scored between 50%
+and 61%, which at that sample size is a coin flip. (Two of the quantities in
+that comparison, `|contact_offset|` and `wrist_peak_speed`, no longer exist --
+see "Which arm swung" below. The conclusion is unchanged: none of them
+discriminated.) So `dedupe_swings`
 optimises for keeping the strike **on screen** instead: the window is
 asymmetric (`--pre` 1.5 s, `--post` 2.0 s), so keeping the earlier member
 covers the other contact for gaps up to 2.0 s while keeping the later covers
@@ -615,16 +616,17 @@ stops meaning the same person the moment two players change ends. That is why
   before this guard a "wrist" could teleport between players. Over 396 shipped
   swings, 49% of measured series contained such a jump and 43% reported a peak
   that sat on one. Because `verify` picks the slot with the fastest wrist, a
-  flip also chose *which player* got measured: guarding changes the recorded
-  `hitting_side` on 26% of swings. Recall is unchanged (67/89/91%) and clips
+  flip also chose *which player* got measured, and still does: `verify` picks
+  the slot whose wrist moved fastest. Recall is unchanged (67/89/91%) and clips
   per real swing improve slightly (1.50/0.97/1.26 → 1.33/0.96/1.24).
   **Trees rendered before this fix carry the old values.**
-- **`wrist_peak_speed` still saturates.** `verify.SPEED_CAP` is 40 torso
-  heights per second, which is roughly the physical ceiling for a hand. The
-  guard above took saturation from 73% of swings to 39%, so the number
-  discriminates over most of its range now, but the top of the distribution is
-  still pose jitter rather than swing speed, and `dedupe_swings` breaks ties on
-  it.
+- **The wrist-motion peak saturates.** `verify.SPEED_CAP` is 150 torso heights
+  per second. It was 40 — roughly a hand's physical ceiling — and that was far
+  too low: re-measured with the cap lifted across 25 cached sessions the peak
+  runs p50 33, p90 87, p99 279, so 40 sat near the median and flattened most of
+  the corpus onto one value. At 150 the cap still binds on 3.56% of tracks.
+  The number is no longer published for this reason, but it still gates
+  `min_wrist_speed`, orders the slots, and breaks ties in `dedupe_swings`.
 - **Nothing is re-anchored to the wrist peak.** Moving contact from the audio
   onset to the fastest wrist sample was tried and reverted. Against the 12
   verified shot times in IMG_0304, recall was 100% measured on the onset and
@@ -646,6 +648,44 @@ stops meaning the same person the moment two players change ends. That is why
   there; its neighbours are half a second away, so a reviewer can confirm the
   detector's instant but cannot move it. That needs `--fps 0`.
 - **The recall number is not the one it looks like.** See below.
+
+### Which arm swung: not measured, and no longer guessed
+
+`hitting_side`, `contact_offset`, `contact_height` and `wrist_peak_speed` were
+removed. Nothing in the pipeline now claims to know which arm hit the ball.
+
+The claim was made twice and neither version was ever verified. The first chose
+the wrist furthest from the body midline, reasoning that the hitting arm is
+extended; it is not, the free arm is flung wider for balance, and the old
+README measured 22% stroke agreement with `contact_x` clustering bimodally at
+-1.77 and +0.86 -- two clusters because it was measuring two different arms.
+The second chose the wrist that moved fastest, which is at least a property of
+swinging, and shipped for the rest of the corpus's life without a check.
+
+The one attempt at a check was circular: it scored MediaPipe's chosen arm
+against "whichever MediaPipe wrist is nearer the detected racket", which is
+MediaPipe judging itself. Rebuilt on RTMPose as an independent reference, 54%
+of swings were undecidable -- both hands on the grip, no proxy of that shape
+can call them -- and the decidable remainder agreed 58% over 19 cases, a 95%
+interval of roughly 36-80%. That cannot distinguish "badly broken" from "fine",
+so the number was withdrawn rather than published either way.
+
+What survives is `verify.peak_wrist_motion`: how fast EITHER wrist moved, with
+no side attached. It gates `min_wrist_speed` -- the only test separating a
+swing from a player standing still, and worth keeping, since 40% of accepted
+candidates in one hand-audited session were split-steps -- and it orders the
+slots when several people are in frame. It is deliberately not written to
+`measurements`, because sitting in the output as `wrist_peak_speed` is what
+invited it to be read as a property of a swing rather than a threshold input.
+
+**If you need to know which arm holds the racket, ask the racket.**
+`--objects-backend=yolo` finds one on 70% of swings and its box was confirmed
+by hand at 15/16, which is more than was ever true of either heuristic. The
+racket-ownership rule already takes both wrists rather than a chosen one.
+
+Swing documents written before this still carry all four fields and still
+validate: the schema accepts them when present and requires none of them. A
+validator that rejected the entire existing corpus would not be one.
 
 ### Ball flight paths: three approaches that do not work
 

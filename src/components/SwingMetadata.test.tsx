@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import realSwing from '@/domain/__fixtures__/swing-real.json';
 import type { EtlSource, EtlSwingDoc } from '@/domain/etl-types';
 import { adaptSwing } from '@/domain/etl';
@@ -40,10 +40,11 @@ describe('a fully measured swing', () => {
     expect(screen.getByText('audio_onset+pose_verify')).toBeInTheDocument();
     expect(screen.getByText('11.65')).toBeInTheDocument();
 
-    // What it measured.
+    // What it measured. The fixture predates `center_x`, so the scale is the
+    // only measurement it carries.
     expect(screen.getByText('Measured')).toBeInTheDocument();
-    expect(screen.getByText('32.8 th/s')).toBeInTheDocument();
-    expect(screen.getByText('0.10 th')).toBeInTheDocument();
+    expect(screen.getByText('0.150')).toBeInTheDocument();
+    expect(screen.getByText('28 of 49 scored')).toBeInTheDocument();
 
     // What the file itself is.
     expect(screen.getByText('Source')).toBeInTheDocument();
@@ -97,51 +98,39 @@ describe('a swing the ETL could not measure', () => {
 
     render(<SwingMetadata clip={clip} source={source} />);
 
+    // A null block is "nobody was found", which is not the same as a body
+    // measured at zero — the note has to say which, and a row of 0.000 would
+    // not.
     expect(screen.getByText('not measured')).toBeInTheDocument();
-    // A zero wrist speed is a real, meaningful reading — a player who did not
-    // move. It must never stand in for "we did not look".
-    expect(screen.queryByText(/th\/s/)).not.toBeInTheDocument();
-    expect(screen.queryByText('0.0 th/s')).not.toBeInTheDocument();
+    expect(screen.getByText(/pose never locked onto a body/)).toBeInTheDocument();
+    expect(screen.queryByText('0.000')).not.toBeInTheDocument();
   });
 
   it('reports a half-measured block field by field, not all-or-nothing', () => {
-    // Every field under `measurements` is optional in schema.py, so a swing can
-    // carry the two speed numbers and no contact height. Losing the whole group
-    // over one absent field would hide two values that were measured.
-    const clip = clipFrom((d) => {
-      const m = d.measurements as Record<string, unknown>;
-      delete m.contact_height;
-      delete m.torso_height;
-    });
-
-    render(<SwingMetadata clip={clip} source={source} />);
-
-    expect(screen.getByText('32.8 th/s')).toBeInTheDocument();
-    expect(screen.getAllByText('not measured')).toHaveLength(2);
-  });
-});
-
-describe('the suspect flag', () => {
-  it('flags a swing that measures as a body standing still', () => {
-    // Slow wrist AND the wrist still at the midline — the pair `isSuspect`
-    // tests. Neither alone flags anything, which the next case checks.
-    const clip = clipFrom((d) => {
-      const m = d.measurements as Record<string, unknown>;
-      m.wrist_peak_speed = 2.27;
-      m.contact_offset = 0.01;
-    });
-
-    render(<SwingMetadata clip={clip} source={source} />);
-
-    expect(screen.getByText('suspect')).toBeInTheDocument();
-    // The flag is useless without its rule: a reviewer has to know it is a
-    // sorting aid before deciding whether to disagree with it.
-    expect(screen.getByText(/torso-heights\/s/)).toBeInTheDocument();
-  });
-
-  it('leaves a fast swing unflagged, so the flag keeps meaning something', () => {
+    // Every field under `measurements` is optional in schema.py, and the
+    // fixture is a real swing rendered before `center_x` existed, so it carries
+    // a torso height and no court position. Losing the whole group over the
+    // absent field would hide the one that was measured — and, worse, would
+    // read as "pose never locked onto a body", which is a different failure.
     render(<SwingMetadata clip={clipFrom()} source={source} />);
-    expect(screen.queryByText('suspect')).not.toBeInTheDocument();
+
+    expect(screen.getByText('0.150')).toBeInTheDocument();
+    expect(screen.getByText('not measured')).toBeInTheDocument();
+    expect(screen.queryByText(/pose never locked onto a body/)).not.toBeInTheDocument();
+  });
+
+  it('shows none of the arm claims the ETL used to make', () => {
+    // The fixture still carries hitting_side, wrist_peak_speed, contact_offset
+    // and contact_height, as all 2505 shipped swings do. The rule that chose an
+    // arm was never verified (see verify.py), so the panel must not put those
+    // numbers back on screen just because the tree on disk has them.
+    render(<SwingMetadata clip={clipFrom()} source={source} />);
+
+    expect(screen.queryByText(/th\/s/)).not.toBeInTheDocument();
+    expect(screen.queryByText('hitting side')).not.toBeInTheDocument();
+    expect(screen.queryByText('arm offset')).not.toBeInTheDocument();
+    expect(screen.queryByText('contact height')).not.toBeInTheDocument();
+    expect(screen.queryByText('right')).not.toBeInTheDocument();
   });
 });
 
@@ -231,7 +220,11 @@ describe('the objects the COCO detector found', () => {
     render(<SwingMetadata clip={clip} source={source} />);
 
     expect(screen.getByText('161,842')).toBeInTheDocument();
-    expect(screen.getByText('not measured')).toBeInTheDocument();
+    // Scoped to the racket's own row: "not measured" is the whole panel's word
+    // for an absent field, so a bare text query also catches the Measured
+    // group's court position, which this fixture has never carried.
+    const conf = screen.getByTitle('Detector confidence, 0-1');
+    expect(within(conf).getByText('not measured')).toBeInTheDocument();
   });
 });
 

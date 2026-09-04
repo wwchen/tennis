@@ -265,6 +265,10 @@ function canonicalJson(value: unknown): string {
  * (`detection.contact_offset` is `-1.0`, `measurements.wrist_peak_speed` is
  * `40.0`); hashing the parsed object writes those as `-1` and `40` and the two
  * implementations disagree, which shows up as a false "stale review" warning.
+ *
+ * Those two fields are no longer produced, but this hashes the bytes on disk
+ * and 2505 shipped swings still carry them -- and an integral float is a
+ * property of the format, not of any one field, so the hazard outlives them.
  */
 function docHash(raw: string): string {
   const boxed = JSON.parse(boxNumberLiterals(raw)) as Json;

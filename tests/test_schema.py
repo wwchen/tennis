@@ -52,11 +52,9 @@ def make_swing(stage_at=None, n_frames=3, base_ms=106834, step_ms=33):
         "frames": frames,
         "measurements": {
             "space": "crop_normalized", "origin": "top_left",
-            "units": {"length": "torso_heights",
-                      "speed": "torso_heights_per_s"},
-            "hitting_side": "right", "per_frame": "pose.json",
-            "wrist_peak_speed": 2.40, "torso_height": 0.117,
-            "contact_offset": 0.86, "contact_height": -0.11,
+            "units": {"length": "torso_heights"},
+            "per_frame": "pose.json", "torso_height": 0.117,
+            "center_x": 0.512,
         },
         "edit": None,
     }
@@ -74,6 +72,22 @@ class TestValidateSwing(unittest.TestCase):
                               "tags": ["late contact"], "notes": "clipped net"})
         doc["edit"] = {"by": "wc", "at": "2026-08-16T10:12:04Z",
                        "against": "sha256:9c2b7e4d0a151f3a", "reviewed": True}
+        self.assertEqual(schema.validate_swing(doc), [])
+
+    def test_accepts_a_swing_carrying_the_removed_measurements(self):
+        """2505 shipped swings name an arm; the validator must not reject them.
+
+        `hitting_side`, `wrist_peak_speed`, `contact_offset`, `contact_height`
+        and `units.speed` are no longer produced -- the rule that chose an arm
+        was never verified -- but a validator that fails on the entire
+        existing corpus is not a validator. They are accepted, not required.
+        """
+        doc = make_swing()
+        doc["measurements"].update({
+            "hitting_side": "right", "wrist_peak_speed": 40.0,
+            "contact_offset": 0.86, "contact_height": -0.11,
+        })
+        doc["measurements"]["units"]["speed"] = "torso_heights_per_s"
         self.assertEqual(schema.validate_swing(doc), [])
 
     def test_rejects_wrong_schema_version(self):
@@ -248,13 +262,13 @@ class TestOverlay(unittest.TestCase):
         edit["crop"]["x"] = 0
         edit["trim"]["source_start_ms"] = 0
         edit["source"]["rotation"] = 0
-        edit["measurements"]["wrist_peak_speed"] = 99.0
+        edit["measurements"]["torso_height"] = 99.0
         got = schema.overlay(meta, edit)
         self.assertEqual(got["detection"]["contact_ms"], 106900)
         self.assertEqual(got["crop"]["x"], 412)
         self.assertEqual(got["trim"]["source_start_ms"], 105400)
         self.assertEqual(got["source"]["rotation"], 90)
-        self.assertEqual(got["measurements"]["wrist_peak_speed"], 2.40)
+        self.assertEqual(got["measurements"]["torso_height"], 0.117)
 
     def test_unknown_frame_is_dropped_and_reported(self):
         """Frame grid changed under the human's feet."""

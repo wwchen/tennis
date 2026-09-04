@@ -18,8 +18,6 @@ export interface Ui {
   anchor: Phase;
   onlyAnchor: boolean;
   lowOnly: boolean;
-  /** Show only the swings whose measurements read as "nobody hit anything". */
-  suspectOnly: boolean;
   showRejected: boolean;
   filtersOpen: boolean;
   /**
@@ -129,7 +127,6 @@ export type Action =
   | { type: 'setAnchor'; anchor: Phase }
   | { type: 'setOnlyAnchor'; value: boolean }
   | { type: 'setLowOnly'; value: boolean }
-  | { type: 'setSuspectOnly'; value: boolean }
   | { type: 'setShowRejected'; value: boolean }
   | { type: 'toggleFilters' }
   | { type: 'toggleMobileFilters' }
@@ -177,7 +174,6 @@ const initialUi = (): Ui => ({
   anchor: 'contact',
   onlyAnchor: false,
   lowOnly: false,
-  suspectOnly: false,
   showRejected: false,
   // Collapsed to start. The filters are a refinement, not a first step: the
   // catalog is what the session is for, and the column was taking 268px of it
@@ -283,8 +279,6 @@ export function reducer(state: State, action: Action): State {
       return ui(state, { onlyAnchor: action.value });
     case 'setLowOnly':
       return ui(state, { lowOnly: action.value });
-    case 'setSuspectOnly':
-      return ui(state, { suspectOnly: action.value });
     case 'setShowRejected':
       return ui(state, { showRejected: action.value });
     case 'toggleFilters':

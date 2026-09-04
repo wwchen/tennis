@@ -220,7 +220,7 @@ class CocoToLandmarks(unittest.TestCase):
             self.assertAlmostEqual(got.points[slot][1], y / self.H, places=6)
 
     def test_left_and_right_are_not_swapped(self):
-        """A swapped L/R would measure contact_offset off the free arm."""
+        """A swapped L/R would hand `objects.choose_racket` mirrored hands."""
         pts, scores = self.coco(**{"9": (100.0, 500.0), "10": (900.0, 500.0)})
         got = pose.coco_to_landmarks(pts, scores, self.W, self.H)
         self.assertLess(got.points[pose.L_WRIST][0], got.points[pose.R_WRIST][0])

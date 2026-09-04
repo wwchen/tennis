@@ -118,7 +118,8 @@ export interface Clip {
    * What the verifier measured, for the reviewer to judge against.
    *
    * Absent on seeded clips and on any swing whose `measurements` block the ETL
-   * left null. Numbers, not a verdict: `isSuspect` turns them into one.
+   * left null. Facts about the player in frame, not a verdict on the swing:
+   * the panel reports them and the reviewer judges.
    */
   measurements?: ClipMeasurements;
   /**
@@ -153,26 +154,36 @@ export interface Clip {
   clipSize?: { width: number; height: number };
 }
 
+/**
+ * What the verifier is willing to say about a swing.
+ *
+ * Two numbers, both scale and position. It used to carry four more —
+ * `wristSpeed`, `armOffset`, `contactHeight` and `hittingSide` — which
+ * together answered "which arm swung and where did it meet the ball". The ETL
+ * stopped producing them: the rule that picked an arm was never verified, and
+ * with the arm unknown a distance from the midline is a distance from nothing.
+ * See `verify.py`.
+ *
+ * Both fields are optional because the schema marks every measurement field
+ * optional and swings rendered before `center_x` existed carry only the first.
+ */
 export interface ClipMeasurements {
-  /** Peak wrist speed, in torso heights per second. Saturates at 40. */
-  wristSpeed: number;
-  /** Hitting wrist's distance from the body midline at contact, in torso heights. */
-  armOffset: number;
   /**
-   * The tracked player's torso height as a fraction of the crop — the unit
-   * everything else here is expressed in.
+   * The tracked player's torso height as a fraction of the crop.
    *
-   * Worth showing because it is the denominator: a swing measured against a
-   * torso of 0.008 of the frame is a player far enough away that both numbers
-   * above are mostly noise, and nothing else on the panel would say so.
-   * Optional because the schema marks every measurement field optional; a swing
-   * can carry the two required numbers and not this one.
+   * The scale of the whole measurement: a swing measured against a torso of
+   * 0.008 of the frame is a player far enough away that the pipeline's own
+   * gates were working on noise, and nothing else on the panel would say so.
    */
   torsoHeight?: number;
-  /** Contact's height within the crop, 0 at the top edge. */
-  contactHeight?: number;
-  /** Which wrist the numbers above were taken from. */
-  hittingSide?: 'left' | 'right';
+  /**
+   * Where across the frame the player stood at contact, 0 at the left edge.
+   *
+   * Frame-normalized, not in torso heights — it is a position, and it is what
+   * the ETL's own de-duplication uses to decide whether two detections are one
+   * player hitting twice or two players rallying.
+   */
+  centerX?: number;
 }
 
 /** @see Clip.detection */
@@ -257,24 +268,6 @@ export interface ClipObjects {
 export const BALL_IN_FLIGHT = 20;
 
 /**
- * Whether a swing reads as "the detector fired, but nobody hit anything".
- *
- * Both halves are needed, and neither alone is enough. Measured over the 329
- * swings of the first four sessions: speed has no gap to cut at — thresholds
- * from 2 to 12 shave off 2% to 41% with nothing to distinguish a soft volley
- * from a non-shot. Arm extension separates far better (157 of 206 swings above
- * speed 10 have the arm out, against almost none of the slow ones), but a
- * genuine drop-shot is slow with the arm out too.
- *
- * Together they flag 18% of the tree: slow AND the wrist still at the midline,
- * which is a body standing still. This is a sorting aid, not a filter the
- * pipeline applies — `IMG_0305/swing_019` at speed 2.27 and offset 0.01 is
- * still a swing until a human looks at the clip and says otherwise.
- */
-export const SUSPECT_SPEED = 5;
-export const SUSPECT_ARM = 0.4;
-
-/**
  * A clip id with its session prefix dropped: `IMG_0305/swing_042` -> `swing_042`.
  *
  * The prefix is the same on every row once the header names the source, so it
@@ -347,11 +340,6 @@ export const sourceRange = (clip: Clip): string => {
   const length = `${seconds.toFixed(1).replace(/\.0$/, '')}s`;
   return `${clock(clip.sourceStartMs)}–${clock(clip.sourceEndMs)} (${length})`;
 };
-
-export const isSuspect = (clip: Clip): boolean =>
-  clip.measurements !== undefined &&
-  clip.measurements.wristSpeed < SUSPECT_SPEED &&
-  Math.abs(clip.measurements.armOffset) < SUSPECT_ARM;
 
 export interface Comment {
   id: number;

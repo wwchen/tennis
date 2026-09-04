@@ -1,8 +1,10 @@
-"""Tests for swing verification and hitting-wrist selection.
+"""Tests for swing verification and wrist-motion measurement.
 
-The centrepiece is test_picks_the_fast_arm_not_the_wide_arm: the previous
-generation of this code chose the wrist furthest from the body midline, which
-is usually the free arm, and measured 22% stroke agreement as a result.
+Two generations of this code named the arm that swung -- first by reach
+(which selects the free arm: 22% stroke agreement), then by speed (never
+verified). Neither survives, so nothing here asserts a side. What is left is
+how fast either wrist moved, which gates `min_wrist_speed` and orders the
+slots, and the tests below pin it in those two roles only.
 """
 
 import dataclasses
@@ -65,13 +67,15 @@ def swinging(n=9, cx=0.5, sweep=0.5, free_reach=0.30, hitting="right",
     return out
 
 
-class TestHittingWristSelection(unittest.TestCase):
-    def test_picks_the_fast_arm_not_the_wide_arm(self):
-        """The exact bug from the old code, as a regression test.
+class TestPeakWristMotion(unittest.TestCase):
+    def test_a_parked_arm_cannot_raise_the_peak(self):
+        """Reach is not motion -- the surviving half of the old regression.
 
-        The free (left) wrist is parked 0.30 from the midline; the hitting
-        (right) wrist never exceeds 0.15. Choosing by reach picks left;
-        choosing by speed picks right.
+        The free (left) wrist is parked 0.30 from the midline and never
+        moves; the hitting (right) wrist never exceeds 0.15 of reach but
+        sweeps. The old code chose the WIDER arm here, which is the free one.
+        Nothing chooses an arm any more, so what is pinned is that the peak
+        equals the moving wrist's own peak and owes nothing to the parked one.
         """
         bodies = swinging(n=9, sweep=0.3, free_reach=0.30, hitting="right")
         series = [(1000 + i * 33, b) for i, b in enumerate(bodies)]
@@ -82,15 +86,26 @@ class TestHittingWristSelection(unittest.TestCase):
         self.assertGreater(left_reach, right_reach,
                            "test setup must make the free arm the wider one")
 
-        side, peak, _ = verify.choose_hitting_side(series, TORSO)
-        self.assertEqual(side, "right")
+        peak, _ = verify.peak_wrist_motion(series, TORSO)
+        moving = max(s for _, s in
+                     verify.wrist_speeds(series, pose.R_WRIST, TORSO))
         self.assertGreater(peak, 0)
+        self.assertAlmostEqual(peak, moving, places=9)
 
-    def test_picks_left_when_the_left_arm_swings(self):
-        bodies = swinging(n=9, sweep=0.3, free_reach=0.30, hitting="left")
-        series = [(1000 + i * 33, b) for i, b in enumerate(bodies)]
-        side, _, _ = verify.choose_hitting_side(series, TORSO)
-        self.assertEqual(side, "left")
+    def test_either_arm_swinging_reads_the_same(self):
+        """The peak is a maximum over both wrists, so it is L/R symmetric.
+
+        A left-handed and a right-handed player performing the mirrored swing
+        must gate identically at `min_wrist_speed`. Asking the peak which arm
+        it came from is what this stage stopped doing.
+        """
+        right = [(1000 + i * 33, b) for i, b in
+                 enumerate(swinging(n=9, sweep=0.3, hitting="right"))]
+        left = [(1000 + i * 33, b) for i, b in
+                enumerate(swinging(n=9, sweep=0.3, hitting="left"))]
+        self.assertAlmostEqual(verify.peak_wrist_motion(right, TORSO)[0],
+                               verify.peak_wrist_motion(left, TORSO)[0],
+                               places=9)
 
     def test_peak_time_lands_where_the_wrist_is_fastest(self):
         """A wrist that accelerates mid-window peaks mid-window.
@@ -106,20 +121,27 @@ class TestHittingWristSelection(unittest.TestCase):
             x = 0.5 - 0.2 * math.cos(math.pi * phase)
             bodies.append(body(cx=0.5, l_wrist=(0.20, 0.5), r_wrist=(x, 0.46)))
         series = [(1000 + i * 33, b) for i, b in enumerate(bodies)]
-        _, _, peak_ms = verify.choose_hitting_side(series, TORSO)
+        _, peak_ms = verify.peak_wrist_motion(series, TORSO)
         middle_ms = 1000 + (n // 2) * 33
         self.assertLess(abs(peak_ms - middle_ms), 70,
                         "peak at %dms is not near the middle (%dms)"
                         % (peak_ms, middle_ms))
 
-    def test_no_movement_yields_no_side(self):
+    def test_no_movement_reports_zero_at_a_real_instant(self):
+        """Standing still is "nobody swung", not "the pose failed".
+
+        Every speed is 0.0 here, which must reach the `min_wrist_speed` gate
+        as `wrist_too_slow`. A `ms` of None instead routes it to
+        `no_wrist_track`, which blames the detector for a track it read fine.
+        """
         still = [(1000 + i * 33, body()) for i in range(6)]
-        side, peak, _ = verify.choose_hitting_side(still, TORSO)
+        peak, peak_ms = verify.peak_wrist_motion(still, TORSO)
         self.assertEqual(peak, 0.0)
+        self.assertIsNotNone(peak_ms)
 
     def test_single_frame_yields_nothing(self):
-        self.assertEqual(verify.choose_hitting_side([(1000, body())], TORSO),
-                         (None, -1.0, None))
+        self.assertEqual(verify.peak_wrist_motion([(1000, body())], TORSO),
+                         (0.0, None))
 
 
 class TestWristSpeeds(unittest.TestCase):
@@ -200,8 +222,7 @@ class TestMeasureSlot(unittest.TestCase):
         track = track_from(swinging(n=9, sweep=0.5))
         got = verify.measure_slot(track, 0, self.settings)
         self.assertTrue(got.ok, got.reason)
-        self.assertEqual(got.hitting_side, "right")
-        self.assertIsNotNone(got.wrist_peak_speed)
+        self.assertGreater(got.peak_motion, 0.0)
         self.assertAlmostEqual(got.torso_height, TORSO, places=4)
 
     def test_rejects_too_few_frames(self):
@@ -268,40 +289,21 @@ class TestMeasureSlot(unittest.TestCase):
         got = verify.measure_slot(track_from([body()] * 9), 0, self.settings)
         self.assertEqual(got.reason, verify.WRIST_TOO_SLOW)
 
-    def test_contact_offset_sign_says_which_side(self):
-        """Positive means the wrist was right of the midline at contact.
+    def test_center_x_is_where_the_player_was_at_contact(self):
+        """`dedupe_swings` decides "one player or two" from this number alone.
 
-        Contact sits mid-window, as on real footage: the onset is the
-        strike and the wrist is fastest through it. Declaring contact on
-        the window's last frame instead leaves the peak ~230ms away, which
-        is precisely what "the onset is off the swing" means.
+        Taken at the contact frame, not the window's, so a player who moves
+        across the window is placed where they hit rather than where they
+        finished.
         """
-        mid_ms = 1000 + 4 * 33
-        right_side = [body(cx=0.5, l_wrist=(0.2, 0.5),
-                           r_wrist=(0.5 + 0.05 * i, 0.46)) for i in range(9)]
-        track = track_from(right_side, base_ms=1000, step_ms=33,
-                           contact_ms=mid_ms)
-        got = verify.measure_slot(track, 0, self.settings)
-        self.assertTrue(got.ok, got.reason)
-        self.assertGreater(got.contact_offset, 0)
-
-        left_side = [body(cx=0.5, l_wrist=(0.5 - 0.05 * i, 0.46),
-                          r_wrist=(0.8, 0.5)) for i in range(9)]
-        track = track_from(left_side, base_ms=1000, step_ms=33,
-                           contact_ms=mid_ms)
-        got = verify.measure_slot(track, 0, self.settings)
-        self.assertTrue(got.ok, got.reason)
-        self.assertLess(got.contact_offset, 0)
-
-    def test_contact_height_is_negative_above_the_shoulder(self):
-        """An overhead contacts above the shoulder; y grows downward."""
-        overhead = [body(cx=0.5, l_wrist=(0.2, 0.5),
-                         r_wrist=(0.5 + 0.03 * i, 0.15)) for i in range(9)]
-        track = track_from(overhead, base_ms=1000, step_ms=33,
+        walking = [body(cx=0.30 + 0.05 * i, l_wrist=(0.2, 0.5),
+                        r_wrist=(0.30 + 0.05 * i + 0.05 * i, 0.46))
+                   for i in range(9)]
+        track = track_from(walking, base_ms=1000, step_ms=33,
                            contact_ms=1000 + 4 * 33)
         got = verify.measure_slot(track, 0, self.settings)
         self.assertTrue(got.ok, got.reason)
-        self.assertLess(got.contact_height, 0)
+        self.assertAlmostEqual(got.center_x, walking[4].center_x(), places=6)
 
     def test_onset_gate_is_reachable_within_a_real_track_window(self):
         """Regression: the gate must be able to fire at all.
@@ -322,7 +324,7 @@ class TestMeasureSlot(unittest.TestCase):
         a = verify.measure_slot(near, 0, self.settings)
         b = verify.measure_slot(far, 0, self.settings)
         self.assertTrue(a.ok and b.ok, (a.reason, b.reason))
-        self.assertAlmostEqual(a.wrist_peak_speed, b.wrist_peak_speed, delta=0.6)
+        self.assertAlmostEqual(a.peak_motion, b.peak_motion, delta=0.6)
 
     def test_boxes_are_collected_for_cropping(self):
         got = verify.measure_slot(track_from(swinging(n=9)), 0, self.settings)
@@ -335,7 +337,23 @@ class TestMeasureSlot(unittest.TestCase):
         meta = got.to_metadata()
         self.assertEqual(meta["space"], schema.MEASURE_SPACE)
         self.assertEqual(meta["origin"], schema.MEASURE_ORIGIN)
-        self.assertIn(meta["hitting_side"], schema.HITTING_SIDES)
+        self.assertEqual(meta["units"], {"length": "torso_heights"})
+        self.assertIsNotNone(meta["torso_height"])
+        self.assertIsNotNone(meta["center_x"])
+
+    def test_to_metadata_publishes_no_unverified_claim(self):
+        """The four fields that said which arm swung, and where it hit.
+
+        They are not merely unset -- they are absent, so a consumer that
+        still reads them fails loudly instead of quietly seeing null and
+        carrying on. `peak_motion` is out too: it is a threshold input and a
+        slot ordering, and publishing it is what invited it to be read as a
+        property of the swing.
+        """
+        got = verify.measure_slot(track_from(swinging(n=9)), 0, self.settings)
+        for name in ("hitting_side", "wrist_peak_speed", "contact_offset",
+                     "contact_height", "peak_motion"):
+            self.assertNotIn(name, got.to_metadata())
 
     def test_to_metadata_is_none_when_rejected(self):
         got = verify.measure_slot(track_from([body()] * 9), 0, self.settings)
@@ -468,58 +486,37 @@ class AspectRatio(unittest.TestCase):
         track.frame_size = None
         self.assertEqual(verify.frame_aspect(track), 1.0)
 
-    def test_contact_offset_is_the_same_shot_filmed_two_ways(self):
-        """The same landmarks shot portrait and landscape must measure alike.
+    def test_measure_slot_passes_the_frame_aspect_through(self):
+        """The correction is worth nothing if the peak never sees it.
 
-        `contact_offset` is a horizontal distance over a vertical scale, so it
-        needs the aspect term for exactly the reason `wrist_speeds` does. It
-        did not have one, and the corpus is 20 landscape sessions against 5
-        portrait: across all 2505 shipped swings, median |contact_offset| read
-        0.227 on the 16:9 sessions against 0.618 on the 9:16 ones -- a 2.7x
-        split that is a property of the camera, not the player. Multiplied by
-        the aspect they become 0.403 and 0.348, a ratio of 1.16.
+        `wrist_speeds` takes the aspect as an argument, so it is possible for
+        it to be right and for `measure_slot` to call it with the default 1.0.
+        The same landmarks on a 16:9 and a 9:16 frame must therefore report
+        different peaks for this mostly-horizontal swing.
         """
         settings = config.Settings(min_torso=0.045, min_wrist_speed=0.45,
                                    pose_window_s=0.40)
-        offsets = {}
-        for name, size in (("landscape", (1920, 1080)),
-                           ("portrait", (1080, 1920))):
-            # contact two frames past the middle, so the hitting wrist is
-            # genuinely off the midline there -- at the middle frame `swinging`
-            # puts it exactly on cx and every offset is 0.
+        peaks = []
+        for size in ((1920, 1080), (1080, 1920)):
             track = track_from(swinging(n=9, sweep=0.5), contact_ms=1198)
             track.frame_size = size
             measured = verify.measure_slot(track, 0, settings)
             self.assertTrue(measured.ok, measured.reason)
-            offsets[name] = measured.contact_offset
-        # Identical normalized landmarks, so the pixel geometry differs only by
-        # each frame's aspect: divide it back out and the two must agree.
-        self.assertAlmostEqual(offsets["landscape"] / (1920 / 1080.0),
-                               offsets["portrait"] / (1080 / 1920.0), places=6)
-        self.assertGreater(abs(offsets["landscape"]), abs(offsets["portrait"]))
-
-    def test_contact_height_takes_no_aspect_term(self):
-        """Wrist y and shoulder y are both height-normalized already."""
-        settings = config.Settings(min_torso=0.045, min_wrist_speed=0.45,
-                                   pose_window_s=0.40)
-        heights = []
-        for size in ((1920, 1080), (1080, 1920)):
-            track = track_from(swinging(n=9, sweep=0.5), contact_ms=1198)
-            track.frame_size = size
-            heights.append(verify.measure_slot(track, 0, settings)
-                           .contact_height)
-        self.assertAlmostEqual(heights[0], heights[1], places=9)
+            peaks.append(measured.peak_motion)
+        self.assertGreater(peaks[0], peaks[1])
 
 
-class SpeedCapAndHittingSide(unittest.TestCase):
-    """The cap must not decide which arm swung.
+class SpeedCapAndSlotOrdering(unittest.TestCase):
+    """The cap must not decide which slot gets measured.
 
     SPEED_CAP was 40.0, which sat at the MEDIAN of real peak wrist speed
     (re-measured over 278 cached pose tracks: p50 38.2, p90 70.3, max 123). It
-    flattened 63% of the shipped corpus onto one value, and because
-    `choose_hitting_side` compares with a strict `>` and tries "left" first,
-    every resulting tie became "left" -- 90.9% left among capped swings against
-    51.6% among uncapped ones.
+    flattened 63% of the shipped corpus onto one value. That used to decide an
+    arm -- `choose_hitting_side` compared with a strict `>` and tried "left"
+    first, so every tie became "left": 90.9% left among capped swings against
+    51.6% among uncapped ones. The arm choice is gone, but `verify` still
+    picks the slot with the fastest wrist, so a cap that ties two real swings
+    now picks the wrong PLAYER instead of the wrong arm.
     """
 
     def test_the_cap_sits_clear_of_the_bulk_of_real_swings(self):
@@ -530,20 +527,26 @@ class SpeedCapAndHittingSide(unittest.TestCase):
         # tail -- p99 is 279 and the max 949, which are landmark jitter.
         self.assertGreater(verify.SPEED_CAP, 87.0)
 
-    def test_equal_non_zero_peaks_do_not_silently_become_left(self):
-        speeds = [(0, 10.0), (40, 10.0)]
+    def test_two_fast_players_are_still_told_apart(self):
+        """Both slots swing above the old 40.0 cap, at different speeds.
 
-        def fake(series, index, torso, aspect=1.0):
-            return speeds
-
-        original = verify.wrist_speeds
-        verify.wrist_speeds = fake
-        try:
-            side, peak, _ = verify.choose_hitting_side([], torso=0.1)
-        finally:
-            verify.wrist_speeds = original
-        self.assertIsNone(side, "a tie must be reported, not resolved by loop order")
-        self.assertEqual(peak, 10.0)
+        Under the old cap both read exactly 40.0 and `max` fell back to slot
+        order, which is the same coin flip that produced 90.9% "left". The
+        faster player must win on merit.
+        """
+        settings = config.Settings()
+        fast = swinging(n=9, cx=0.25, sweep=1.2)
+        faster = swinging(n=9, cx=0.75, sweep=1.8)
+        track = track_from([[fast[i], faster[i]] for i in range(9)])
+        results = [verify.measure_slot(track, s, settings) for s in range(2)]
+        for m in results:
+            self.assertTrue(m.ok, m.reason)
+            self.assertGreater(m.peak_motion, 40.0,
+                               "fixture must exceed the old cap to test it")
+        self.assertNotAlmostEqual(results[0].peak_motion,
+                                  results[1].peak_motion, places=3)
+        got, _ = verify.verify(track, settings)
+        self.assertEqual(got.slot, 1)
 
     def test_a_standing_player_still_reads_as_too_slow(self):
         # Both wrists tie at 0.0 when nobody moves. That is not "cannot tell

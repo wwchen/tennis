@@ -21,7 +21,6 @@ const doc = (): Doc => ({
 
 const ui = (patch: Partial<Ui> = {}): Ui => ({
   view: 'compare',
-  suspectOnly: false,
   inspectorPlaying: false,
   sourceMetaOpen: false,
   inlineClip: null,
@@ -426,63 +425,6 @@ describe('null strokes', () => {
     const d = doc();
     d.clips = [{ ...d.clips[0], stroke: null }, { ...d.clips[1], stroke: 'Backhand' }];
     expect(strokesOf(d)).toEqual(['Backhand']);
-  });
-});
-
-describe('the "likely not a swing" filter', () => {
-  const measured = (id: string, wristSpeed: number, armOffset: number): Clip => ({
-    id,
-    player: 'left',
-    stroke: null,
-    rejected: false,
-    duration: '0:03',
-    triaged: false,
-    grade: null,
-    note: '',
-    frames: [{ i: 0, sourceMs: 0, phase: null }],
-    measurements: { wristSpeed, armOffset },
-  });
-
-  const docOf = (clips: Clip[]): Doc => ({
-    clips,
-    comments: [],
-    extraPlayers: [],
-    removedStack: [],
-    nextCommentId: 1,
-  });
-
-  it('keeps only the swings that are both slow and unextended', () => {
-    // Measured shapes from the real tree: a standing body, a drop shot (slow
-    // but the arm is out), a mishit (fast, arm in), a normal drive.
-    const d = docOf([
-      measured('standing', 2.27, 0.01),
-      measured('drop-shot', 2.4, 0.9),
-      measured('fast-arm-in', 22.0, 0.1),
-      measured('drive', 28.0, 1.1),
-    ]);
-    const kept = visibleClips(d, ui({ suspectOnly: true })).map((c) => c.id);
-    expect(kept).toEqual(['standing']);
-  });
-
-  it('is off by default, so nothing is hidden until asked', () => {
-    const d = docOf([measured('standing', 2.27, 0.01), measured('drive', 28.0, 1.1)]);
-    expect(visibleClips(d, ui()).map((c) => c.id)).toEqual(['standing', 'drive']);
-  });
-
-  it('never flags a clip with no measurements rather than guessing', () => {
-    // Seeded clips carry none. Treating "unmeasured" as "suspect" would hide
-    // the whole seed the moment the toggle went on.
-    const unmeasured = { ...measured('seed', 0, 0) };
-    delete unmeasured.measurements;
-    const d = docOf([unmeasured]);
-    expect(visibleClips(d, ui({ suspectOnly: true }))).toEqual([]);
-  });
-
-  it('reads the sign of the arm offset, not its direction', () => {
-    // `contact_offset` is signed: a left-handed contact is negative and just as
-    // extended, so flagging on the raw value would flag every left-side shot.
-    const d = docOf([measured('left-side', 2.0, -0.9)]);
-    expect(visibleClips(d, ui({ suspectOnly: true }))).toEqual([]);
   });
 });
 

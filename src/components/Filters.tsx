@@ -2,7 +2,7 @@ import type { Dispatch } from 'react';
 import type { Action, Ui } from '@/state/store';
 import type { Stats } from '@/lib/selectors';
 import type { Phase } from '@/domain/types';
-import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES, SUSPECT_SPEED } from '@/domain/types';
+import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
 import { GRADE_ORDER, GRADES } from '@/domain/grades';
 import { Button, checkedOf, ICONS, SegmentedControl, Select, Toggle, valueOf } from '@/lds';
 import { Mono } from './shared';
@@ -150,17 +150,6 @@ export function Filters({
           onChange={(e: Event) => dispatch({ type: 'setLowOnly', value: checkedOf(e) })}
           hint-size="100%,24px"
         />
-        <Toggle
-          label="Likely not a swing"
-          checked={ui.suspectOnly}
-          onChange={(e: Event) => dispatch({ type: 'setSuspectOnly', value: checkedOf(e) })}
-          hint-size="100%,24px"
-        />
-        <div style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--gray-600)' }}>
-          Wrist slower than {SUSPECT_SPEED} torso-heights/s <em>and</em> still at the body midline
-          at contact — a body standing still. About 18% of a session; check the clip before
-          removing.
-        </div>
         <Toggle
           label="Show removed clips"
           checked={ui.showRejected}

@@ -153,9 +153,9 @@ def cmd_detect(args):
 
     print("\nverified swings:")
     for i, (track, measured) in enumerate(accepted, 1):
-        print("  %3d  %8.2fs  speed %5.2f  torso %.3f  %s"
-              % (i, track.contact_ms / 1000.0, measured.wrist_peak_speed,
-                 measured.torso_height, measured.hitting_side))
+        print("  %3d  %8.2fs  torso %.3f  x %.3f"
+              % (i, track.contact_ms / 1000.0, measured.torso_height,
+                 measured.center_x or 0.0))
     print("\n%d candidates -> %d swings (%.0f%% kept)"
           % (len(candidates), len(accepted),
              100.0 * len(accepted) / max(1, len(candidates))))

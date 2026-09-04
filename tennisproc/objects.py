@@ -145,21 +145,27 @@ def choose_player(persons, pose_box):
     return max(persons, key=lambda p: pose_box.overlap_fraction(p))
 
 
-def choose_racket(rackets, wrist, player, torso_px):
+def choose_racket(rackets, wrists, player, torso_px):
     """The racket the tracked player is holding, or None.
 
-    Accepted when near the wrist OR on the player, not both. Measured over 108
+    Accepted when near a wrist OR on the player, not both. Measured over 108
     swings, recall was 53.7% for the wrist test alone, 38.9% for the overlap
     test alone and 62.0% for either -- because the wrist test survives a bad
     player box and the overlap test survives a bad wrist, and a quarter of the
     far-from-wrist boxes were exactly that second case.
+
+    `wrists` is every candidate hand, not the hitting one. Nothing upstream
+    claims to know which arm swung any more -- see verify.py -- and a racket
+    near either hand is the player's either way. Taking both also removes this
+    rule's dependence on a side choice that was never verified.
     """
     if not rackets or torso_px <= 0:
         return None
+    points = [w for w in (wrists or ()) if w is not None]
     keep = []
     for box in rackets:
-        near = (wrist is not None
-                and box.distance_to(wrist) <= RACKET_REACH * torso_px)
+        near = any(box.distance_to(w) <= RACKET_REACH * torso_px
+                   for w in points)
         held = (player is not None
                 and box.overlap_fraction(player) >= PLAYER_OVERLAP)
         if near or held:
@@ -312,7 +318,7 @@ def make_backend(name, **kwargs):
     raise ObjectError("unknown object backend: %s" % name)
 
 
-def measure(backend, frame, plate, pose_box, wrist, torso_px):
+def measure(backend, frame, plate, pose_box, wrists, torso_px):
     """Racket and ball for one swing, as the `objects` metadata block.
 
     `frame` is the contact frame and `plate` the short-plate median of frames
@@ -321,7 +327,7 @@ def measure(backend, frame, plate, pose_box, wrist, torso_px):
     """
     found = backend.detect(frame)
     player = choose_player(found.get("person"), pose_box)
-    racket = choose_racket(found.get("racket"), wrist, player, torso_px)
+    racket = choose_racket(found.get("racket"), wrists, player, torso_px)
     ball = choose_ball(found.get("ball"), frame, plate, torso_px)
     doc = {"space": "source_display",
            "detector": "%s/coco" % backend.name,

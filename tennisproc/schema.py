@@ -279,11 +279,18 @@ def _check_objects(c, o, path):
 def _check_measurements(c, m, path):
     c.const(m, "space", path, MEASURE_SPACE)
     c.const(m, "origin", path, MEASURE_ORIGIN)
-    c.field(m, "hitting_side", path, (str,), enum=HITTING_SIDES)
     c.field(m, "per_frame", path, (str,), optional=True)
-    for name in ("wrist_peak_speed", "torso_height", "contact_offset",
-                 "contact_height"):
-        c.field(m, name, path, _NUM, optional=True)
+    c.field(m, "torso_height", path, _NUM, optional=True)
+    # `hitting_side`, `wrist_peak_speed`, `contact_offset` and
+    # `contact_height` were removed from this block: nothing produces them any
+    # more, and the rule that chose an arm was never verified. They are not
+    # rejected when present, because 2505 shipped swings carry them and a
+    # validator that fails on the whole existing corpus is not a validator.
+    for name in ("wrist_peak_speed", "contact_offset", "contact_height"):
+        if name in m:
+            c.field(m, name, path, _NUM, optional=True)
+    if "hitting_side" in m:
+        c.field(m, "hitting_side", path, (str,), enum=HITTING_SIDES)
     # Checked only when present, for the same reason as `source.modified`:
     # `optional=True` means "may be null", never "may be absent", so requiring
     # this would fail every one of the 2505 swings written before it existed.
@@ -291,8 +298,12 @@ def _check_measurements(c, m, path):
         c.field(m, "center_x", path, _NUM, optional=True)
     units = c.block(m, "units", path)
     if units is not None:
-        for name in ("length", "speed"):
-            c.field(units, name, "%s.units" % path, (str,))
+        c.field(units, "length", "%s.units" % path, (str,))
+        # `speed` went with `wrist_peak_speed`: there is no speed in this
+        # block to give a unit to any more. Still accepted for the same reason
+        # as the fields above -- the shipped corpus declares it.
+        if "speed" in units:
+            c.field(units, "speed", "%s.units" % path, (str,))
 
 
 def _check_edit(c, edit, path):
