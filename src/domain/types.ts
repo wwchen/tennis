@@ -132,15 +132,16 @@ export interface Clip {
    */
   detection?: ClipDetection;
   /**
-   * The human-authored label block, verbatim.
+   * Where the racket and the ball were on the contact frame.
    *
-   * `stroke`, `grade`, `player` and `note` above are the app's lossy views of
-   * it — `grade` has three values against quality's five, `player` collapses a
-   * name and a court slot into one string, and `rejected` is one bit against
-   * four verdicts. A panel whose job is to report what the pipeline knows has
-   * to show the unreduced values, or it re-tells the same lossy story.
+   * Absent means NO DETECTOR LOOKED — a seeded clip, or any swing rendered
+   * before `--objects-backend` existed. That is a different state from a
+   * present block whose `racket` is null, which is a detector that looked and
+   * found nothing, and the panel has to keep the two apart: a missing racket is
+   * ordinary (it is found on 62% of swings) and says nothing about the swing,
+   * while "nobody looked" says nothing about anything.
    */
-  labels?: ClipLabels;
+  objects?: ClipObjects;
   /**
    * Pixel size of the rendered clip, as the ETL wrote it.
    *
@@ -201,18 +202,59 @@ export interface ClipDetection {
   rejectReason: string | null;
 }
 
-/** @see Clip.labels */
-export interface ClipLabels {
-  /** Court zone the ETL assigned. A zone, never a person. */
-  playerSlot: string | null;
-  /** The name a human typed, or null — which is why `player` falls back to the slot. */
-  playerName: string | null;
-  /** 1–5, finer than `grade`'s three values. */
-  quality: number | null;
-  /** `valid` | `false_positive` | `duplicate` | `unclear`, or null for no call. */
-  verdict: string | null;
-  tags: string[];
+/**
+ * One detection box, in SOURCE-DISPLAY PIXELS.
+ *
+ * Not the space `ClipMeasurements` uses. Those are crop-normalized fractions of
+ * a rectangle `--crop-mode` chooses; these are found on the whole frame before
+ * any crop exists, so the two must never be compared or plotted together.
+ */
+export interface ObjectBox {
+  /** Top-left corner and size, in source-display pixels. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Detector confidence, 0-1. Present-only in `schema.py`, hence optional. */
+  conf?: number;
 }
+
+/** @see Clip.objects */
+export interface BallBox extends ObjectBox {
+  /**
+   * How far this box's pixels deviate from a short background plate, 0-255.
+   *
+   * The one number that separates a ball in flight from one lying on the court,
+   * which look identical to a box detector. @see BALL_IN_FLIGHT
+   */
+  motion?: number;
+  /**
+   * Gap from the ball to the racket box, in torso heights.
+   *
+   * Absent when no racket was found — there is nothing to measure against, and
+   * a 0 would read as the ball resting on a racket that was never located.
+   */
+  racketDistance?: number;
+}
+
+/** @see Clip.objects */
+export interface ClipObjects {
+  /** Which backend found these, e.g. `yolo/coco`. */
+  detector?: string;
+  /** Null when the detector looked and found none. Not the same as absent. */
+  racket: ObjectBox | null;
+  ball: BallBox | null;
+}
+
+/**
+ * The `motion` above which a detected ball is flying rather than lying there.
+ *
+ * A ball on the court is still a ball to a box detector, and there are usually
+ * several of them in shot. Motion against a short background plate separates
+ * them with room to spare: dead balls measured 2-3, and confirmed in-flight
+ * ones 21-65, so anything under 20 is on the ground.
+ */
+export const BALL_IN_FLIGHT = 20;
 
 /**
  * Whether a swing reads as "the detector fired, but nobody hit anything".

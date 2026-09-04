@@ -25,6 +25,22 @@ import {
   windowsFor,
   type EndMode,
 } from './source-playback';
+import {
+  CLASS_COLOUR,
+  CONF_STEPS,
+  DEFAULT_CLASSES,
+  DEFAULT_CONF,
+  OBJECT_CLASSES,
+  boxRect,
+  drawnBoxes,
+  frameAt,
+  objectsUrl,
+  sampleLifeMs,
+  videoContentRect,
+  type ObjectClass,
+  type ObjectsDoc,
+  type VideoBox,
+} from './object-overlay';
 
 /**
  * Review a session by seeking the SOURCE video, not by playing cut clips.
@@ -127,6 +143,36 @@ export function KeyframeReview({
   const [unbounded, setUnbounded] = useState(false);
   const [tab, setTab] = useState<'swings' | 'details'>('swings');
   const [showKeys, setShowKeys] = useState(false);
+  /**
+   * The session's per-frame detections, or null when it has none.
+   *
+   * Null is the ordinary state, not a failure: the object pass is optional and
+   * most sessions were never put through it. Nothing is said about it either
+   * way — the controls simply do not appear.
+   */
+  const [objects, setObjects] = useState<ObjectsDoc | null>(null);
+  const [shownClasses, setShownClasses] = useState<Set<ObjectClass>>(
+    () => new Set(DEFAULT_CLASSES),
+  );
+  const [confFloor, setConfFloor] = useState<number>(DEFAULT_CONF);
+  /**
+   * The video element's own size and the size of the picture inside it.
+   *
+   * Kept in state rather than read during render because both change without
+   * React: the element is letterboxed and resizes with the window, and its
+   * intrinsic size is unknown until `loadedmetadata`. A box drawn from a stale
+   * measurement is a box in the wrong place, which is worse than no box.
+   */
+  const [videoBox, setVideoBox] = useState<VideoBox | null>(null);
+  // Dropped during render on a session change, the same reset-on-input pattern
+  // the hidden set and the selection above use. Clearing it inside the fetch
+  // effect instead would leave the old session's boxes on screen for the frame
+  // between the switch and the effect running — over the new session's video.
+  const [seenObjectSession, setSeenObjectSession] = useState(session);
+  if (seenObjectSession !== session) {
+    setSeenObjectSession(session);
+    setObjects(null);
+  }
   /**
    * Swings the reviewer has hidden, by id.
    *
@@ -438,6 +484,71 @@ export function KeyframeReview({
     if (el.currentTime * 1000 < bounds.startMs) el.currentTime = bounds.startMs / 1000;
   }, [bounds]);
 
+  // The object export, refetched per session and abandoned on the way out: a
+  // 30k-line file can still be arriving when the reviewer switches, and landing
+  // late would paint the previous session's boxes over this one's video.
+  //
+  // Every failure lands on `null`, which is the same state as "never exported":
+  // 404, a truncated file, no dev middleware at all. There is nothing a reviewer
+  // could do about any of them, and an error banner over a video is a poor way
+  // to say that an optional extra pass was not run.
+  useEffect(() => {
+    const stop = new AbortController();
+    fetch(objectsUrl(session), { signal: stop.signal })
+      .then((r) => (r.ok ? (r.json() as Promise<ObjectsDoc>) : null))
+      .then(setObjects)
+      .catch(() => undefined);
+    return () => stop.abort();
+  }, [session]);
+
+  /**
+   * Re-read the element's box and the picture's size inside it.
+   *
+   * Returns the PREVIOUS object when the numbers have not changed. This runs on
+   * every resize frame, and a fresh object each time would re-render the whole
+   * view for a window drag that moved nothing.
+   */
+  const measure = useCallback(() => {
+    const el = video.current;
+    if (el === null) return;
+    setVideoBox((prev) => {
+      const next: VideoBox = {
+        clientWidth: el.clientWidth,
+        clientHeight: el.clientHeight,
+        videoWidth: el.videoWidth,
+        videoHeight: el.videoHeight,
+      };
+      const same =
+        prev !== null &&
+        prev.clientWidth === next.clientWidth &&
+        prev.clientHeight === next.clientHeight &&
+        prev.videoWidth === next.videoWidth &&
+        prev.videoHeight === next.videoHeight;
+      return same ? prev : next;
+    });
+  }, []);
+
+  // A ResizeObserver rather than a window listener: the stage is flex-sized, so
+  // the element's box also changes when the rail opens or the transport row
+  // wraps, neither of which fires a resize event.
+  useEffect(() => {
+    const el = video.current;
+    if (el === null || typeof ResizeObserver === 'undefined') return;
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measure]);
+
+  const toggleClass = useCallback((cls: ObjectClass) => {
+    setShownClasses((prev) => {
+      const next = new Set(prev);
+      if (next.has(cls)) next.delete(cls);
+      else next.add(cls);
+      return next;
+    });
+  }, []);
+
   // The picker lists only playable sessions, but the app still LOADS whichever
   // session the tree lists first — `IMG_0304`, which has no source video. That
   // left the picker showing one session while the view rendered another's empty
@@ -494,6 +605,21 @@ export function KeyframeReview({
   const windowFill = bounds === null ? 0 : windowProgress(cursorMs, bounds.startMs, bounds.endMs);
   const counter = `${windows.length === 0 ? 0 : idx + 1} / ${windows.length}`;
 
+  // The boxes for whatever frame is on screen. `cursorMs` is updated by the two
+  // watchers above, so this follows playback without a clock of its own — and
+  // the sample is the one AT OR BEFORE the playhead, never interpolated: at
+  // 15 m/s the ball moves most of a torso height between native frames, so a
+  // line drawn between two samples runs through positions it was never in.
+  const content = videoBox === null ? null : videoContentRect(videoBox);
+  const boxes =
+    objects === null
+      ? []
+      : drawnBoxes(
+          frameAt(objects.frames, cursorMs, sampleLifeMs(objects.header.fps)),
+          shownClasses,
+          confFloor,
+        );
+
   return (
     <div style={S.root}>
       {showKeys && (
@@ -527,9 +653,43 @@ export function KeyframeReview({
                 playsInline
                 style={S.video}
                 onClick={toggle}
+                onLoadedMetadata={measure}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
               />
+
+              {/*
+                What the object detector saw, over the frame it saw it on.
+                `pointerEvents: none` throughout, so click-to-pause still
+                reaches the video underneath a box sitting in the middle of it.
+              */}
+              {objects !== null && content !== null && (
+                <div style={S.overlay}>
+                  {boxes.map(({ cls, box }, i) => {
+                    const r = boxRect(box, content, objects.header);
+                    return (
+                      // Index-keyed on purpose: a detection has no identity
+                      // across frames, and the whole set is rebuilt each time
+                      // the playhead moves to a new sample.
+                      <div
+                        key={`${cls}-${i}`}
+                        style={{
+                          ...S.box,
+                          left: r.left,
+                          top: r.top,
+                          width: r.width,
+                          height: r.height,
+                          borderColor: CLASS_COLOUR[cls],
+                        }}
+                      >
+                        <span style={{ ...S.boxLabel, color: CLASS_COLOUR[cls] }}>
+                          {cls} {box[4].toFixed(2)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               <div style={S.badgeRow}>
                 <span style={S.badge}>
@@ -714,6 +874,44 @@ export function KeyframeReview({
                 </span>
               ))}
             </div>
+
+            {/*
+              Only for a session that HAS an export. The controls are the only
+              thing that says the overlay exists, so showing them dead would
+              advertise boxes that can never appear.
+
+              A floor and per-class toggles rather than a single on/off, because
+              the export applies no selection at all: at its own `conf 0.10` it
+              carries several boxes on one racket and further ones on the net
+              post, so an unfiltered overlay is not what any later stage acts on.
+            */}
+            {objects !== null && (
+              <div style={S.padGroup}>
+                <span
+                  style={S.label}
+                  title={`${objects.header.detector} · ${objects.header.weights} · sampled at ${objects.header.fps.toFixed(0)}fps`}
+                >
+                  Boxes
+                </span>
+                {OBJECT_CLASSES.map((cls) => (
+                  <span key={cls} onClick={() => toggleClass(cls)} style={S.click}>
+                    <Button variant={shownClasses.has(cls) ? 'secondary' : 'tertiary'} size="sm">
+                      {cls}
+                    </Button>
+                  </span>
+                ))}
+                <span style={S.label} title="Hide boxes the detector was less sure of than this">
+                  Conf
+                </span>
+                {CONF_STEPS.map((c) => (
+                  <span key={c} onClick={() => setConfFloor(c)} style={S.click}>
+                    <Button variant={c === confFloor ? 'secondary' : 'tertiary'} size="sm">
+                      {c.toFixed(2)}
+                    </Button>
+                  </span>
+                ))}
+              </div>
+            )}
 
             <div style={S.padGroup}>
               <span style={S.label}>At end</span>
@@ -1033,6 +1231,26 @@ const S: Record<string, CSSProperties> = {
     letterSpacing: '0.12em',
     textTransform: 'uppercase',
     color: 'rgba(250,249,233,0.92)',
+  },
+  // Sized to the ELEMENT, not the picture: `videoContentRect` has already put
+  // the letterbox offset into every box's own `left`/`top`, so this layer is
+  // simply the element's own coordinate space.
+  overlay: { position: 'absolute', inset: 0, pointerEvents: 'none' },
+  box: { position: 'absolute', border: '2px solid', borderRadius: 2 },
+  boxLabel: {
+    position: 'absolute',
+    left: 0,
+    // Above the box rather than inside it: a ball box is about 20px square on
+    // this footage, so a label inside it covers the thing being looked at.
+    bottom: '100%',
+    marginBottom: 2,
+    fontFamily: 'var(--th-mono)',
+    fontSize: 10,
+    letterSpacing: '0.04em',
+    whiteSpace: 'nowrap',
+    padding: '1px 3px',
+    borderRadius: 3,
+    background: 'rgba(16,19,14,0.62)',
   },
   windowTrack: {
     position: 'absolute',

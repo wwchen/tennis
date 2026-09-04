@@ -1,7 +1,13 @@
 import type { CSSProperties, ReactNode } from 'react';
 import type { EtlSource } from '@/domain/etl-types';
-import type { Clip } from '@/domain/types';
-import { SUSPECT_ARM, SUSPECT_SPEED, isSuspect, sourceRange } from '@/domain/types';
+import type { Clip, ObjectBox } from '@/domain/types';
+import {
+  BALL_IN_FLIGHT,
+  SUSPECT_ARM,
+  SUSPECT_SPEED,
+  isSuspect,
+  sourceRange,
+} from '@/domain/types';
 import { Tag } from '@/lds';
 import { Mono } from './shared';
 
@@ -24,9 +30,6 @@ import { Mono } from './shared';
 
 /** What a field says when the pipeline measured nothing there. */
 const NOT_MEASURED = 'not measured';
-
-/** What a field says when no human has filled it in. */
-const UNLABELLED = 'unlabelled';
 
 /**
  * `0:26.006` — the app's `m:ss` clock, plus milliseconds.
@@ -274,70 +277,155 @@ function Measured({ clip }: { clip: Clip }) {
   );
 }
 
-function Labelled({ clip }: { clip: Clip }) {
-  const labels = clip.labels;
-  const tags = labels?.tags ?? [];
-  // A seeded clip carries no `labels` block at all, which for every field here
-  // means the same thing as a null one: nobody has said. Flattened once so each
-  // row asks a single question instead of an absent-or-null one.
-  const name = labels?.playerName ?? null;
-  const slot = labels?.playerSlot ?? null;
-  const quality = labels?.quality ?? null;
-  const verdict = labels?.verdict ?? null;
+/** `161,842` — a box's top-left, in source-display pixels. */
+const at = (b: ObjectBox): string => `${Math.round(b.x)},${Math.round(b.y)}`;
+
+/** `122×105` — its size, in the same pixels. */
+const size = (b: ObjectBox): string => `${Math.round(b.w)}×${Math.round(b.h)}`;
+
+/**
+ * What the COCO object detector saw on the contact frame.
+ *
+ * A separate group from `Measured` on purpose, and the reason is the space:
+ * everything under `Measured` is crop-normalized against a rectangle
+ * `--crop-mode` picks, while these are raw source-display pixels found before
+ * any crop exists. Interleaving them would invite a reader to compare a 0.10
+ * with an 842.
+ *
+ * Three states, not two, and the panel keeps them apart because they license
+ * different conclusions: no block at all (nobody looked), a null member
+ * (looked, found nothing) and a box. Only the middle one is about this swing,
+ * and even then only weakly — see the notes.
+ */
+function Objects({ clip }: { clip: Clip }) {
+  const o = clip.objects;
+
+  if (o === undefined) {
+    return (
+      <Section title="Objects">
+        <Row label="detector" value="not run" absent />
+        <Note>
+          No object detector ran over this swing — it was rendered before the COCO
+          detector existed, or with <code>--objects-backend=none</code>. Nothing was
+          looked for, so nothing here is missing.
+        </Note>
+      </Section>
+    );
+  }
+
+  const racket = o.racket;
+  const ball = o.ball;
+  const motion = ball?.motion;
+  // Judged, not just reported: a box detector cannot tell a ball in flight from
+  // one of the several lying on the court, and there is usually one of those in
+  // shot. `BALL_IN_FLIGHT` is the measured gap between the two populations.
+  const flying = motion === undefined ? null : motion >= BALL_IN_FLIGHT;
 
   return (
-    <Section title="Labelled by hand">
+    <Section title="Objects">
       <Row
-        label="stroke"
-        absent={clip.stroke === null}
-        value={clip.stroke ?? UNLABELLED}
-        title="No model predicts this — see the note below"
+        label="detector"
+        absent={o.detector === undefined}
+        value={o.detector ?? 'unknown'}
+        title="Boxes below are in source-display pixels, NOT the crop-normalized space the measurements use"
       />
+
+      <Row
+        label="racket"
+        absent={racket === null}
+        value={
+          racket === null ? (
+            'not found'
+          ) : (
+            <Tag size="sm" hue="green" emphasis="soft" hint-size="auto,18px">
+              found
+            </Tag>
+          )
+        }
+      />
+      {racket !== null && (
+        <>
+          <Row
+            label="racket conf"
+            absent={racket.conf === undefined}
+            value={racket.conf === undefined ? NOT_MEASURED : racket.conf.toFixed(2)}
+            title="Detector confidence, 0-1"
+          />
+          <Row label="racket box" value={at(racket)} title={`${size(racket)} px, top-left at`} />
+        </>
+      )}
+
+      <Row
+        label="ball"
+        absent={ball === null}
+        title={
+          flying === false
+            ? 'Barely moving against the background: a ball on the court, not the one that was hit'
+            : undefined
+        }
+        value={
+          ball === null ? (
+            'not found'
+          ) : flying === false ? (
+            <Tag size="sm" hue="yellow" emphasis="soft" hint-size="auto,18px">
+              on the court
+            </Tag>
+          ) : (
+            <Tag size="sm" hue="green" emphasis="soft" hint-size="auto,18px">
+              {flying === true ? 'in flight' : 'found'}
+            </Tag>
+          )
+        }
+      />
+      {ball !== null && (
+        <>
+          <Row
+            label="ball conf"
+            absent={ball.conf === undefined}
+            value={ball.conf === undefined ? NOT_MEASURED : ball.conf.toFixed(2)}
+          />
+          <Row
+            label="motion"
+            absent={motion === undefined}
+            value={motion === undefined ? NOT_MEASURED : motion.toFixed(0)}
+            title="Deviation from a short background plate, 0-255. Under 20 the ball is lying still."
+          />
+          <Row
+            label="to racket"
+            absent={ball.racketDistance === undefined}
+            value={
+              ball.racketDistance === undefined
+                ? 'no racket'
+                : `${ball.racketDistance.toFixed(2)} th`
+            }
+            title={
+              ball.racketDistance === undefined
+                ? 'No racket was found, so there is nothing to measure the gap against'
+                : 'Gap to the racket box, in torso heights. Near 0 on a well-timed contact frame.'
+            }
+          />
+          <Row label="ball box" value={at(ball)} title={`${size(ball)} px, top-left at`} />
+        </>
+      )}
+
       {/*
-        The name and the slot are two rows, not one, because `clip.player`
-        collapses them: it shows a court zone when nobody has typed a name, and
-        a reviewer reading "left" cannot tell whether that is a placeholder or
-        somebody actually called left.
+        Said out loud, because "not found" on both rows otherwise reads as a
+        verdict on the swing. It is not: the detector's own hit rates are low
+        enough that a miss is the ordinary outcome.
       */}
-      <Row
-        label="player name"
-        absent={name === null}
-        value={name ?? UNLABELLED}
-        title={name === null ? 'Nobody has named this player; the slot stands in' : undefined}
-      />
-      <Row
-        label="court slot"
-        absent={slot === null}
-        value={slot ?? UNLABELLED}
-        title="A zone of the court, not a person"
-      />
-      <Row
-        label="quality"
-        absent={quality === null}
-        value={quality === null ? UNLABELLED : `${quality} of 5`}
-        title="1-5, finer than the three rating chips"
-      />
-      <Row label="verdict" absent={verdict === null} value={verdict ?? UNLABELLED} />
-      <Row
-        label="tags"
-        absent={tags.length === 0}
-        value={tags.length === 0 ? 'none' : tags.join(', ')}
-      />
-      <Row
-        label="notes"
-        absent={clip.note === ''}
-        value={clip.note === '' ? UNLABELLED : clip.note}
-      />
-      {/*
-        Said out loud, because an empty stroke row otherwise reads as a
-        prediction that failed. Nothing in the pipeline classifies strokes: spin
-        is not recoverable at these frame rates (see the comment on `STROKES`),
-        so there is no model whose output is missing here.
-      */}
-      {clip.stroke === null && (
+      {racket === null && ball === null && (
         <Note>
-          The pipeline does not predict strokes — no classifier runs, so this stays
-          unlabelled until a human sets it. An empty stroke is not a failed prediction.
+          Nothing was found, which is common rather than damning: the racket turns up
+          on 62% of swings and a ball in flight on 59%. The ball rate is only weakly
+          discriminating — 32% of control moments five seconds or more from any shot
+          also show one — so an empty block is not evidence this was not a swing.
+        </Note>
+      )}
+      {flying === false && (
+        <Note>
+          A motion of {motion?.toFixed(0)} is a ball at rest: dead balls on the court
+          measure 2-3 against 21-65 for confirmed in-flight ones. This box is one of
+          the balls lying around, not the one that was hit.
         </Note>
       )}
     </Section>
@@ -499,7 +587,7 @@ export function SwingMetadata({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <Detector clip={clip} />
       <Measured clip={clip} />
-      <Labelled clip={clip} />
+      <Objects clip={clip} />
       <Source clip={clip} source={source} />
       <Session settings={settings} detection={detection} />
     </div>

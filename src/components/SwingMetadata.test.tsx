@@ -32,7 +32,7 @@ const source: EtlSource = {
 };
 
 describe('a fully measured swing', () => {
-  it('reports all four groups, so no part of the pipeline is silently missing', () => {
+  it('reports every group, so no part of the pipeline is silently missing', () => {
     render(<SwingMetadata clip={clipFrom()} source={source} />);
 
     // The detector's own account.
@@ -45,13 +45,26 @@ describe('a fully measured swing', () => {
     expect(screen.getByText('32.8 th/s')).toBeInTheDocument();
     expect(screen.getByText('0.10 th')).toBeInTheDocument();
 
-    // What a human said.
-    expect(screen.getByText('Labelled by hand')).toBeInTheDocument();
-
     // What the file itself is.
     expect(screen.getByText('Source')).toBeInTheDocument();
     expect(screen.getByText('1080×1920')).toBeInTheDocument();
     expect(screen.getByText('30.00 fps')).toBeInTheDocument();
+  });
+
+  it('no longer reports hand labels, which nothing populated in practice', () => {
+    // The panel reports what the PIPELINE knows. Every value the removed group
+    // showed already has an editable control elsewhere, and in a real tree they
+    // were all null — so the group was seven rows of "unlabelled" on every swing.
+    const clip = clipFrom((d) => {
+      d.labels = { ...d.labels, player_name: 'Wen', quality: 4, verdict: 'valid' };
+    });
+
+    render(<SwingMetadata clip={clip} source={source} />);
+
+    expect(screen.queryByText('Labelled by hand')).not.toBeInTheDocument();
+    expect(screen.queryByText('unlabelled')).not.toBeInTheDocument();
+    expect(screen.queryByText('Wen')).not.toBeInTheDocument();
+    expect(screen.queryByText('4 of 5')).not.toBeInTheDocument();
   });
 
   it('places contact inside its own window, which is what says the cut was timed well', () => {
@@ -132,49 +145,120 @@ describe('the suspect flag', () => {
   });
 });
 
-describe('what a human has not labelled', () => {
-  it('reads an unset stroke as unlabelled, and says no model was ever going to fill it', () => {
-    const clip = clipFrom();
-    expect(clip.stroke).toBeNull();
-
-    render(<SwingMetadata clip={clip} source={source} />);
-
-    expect(screen.getAllByText('unlabelled').length).toBeGreaterThan(0);
-    // The load-bearing half: an empty stroke row otherwise reads as a
-    // prediction that failed, and the ETL has no stroke classifier at all.
-    expect(screen.getByText(/does not predict strokes/)).toBeInTheDocument();
-  });
-
-  it('shows a court slot without passing it off as a player name', () => {
-    // `clip.player` collapses these two, so "left" alone cannot be told apart
-    // from somebody actually called left.
-    render(<SwingMetadata clip={clipFrom()} source={source} />);
-    expect(screen.getByText('left')).toBeInTheDocument();
-    expect(screen.getAllByText('unlabelled').length).toBeGreaterThan(1);
-  });
-
-  it('echoes the values once a human has set them', () => {
-    const clip = clipFrom((d) => {
-      d.labels = {
-        ...d.labels,
-        player_name: 'Wen',
-        stroke: 'backhand',
-        quality: 4,
-        verdict: 'valid',
-        tags: ['late', 'open stance'],
-        notes: 'contact behind the hip',
+describe('the objects the COCO detector found', () => {
+  /** A found racket and an in-flight ball, shaped as `objects.py` writes them. */
+  const withObjects = (over: Record<string, unknown> = {}) =>
+    clipFrom((d) => {
+      d.objects = {
+        space: 'source_display',
+        detector: 'yolo/coco',
+        racket: { x: 161, y: 842, w: 122, h: 105, conf: 0.92 },
+        ball: { x: 843, y: 982, w: 21, h: 26, conf: 0.44, motion: 56, racket_distance: 0.71 },
+        ...over,
       };
+    });
+
+  it('reports both boxes, in their own space rather than the measured one', () => {
+    render(<SwingMetadata clip={withObjects()} source={source} />);
+
+    expect(screen.getByText('Objects')).toBeInTheDocument();
+    expect(screen.getByText('yolo/coco')).toBeInTheDocument();
+    expect(screen.getByText('found')).toBeInTheDocument();
+    expect(screen.getByText('in flight')).toBeInTheDocument();
+    // Source-display pixels, NOT the crop-normalized fractions `Measured` uses.
+    // Reading one as the other is the mistake this group is separated to avoid.
+    expect(screen.getByText('161,842')).toBeInTheDocument();
+    expect(screen.getByText('843,982')).toBeInTheDocument();
+    expect(screen.getByText('0.71 th')).toBeInTheDocument();
+  });
+
+  it('tells a ball on the court from one in flight, which a box alone cannot', () => {
+    // Dead balls measure 2-3 against 21-65 in flight, so a detection at 3 is a
+    // ball lying in shot — reporting it as "found" would credit the detector
+    // with seeing the shot.
+    const clip = withObjects({
+      ball: { x: 843, y: 982, w: 21, h: 26, conf: 0.44, motion: 3 },
     });
 
     render(<SwingMetadata clip={clip} source={source} />);
 
-    expect(screen.getByText('Wen')).toBeInTheDocument();
-    expect(screen.getByText('Backhand')).toBeInTheDocument();
-    // 4 of 5, not "Good": the three rating chips lose two of quality's values.
-    expect(screen.getByText('4 of 5')).toBeInTheDocument();
-    expect(screen.getByText('valid')).toBeInTheDocument();
-    expect(screen.getByText('late, open stance')).toBeInTheDocument();
-    expect(screen.getByText('contact behind the hip')).toBeInTheDocument();
+    expect(screen.getByText('on the court')).toBeInTheDocument();
+    expect(screen.queryByText('in flight')).not.toBeInTheDocument();
+    expect(screen.getByText(/measure 2-3 against 21-65/)).toBeInTheDocument();
+  });
+
+  it('says a racket was found even when the ball was not, since they are independent', () => {
+    const clip = withObjects({ ball: null });
+
+    render(<SwingMetadata clip={clip} source={source} />);
+
+    expect(screen.getByText('found')).toBeInTheDocument();
+    expect(screen.getByText('not found')).toBeInTheDocument();
+    // The gap needs both boxes, so no ball row may appear at all — a `to racket`
+    // row here would report a distance to a ball that was never located.
+    expect(screen.queryByText('0.71 th')).not.toBeInTheDocument();
+    expect(screen.queryByText('motion')).not.toBeInTheDocument();
+  });
+
+  it('reads two nulls as a detector that found nothing, not as a verdict on the swing', () => {
+    const clip = withObjects({ racket: null, ball: null });
+
+    render(<SwingMetadata clip={clip} source={source} />);
+
+    expect(screen.getAllByText('not found')).toHaveLength(2);
+    expect(screen.getByText(/62% of swings/)).toBeInTheDocument();
+  });
+
+  it('distinguishes a detector that found nothing from one that never ran', () => {
+    // The whole point of the absent case. Every swing rendered before
+    // `--objects-backend` existed omits the block, and "not found" there would
+    // report a search that never happened.
+    render(<SwingMetadata clip={clipFrom()} source={source} />);
+
+    expect(screen.getByText('not run')).toBeInTheDocument();
+    expect(screen.queryByText('not found')).not.toBeInTheDocument();
+    expect(screen.getByText(/Nothing was looked for/)).toBeInTheDocument();
+  });
+
+  it('keeps a half-written box rather than losing the class it belongs to', () => {
+    // `conf`, `motion` and `racket_distance` are present-only in schema.py, so
+    // a box can carry geometry and none of them.
+    const clip = withObjects({
+      racket: { x: 161, y: 842, w: 122, h: 105 },
+      ball: null,
+    });
+
+    render(<SwingMetadata clip={clip} source={source} />);
+
+    expect(screen.getByText('161,842')).toBeInTheDocument();
+    expect(screen.getByText('not measured')).toBeInTheDocument();
+  });
+});
+
+describe('the session settings list', () => {
+  it('picks up the new backends without an allowlist to keep in step', () => {
+    // The list is built from whatever scalars the session document carries, so
+    // `config.py` can add a key without this panel being edited. That is the
+    // property under test: a hand-maintained label table would go stale.
+    render(
+      <SwingMetadata
+        clip={clipFrom()}
+        source={source}
+        settings={{
+          pose_backend: 'rtmpose',
+          objects_backend: 'yolo',
+          objects_weights: 'yolo11x.pt',
+          settings_hash: 'deadbeef',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('rtmpose')).toBeInTheDocument();
+    expect(screen.getByText('yolo')).toBeInTheDocument();
+    expect(screen.getByText('yolo11x.pt')).toBeInTheDocument();
+    // A tuning's identity, not a description of one.
+    expect(screen.queryByText('deadbeef')).not.toBeInTheDocument();
+    expect(screen.getByText('detector settings (3)')).toBeInTheDocument();
   });
 });
 

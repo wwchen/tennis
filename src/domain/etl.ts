@@ -7,12 +7,14 @@ import type {
   SwingEntry,
 } from './etl-types';
 import type {
+  BallBox,
   Clip,
   ClipDetection,
-  ClipLabels,
   ClipMeasurements,
+  ClipObjects,
   Frame,
   Grade,
+  ObjectBox,
   Phase,
   Stroke,
 } from './types';
@@ -183,23 +185,66 @@ const detectionOf = (doc: EtlSwingDoc): ClipDetection => ({
 });
 
 /**
- * The label block, unreduced.
+ * One box off disk, or null.
  *
- * `tags` is guarded with `Array.isArray` because `overlay()` merges
- * `user-edit.json` in unchecked, and a hand-edited file can put anything there
- * — the panel maps over this, so a non-array would throw the whole clip out of
- * `adaptSession` rather than losing one row.
+ * The four geometry fields are required together: a box missing `w` cannot be
+ * drawn or reported, and half of one is worse than none. `conf` is carried only
+ * when it is a number, matching `schema.py`, where it is present-only.
  */
-const labelsOf = (doc: EtlSwingDoc): ClipLabels => ({
-  playerSlot: doc.labels.player_slot ?? null,
-  playerName: doc.labels.player_name ?? null,
-  quality: doc.labels.quality ?? null,
-  verdict: doc.labels.verdict ?? null,
-  tags: Array.isArray(doc.labels.tags) ? doc.labels.tags : [],
+function boxOf(raw: unknown): ObjectBox | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const b = raw as Record<string, unknown>;
+  const { x, y, w, h } = b;
+  if (
+    typeof x !== 'number' ||
+    typeof y !== 'number' ||
+    typeof w !== 'number' ||
+    typeof h !== 'number'
+  ) {
+    return null;
+  }
+  return { x, y, w, h, ...(typeof b.conf === 'number' ? { conf: b.conf } : {}) };
+}
+
+/**
+ * The racket/ball block, or null when no detector looked.
+ *
+ * The two "nothing here" answers are NOT the same and this is where they part.
+ * A missing or malformed `objects` returns null, which the panel reads as
+ * "nobody looked" — true of every swing rendered before `--objects-backend`
+ * existed. A block that IS there returns with `racket`/`ball` null, which the
+ * panel reads as "looked and found nothing", the ordinary case: the racket is
+ * found on 62% of swings and a ball in flight on 59%.
+ */
+function objectsOf(doc: EtlSwingDoc): ClipObjects | null {
+  const o = doc.objects;
+  if (o === null || o === undefined || typeof o !== 'object' || Array.isArray(o)) return null;
+
+  const ball = boxOf(o.ball);
+  return {
+    ...(typeof o.detector === 'string' ? { detector: o.detector } : {}),
+    racket: boxOf(o.racket),
+    ball:
+      ball === null
+        ? null
+        : {
+            ...ball,
+            ...(typeof o.ball === 'object' && o.ball !== null
+              ? extras(o.ball as Record<string, unknown>)
+              : {}),
+          },
+  };
+}
+
+/** `motion` and `racket_distance`, each carried only when measured. */
+const extras = (b: Record<string, unknown>): Partial<BallBox> => ({
+  ...(typeof b.motion === 'number' ? { motion: b.motion } : {}),
+  ...(typeof b.racket_distance === 'number' ? { racketDistance: b.racket_distance } : {}),
 });
 
 export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
   const measured = measurementsOf(doc);
+  const objects = objectsOf(doc);
   const frames: Frame[] = doc.frames.map((f, i) => ({
     i,
     sourceMs: f.source_ms,
@@ -225,7 +270,6 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
     sourceEndMs: doc.trim.source_end_ms,
     contactMs: doc.detection.contact_ms,
     detection: detectionOf(doc),
-    labels: labelsOf(doc),
     clipSize: { width: doc.trim.width, height: doc.trim.height },
     triaged: doc.edit?.reviewed === true,
     grade: qualityToGrade(doc.labels.quality),
@@ -235,6 +279,7 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
     // records it, and metadata.json is the only thing entitled to say it.
     ...(mediaBase === undefined ? {} : { videoUrl: `${mediaBase}/${doc.trim.file}` }),
     ...(measured === null ? {} : { measurements: measured }),
+    ...(objects === null ? {} : { objects }),
   };
 }
 

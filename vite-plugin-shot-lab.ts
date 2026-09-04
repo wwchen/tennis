@@ -18,8 +18,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import type { Plugin, ViteDevServer } from 'vite';
 import { clipExportFileName } from './src/components/clip-export';
+import type { ObjectsDoc } from './src/components/object-overlay';
+import { parseObjectsJsonl } from './src/components/object-overlay';
 
 /**
  * Serves the `tennisproc` output tree to the review app in dev.
@@ -49,6 +52,18 @@ const SWING_DIR = /^[^/]+\/swings\/swing_\d+$/;
  * has only ever written one value of.
  */
 const PROXY = 'source.mp4';
+
+/**
+ * The per-frame object detections for a session, relative to its directory.
+ *
+ * Fixed here rather than read off a document, for `PROXY`'s reason: the name is
+ * joined onto a path, and `scripts/detect_objects.py` has only ever been
+ * pointed at this one. Served DECOMPRESSED — a browser can be handed a gzip
+ * stream, but then every reader of the route needs `DecompressionStream` and a
+ * JSONL splitter, and `gunzipSync` on a few megabytes costs a dev server
+ * nothing.
+ */
+const OBJECTS = join('work', 'objects.jsonl.gz');
 
 /**
  * The longest cut `/api/clip` will make, in ms.
@@ -457,6 +472,37 @@ function readSession(root: string, requested?: string) {
 }
 
 /**
+ * The per-frame object export for a session, decompressed and parsed.
+ *
+ * Null covers every "there is no overlay for this session" case alike — the
+ * detector was never run over it, the file is half-written, the header is
+ * unusable — because the app's answer to all of them is the same: draw nothing.
+ * None of them is an error worth showing a reviewer.
+ *
+ * `session` is checked against `listSessions` rather than joined onto a path,
+ * the same guard `?session=` uses, so no traversal or absolute path is
+ * expressible through the route. The filename is fixed here, like `PROXY`: it
+ * comes from this file, never from the request.
+ */
+export function readObjects(root: string, session: string): ObjectsDoc | null {
+  if (!listSessions(root).includes(session)) return null;
+  const full = safeJoin(root, join(session, OBJECTS));
+  if (full === null) return null;
+
+  let text: string;
+  try {
+    // Bounded because `gunzipSync` otherwise allocates whatever the stream
+    // claims. A native-rate export of a nine-minute session is about 30k lines
+    // and well under 20MB, so this is an order of magnitude of headroom rather
+    // than a limit any real file approaches.
+    text = gunzipSync(readFileSync(full), { maxOutputLength: 256 * 1024 * 1024 }).toString('utf-8');
+  } catch {
+    return null;
+  }
+  return parseObjectsJsonl(text);
+}
+
+/**
  * Where a `PUT .../user-edit` may write, or the status to answer with.
  *
  * Separate from the route so both refusals are directly testable; a dev-server
@@ -734,6 +780,42 @@ export default function shotLab(): Plugin {
         }
       });
 
+      // `GET /api/objects/<session>` — every box the object detector found,
+      // decompressed, for the overlay drawn over the playing video.
+      //
+      // 404 is the ORDINARY answer, not a failure: the export is an optional
+      // extra pass, so most sessions have none. The client draws nothing and
+      // says nothing, which is why this returns no body to distinguish "never
+      // run" from "half-written" — neither changes what the app can do.
+      server.middlewares.use('/api/objects', (req, res) => {
+        let session: string;
+        try {
+          session = decodeURIComponent((req.url ?? '').split('?')[0]).replace(/^\/+/, '');
+        } catch {
+          // A lone `%` is not a valid escape and throws URIError.
+          res.statusCode = 400;
+          res.end();
+          return;
+        }
+
+        let doc;
+        try {
+          doc = readObjects(OUT_ROOT(), session);
+        } catch {
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end('{"error":"could not read the object export"}');
+          return;
+        }
+        if (doc === null) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(doc));
+      });
+
       // Streamed, not buffered, and Range-aware: this route serves the session's
       // full source video, which is measured in hundreds of megabytes. Reading
       // one into a Buffer per request is both an allocation the dev server does
@@ -977,6 +1059,7 @@ export {
   listSessions,
   overlayEdit,
   readSession,
+  OBJECTS,
   resolveWriteTarget,
   safeJoin,
   WRITABLE,
