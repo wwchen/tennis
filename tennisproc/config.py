@@ -132,6 +132,11 @@ class Settings:
     # and spectators, which is why player-slot clustering now matters.
     pose_min_confidence: float = 0.2
     pose_backend: str = "mediapipe"
+    # Racket and ball detection. "none" by default: it is an extra stage with
+    # an optional, AGPL-licensed dependency, so it is opted into rather than
+    # out of.
+    objects_backend: str = "none"
+    objects_weights: str = "yolo11x.pt"
 
     # --- crop ------------------------------------------------------------
     # "full" renders the whole frame; "pose" crops to the tracked player.
@@ -283,6 +288,8 @@ class Settings:
         # here and then raise PoseError several stages later.
         if self.pose_backend not in ("mediapipe", "rtmpose", "stub"):
             errs.append("pose_backend must be mediapipe, rtmpose or stub")
+        if self.objects_backend not in ("none", "yolo", "stub"):
+            errs.append("objects_backend must be none, yolo or stub")
         if self.crop_pad < 0:
             errs.append("crop_pad must be >= 0")
         if self.limit < 0:

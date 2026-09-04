@@ -61,6 +61,12 @@ def _add_settings_args(parser):
                    help="rtmpose is the accurate one and needs no display; "
                         "stub runs headless with synthetic poses")
     g.add_argument("--pose-model", default=s.pose_model)
+    g.add_argument("--objects-backend", default=s.objects_backend,
+                   choices=("none", "yolo", "stub"),
+                   help="detect racket and ball with COCO-pretrained YOLO "
+                        "(needs `pip install ultralytics`, AGPL-3.0)")
+    g.add_argument("--objects-weights", default=s.objects_weights,
+                   help="COCO weights for --objects-backend=yolo")
     g.add_argument("--pose-tiles", type=int, default=s.pose_tiles,
                    help="vertical tiles for a player too small to detect "
                         "whole; 0 or 1 means no tiling (default %(default)s)")
