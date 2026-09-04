@@ -193,6 +193,29 @@ and it also explains detections that look like a bad racket box and are
 actually a bad wrist: of racket boxes more than 1.9 torso from the wrist, a
 quarter were on the player and only the wrist was wrong.
 
+**The swap also removes candidates that were never swings.** RTMPose finds
+fewer: 77 accepted on IMG_0684 against MediaPipe's 108, which looks like lost
+recall until the two sets are refereed by something neither backend can see.
+A real strike should have a ball in flight at the racket; a split-step should
+not. Scoring both sets over identical frames, so that the ball detector's
+session-to-session unreliability cancels:
+
+| candidate set | n | racket found | ball in flight | ball at the racket |
+|---|---|---|---|---|
+| MediaPipe | 108 | 73% | 57% | 31% |
+| RTMPose | 77 | 62% | 81% | **43%** |
+
+**The absolute number of strikes is the same in both: 33.** The 31 candidates
+RTMPose drops contain none of them. Note the racket rate falls while the ball
+rate rises, which is the signature expected of the surviving set being
+mid-swing -- a racket in motion blurs and gets harder to detect, a stationary
+one held in front of a player at rest does not.
+
+This is one session, and "ball at the racket" is itself a partial test: it
+fires on 43% of a set that is certainly more than 43% real swings, so read it
+as a relative measure between two candidate sets, never as an absolute count
+of strikes.
+
 **Device matters more than model size.** Seconds per frame, and the resulting
 whole-video scan pass (5016 frames at 10 fps over a 502 s session):
 
