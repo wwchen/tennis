@@ -322,3 +322,72 @@ class ExportRows(unittest.TestCase):
         """At native rate this file is 30k lines; empty keys are pure waste."""
         got = self.rows({"racket": [], "ball": [], "person": []})
         self.assertEqual(got, {})
+
+
+class RacketMotion(unittest.TestCase):
+    """Displacement, not presence, is what says a racket was swung.
+
+    Measured against 40 hand-audited candidates of IMG_0684: non-swings peak at
+    0.144 torso/frame and real swings sit at a median of 0.365, so the two
+    barely overlap. Detection RATE points the other way -- it fell 73% -> 62%
+    on a cleaner candidate set, because a swinging racket blurs.
+    """
+
+    def frames(self, n=5):
+        import numpy as np
+        return [(o, np.zeros((400, 400, 3), np.uint8))
+                for o in objects.RACKET_OFFSETS[:n]]
+
+    def moving_backend(self, per_frame_px):
+        """A racket that slides `per_frame_px` between consecutive samples."""
+        script = []
+        for k, _ in enumerate(objects.RACKET_OFFSETS):
+            # offsets step by 2 frames, so the gap normalisation must divide
+            # this displacement by 2 -- the bug this guards is forgetting to.
+            x = 100.0 + k * per_frame_px * 2
+            script.append({"racket": [objects.Box(x, 100, x + 40, 140, 0.9)],
+                           "ball": [], "person": []})
+        return objects.StubObjectBackend(script)
+
+    def test_a_swung_racket_clears_the_threshold(self):
+        got = objects.racket_motion(self.moving_backend(0.40 * TORSO),
+                                    self.frames(), None, [(120, 120)], TORSO)
+        self.assertAlmostEqual(got, 0.40, places=2)
+        self.assertGreater(got, objects.RACKET_MOVING)
+
+    def test_a_stationary_racket_does_not(self):
+        got = objects.racket_motion(self.moving_backend(0.03 * TORSO),
+                                    self.frames(), None, [(120, 120)], TORSO)
+        self.assertLess(got, objects.RACKET_MOVING)
+
+    def test_displacement_is_per_frame_not_per_sample(self):
+        """Offsets step by 2, so a raw difference would read double."""
+        got = objects.racket_motion(self.moving_backend(0.20 * TORSO),
+                                    self.frames(), None, [(120, 120)], TORSO)
+        self.assertAlmostEqual(got, 0.20, places=2)
+
+    def test_fewer_than_two_sightings_is_unknown_not_zero(self):
+        """'Never found' must not be reported as 'did not move'."""
+        one = objects.StubObjectBackend(
+            [{"racket": [objects.Box(100, 100, 140, 140, 0.9)],
+              "ball": [], "person": []},
+             {"racket": [], "ball": [], "person": []}])
+        self.assertIsNone(objects.racket_motion(
+            one, self.frames(2), None, [(120, 120)], TORSO))
+
+    def test_measure_reports_motion_and_the_verdict(self):
+        import numpy as np
+        frame = np.zeros((400, 400, 3), np.uint8)
+        doc = objects.measure(self.moving_backend(0.40 * TORSO), frame, frame,
+                              None, [(120, 120)], TORSO,
+                              neighbours=self.frames())
+        self.assertTrue(doc["racket"]["swung"])
+        self.assertGreater(doc["racket"]["motion"], objects.RACKET_MOVING)
+
+    def test_without_neighbours_no_verdict_is_offered(self):
+        """A single frame cannot show motion, so it must claim nothing."""
+        import numpy as np
+        frame = np.zeros((400, 400, 3), np.uint8)
+        doc = objects.measure(self.moving_backend(0.40 * TORSO), frame, frame,
+                              None, [(120, 120)], TORSO)
+        self.assertNotIn("swung", doc["racket"])

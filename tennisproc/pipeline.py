@@ -296,6 +296,7 @@ def stage_objects(video, accepted, source, settings, report=None):
     found_racket = found_ball = 0
     cap = tracks.open_capture(video, cv2)
     try:
+        swung = 0
         for track, measured in accepted:
             contact_ms = (measured.contact_ms if measured.contact_ms is not None
                           else track.contact_ms)
@@ -313,20 +314,30 @@ def stage_objects(video, accepted, source, settings, report=None):
             if frame is None or plate is None:
                 out.append(None)
                 continue
+            # The racket is located at several instants, not one, so its
+            # DISPLACEMENT can be measured -- which is what separates a swing
+            # from a player bouncing in ready position. Costs four extra
+            # detections per swing and is the only signal that does the job.
+            neighbours = [(off, _frame_at(cap, cv2, contact_ms + off * step_ms,
+                                          source))
+                          for off in objects_mod.RACKET_OFFSETS]
             doc = objects_mod.measure(
                 backend, frame, plate,
                 _pose_box(track, measured, source),
                 _wrists_px(track, measured, source),
-                (measured.torso_height or 0.0) * source["height"])
+                (measured.torso_height or 0.0) * source["height"],
+                neighbours=neighbours)
             found_racket += doc["racket"] is not None
             found_ball += doc["ball"] is not None
+            swung += bool(doc["racket"] and doc["racket"].get("swung"))
             out.append(doc)
     finally:
         cap.release()
         backend.close()
     if report:
-        report.say("objects: racket on %d/%d swings, ball in flight on %d"
-                   % (found_racket, len(accepted), found_ball))
+        report.say("objects: racket on %d/%d swings (%d swung), "
+                   "ball in flight on %d"
+                   % (found_racket, len(accepted), swung, found_ball))
     return out
 
 

@@ -91,6 +91,31 @@ PLATE_OFFSETS = (-6, -4, 4, 6)
 # explain the spread. See tennisproc/README.md, "Racket and ball".
 BALL_MOTION = 20.0
 
+# Frames either side of contact at which the racket is also located, so its
+# DISPLACEMENT can be measured. Same span as the plate, one step finer: two
+# frames is enough to move a swinging racket and not enough to move a
+# stationary one.
+RACKET_OFFSETS = (-4, -2, 0, 2, 4)
+
+# Racket displacement, torso heights per frame, above which the racket was
+# actually swung. Measured against 40 hand-audited candidates of IMG_0684 --
+# 16 the player bouncing in ready position between feeds, 24 real swings:
+#
+#     group          n     p10     p50     p90     max
+#     not a swing   10   0.013   0.032   0.123   0.144
+#     real swing    24   0.041   0.365   0.437   0.759
+#
+# The two barely overlap. At 0.15 every non-swing in the sample is cut and 79%
+# of real swings kept; at 0.10 the cut falls to 70% for four more points of
+# recall. 0.15 sits just above the non-swings' maximum of 0.144, which is where
+# a threshold belongs when the distributions are this separated.
+#
+# DISPLACEMENT, not presence. Detection RATE points the other way: it fell from
+# 73% to 62% moving to a cleaner candidate set, because a swinging racket blurs
+# and a stationary one does not. "A racket was found" is weak evidence AGAINST
+# a swing, which is why it is not the test.
+RACKET_MOVING = 0.15
+
 # Blob area in torso heights squared. A 6.7 cm ball against a ~48 cm torso
 # covers about 0.015 face-on; motion blur stretches a streak without widening
 # it, so the ceiling is generous and the floor is what keeps out compression
@@ -318,12 +343,38 @@ def make_backend(name, **kwargs):
     raise ObjectError("unknown object backend: %s" % name)
 
 
-def measure(backend, frame, plate, pose_box, wrists, torso_px):
+def racket_motion(backend, neighbours, pose_box, wrists, torso_px):
+    """Peak racket displacement across the contact window, torso/frame.
+
+    `neighbours` is [(offset_in_frames, frame)]. Returns None when the racket
+    was located in fewer than two of them -- which is not the same as "it did
+    not move", and must not be reported as though it were.
+    """
+    seen = []
+    for offset, frame in neighbours:
+        if frame is None:
+            continue
+        found = backend.detect(frame)
+        player = choose_player(found.get("person"), pose_box)
+        racket = choose_racket(found.get("racket"), wrists, player, torso_px)
+        if racket is not None:
+            seen.append((offset, racket.centre))
+    if len(seen) < 2 or torso_px <= 0:
+        return None
+    peak = 0.0
+    for (oa, a), (ob, b) in zip(seen, seen[1:]):
+        gap = abs(ob - oa) or 1
+        peak = max(peak, float(np.hypot(b[0] - a[0], b[1] - a[1])) / torso_px / gap)
+    return peak
+
+
+def measure(backend, frame, plate, pose_box, wrists, torso_px, neighbours=None):
     """Racket and ball for one swing, as the `objects` metadata block.
 
     `frame` is the contact frame and `plate` the short-plate median of frames
     either side of it. Both are in source-display orientation, like every
-    other pixel coordinate this package writes.
+    other pixel coordinate this package writes. `neighbours`, when given,
+    is used to measure how far the racket moved.
     """
     found = backend.detect(frame)
     player = choose_player(found.get("person"), pose_box)
@@ -333,6 +384,11 @@ def measure(backend, frame, plate, pose_box, wrists, torso_px):
            "detector": "%s/coco" % backend.name,
            "racket": racket.to_metadata() if racket else None,
            "ball": None}
+    if racket is not None and neighbours:
+        motion = racket_motion(backend, neighbours, pose_box, wrists, torso_px)
+        if motion is not None:
+            doc["racket"]["motion"] = round(motion, 3)
+            doc["racket"]["swung"] = motion >= RACKET_MOVING
     if ball is not None:
         box, score = ball
         doc["ball"] = dict(box.to_metadata(), motion=round(score, 1))

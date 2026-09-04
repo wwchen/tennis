@@ -244,6 +244,10 @@ OBJECT_SPACE = "source_display"
 def _check_box(c, b, path, extra=()):
     for name in ("x", "y", "w", "h"):
         c.field(b, name, path, _NUM)
+    # A racket carries `swung`: whether its displacement cleared
+    # objects.RACKET_MOVING. Present-only, like everything below.
+    if "swung" in b and not isinstance(b["swung"], bool):
+        c.add("%s.swung" % path, "expected boolean")
     # Present-only, never required. `optional=True` means "may be null", not
     # "may be absent" -- the same trap `measurements.center_x` documents. conf
     # is absent from a hand-written box; motion and racket_distance exist only
@@ -265,7 +269,7 @@ def _check_objects(c, o, path):
     """
     c.const(o, "space", path, OBJECT_SPACE)
     c.field(o, "detector", path, (str,), optional=True)
-    for name, extra in (("racket", ()),
+    for name, extra in (("racket", ("motion",)),
                         ("ball", ("motion", "racket_distance"))):
         if name not in o:
             c.add("%s.%s" % (path, name), "missing (use null when not found)")
