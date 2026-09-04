@@ -80,6 +80,15 @@ PLATE_OFFSETS = (-6, -4, 4, 6)
 # 20 is the peak, and it was checked at its own boundary rather than in the
 # comfortable middle: a candidate scoring 21 was confirmed by hand to be a real
 # ball in flight. Dead balls on the court score 2-3.
+#
+# BUT that lift is session-dependent, and this is the least trustworthy
+# constant in this file. Re-measured over 24 swings each of four other
+# sessions the per-session lift runs -13, +21, +32, +46 -- on IMG_0689 the
+# control fires MORE often than contact, making the test worse than useless
+# there. The aggregate over 96 swings is +22, close to the figure above, so the
+# threshold is not obviously wrong; what is wrong is treating any single ball
+# detection as evidence on a session nobody has checked. Swing density does not
+# explain the spread. See tennisproc/README.md, "Racket and ball".
 BALL_MOTION = 20.0
 
 # Blob area in torso heights squared. A 6.7 cm ball against a ~48 cm torso

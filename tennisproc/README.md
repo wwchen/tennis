@@ -259,6 +259,30 @@ in every plate frame and cancels:
 candidate scoring 21 was confirmed by eye to be a real ball. Dead balls score
 2-3.
 
+**That lift does not survive a change of session, and this is the weakest
+claim on the page.** Re-run over 24 swings each of four other sessions, using
+the shipped rules:
+
+| session | shape | racket found | ball at contact | ball at control | lift |
+|---|---|---|---|---|---|
+| IMG_0684 | portrait | 62% | 59% | 32% | +27 |
+| IMG_0685 | portrait | 62% | 46% | 14% | +32 |
+| IMG_0689 | landscape | 75% | 58% | 71% | **-13** |
+| IMG_0693 | landscape | 83% | 46% | 0% | +46 |
+| IMG_0696 | landscape | 42% | 62% | 42% | +21 |
+| **all, n=96** | | **66%** | **53%** | **32%** | **+22** |
+
+The aggregate lift is close to the single-session figure, and the racket rate
+holds up and is if anything better. But the per-session ball lift runs from
+-13 to +46, and on IMG_0689 the control fires MORE often than contact does --
+there, this test is worse than useless.
+
+Swing density does not explain it: IMG_0693 has the tightest median gap
+between swings (2.8 s) and the largest lift, while IMG_0689 sits mid-pack at
+3.7 s and goes negative. The cause is not known. Until it is, read a ball
+detection as suggestive on a session you have checked and as nothing at all on
+one you have not.
+
 Neither half works alone, which is why both are required. A plate-only test
 cannot tell a ball from a shoe -- a heel is bright, convex, ball-sized at this
 scale, and moving.
@@ -281,11 +305,15 @@ rate is the decision there: a racket interpolates smoothly at 10 fps, a ball
 does not -- below native rate it teleports, and a straight line between two
 samples passes through positions it never occupied.
 
-**Every number in these two sections comes from one session (`IMG_0684`,
-indoor, portrait, a net drill) and from a few dozen hand checks. None of it is
-yet known to generalise to the landscape or outdoor-doubles sessions, which
-are 20 of the corpus's 25. Treat them as the order of magnitude, not the
-value.**
+**How far these numbers have actually been checked.** The racket rate and the
+ball lift are measured across five sessions (96 swings, both orientations);
+the racket rate holds, the ball lift does not. Everything else -- the
+MediaPipe-versus-RTMPose comparison, the acceptance-rule recall figures, the
+imgsz and confidence sweeps, and every precision figure -- comes from
+`IMG_0684` alone, an indoor portrait net drill, backed by a few dozen hand
+checks. The corpus is 25 sessions and most are landscape, several outdoor
+doubles at distance. Treat the single-session numbers as an order of
+magnitude, not a value.
 
 ## Tuning
 
