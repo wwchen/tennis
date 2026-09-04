@@ -391,3 +391,47 @@ class RacketMotion(unittest.TestCase):
         doc = objects.measure(self.moving_backend(0.40 * TORSO), frame, frame,
                               None, [(120, 120)], TORSO)
         self.assertNotIn("swung", doc["racket"])
+
+
+class TwoPlayers(unittest.TestCase):
+    """A neighbour's racket is not this player's, however near a wrist it is.
+
+    The accept rule reaches 1.9 torso heights from a wrist, which is far enough
+    to grab the racket of someone standing beside you. It was measured on
+    single-player footage and shipped as though it were general: on IMG_0693,
+    where two players rally side by side, 33% of accepted rackets sat more on
+    the other player than on the tracked one.
+    """
+
+    def setUp(self):
+        self.me = objects.Box(400, 800, 700, 1400)
+        self.other = objects.Box(760, 800, 1060, 1400)
+
+    def test_the_neighbours_racket_is_rejected(self):
+        theirs = box(900, 1000)          # inside `other`, and within reach
+        self.assertGreater(theirs.overlap_fraction(self.other),
+                           theirs.overlap_fraction(self.me))
+        self.assertLess(theirs.distance_to((690, 1000)),
+                        objects.RACKET_REACH * TORSO)
+        self.assertIsNone(objects.choose_racket(
+            [theirs], [(690, 1000)], self.me, TORSO, [self.other]))
+
+    def test_my_own_racket_still_wins_beside_them(self):
+        mine = box(550, 1000)
+        self.assertIs(objects.choose_racket(
+            [mine], [(560, 1000)], self.me, TORSO, [self.other]), mine)
+
+    def test_a_racket_between_them_goes_to_whoever_holds_more_of_it(self):
+        """Overlap decides, not proximity: reach cannot arbitrate a tie."""
+        theirs = box(880, 1000)
+        got = objects.choose_racket([theirs], [(700, 1000)], self.me, TORSO,
+                                    [self.other])
+        self.assertIsNone(got)
+
+    def test_no_others_means_no_veto(self):
+        """Most of the corpus is one player; the veto must cost nothing there."""
+        far = box(900, 900)
+        self.assertIs(objects.choose_racket(
+            [far], [(890, 900)], self.me, TORSO, []), far)
+        self.assertIs(objects.choose_racket(
+            [far], [(890, 900)], self.me, TORSO), far)

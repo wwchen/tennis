@@ -261,13 +261,28 @@ Two things are this package's own; the detector is stock and untested here,
 because testing it would be testing ultralytics.
 
 **Which racket box belongs to the player.** A raw detection is not enough. Of
-39 racket boxes sitting more than 1.9 torso heights from the hitting wrist, 0%
-were on the second person in frame, 25.6% were on the player with a misplaced
-wrist, and 74.4% were on nothing at all. A box is accepted when it is near the
-wrist **or** overlaps the tracked player, never both: 53.7% recall for the
-wrist test alone, 38.9% for the overlap test alone, **62.0% for either** --
-because the wrist test survives a bad player box and the overlap test survives
-a bad wrist.
+39 racket boxes sitting more than 1.9 torso heights from a wrist, 0% were on a
+second person, 25.6% were on the player with a misplaced wrist, and 74.4% were
+on nothing at all. A box is accepted when it is near a wrist **or** overlaps
+the tracked player, never both: 53.7% recall for the wrist test alone, 38.9%
+for the overlap test alone, **62.0% for either** -- because the wrist test
+survives a bad player box and the overlap test survives a bad wrist.
+
+**That measurement was taken on single-player footage, and the "0% on a second
+person" is an artefact of it.** IMG_0684 has one player. On IMG_0693, where two
+rally side by side and the detector finds a median of two people per contact
+frame, **38% of accepted rackets sat more on the other player** -- the
+near-a-wrist branch reaches 1.9 torso heights, far enough to take a
+neighbour's racket, and the OR means the overlap test cannot object. A racket
+overlapping another detected person more than the tracked one is now vetoed
+outright, which takes that 38% to 0% and leaves single-player sessions
+untouched.
+
+That one session accounted for three separate anomalies at once: a 99%
+acceptance rate and 17.7 swings/min (two players really do hit twice as often),
+the corpus's largest ball lift (two players rallying keep a ball in the air),
+and the lowest racket-motion distribution (the other player's racket is
+stationary while this one swings).
 
 **Whether a ball is in flight.** Detection alone is nearly worthless: the court
 fills with dead balls as a session runs and the detector finds them all,

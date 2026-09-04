@@ -190,7 +190,7 @@ def choose_player(persons, pose_box):
     return max(persons, key=lambda p: pose_box.overlap_fraction(p))
 
 
-def choose_racket(rackets, wrists, player, torso_px):
+def choose_racket(rackets, wrists, player, torso_px, others=()):
     """The racket the tracked player is holding, or None.
 
     Accepted when near a wrist OR on the player, not both. Measured over 108
@@ -203,16 +203,40 @@ def choose_racket(rackets, wrists, player, torso_px):
     claims to know which arm swung any more -- see verify.py -- and a racket
     near either hand is the player's either way. Taking both also removes this
     rule's dependence on a side choice that was never verified.
+
+    `others` are the OTHER people in frame, and a racket sitting more inside
+    one of them than inside the tracked player is vetoed however near a wrist
+    it is. That branch reaches 1.9 torso heights, which is far enough to grab
+    a neighbour's racket when two players stand close, and the OR above means
+    the overlap test cannot otherwise object.
+
+    This was measured on single-player footage and shipped as though it were
+    general. Re-measured over 44 swings of IMG_0693, where two players rally
+    side by side and YOLO finds a median of 2 people per contact frame:
+
+        session    people   racket found   on the WRONG player
+        IMG_0693      2.0    77% -> 57%       38% -> 0%
+        IMG_0687      2.0    83% -> 83%        0% -> 0%
+        IMG_0684      1.0    91% -> 91%        0% -> 0%
+        IMG_0688      1.0    91% -> 91%        0% -> 0%
+
+    The 20-point fall on IMG_0693 is false positives leaving, not detections
+    lost. Single-player sessions are untouched: the veto costs nothing when
+    `others` is empty, which is most of the corpus. IMG_0687 has two players
+    and was already clean, so whatever depresses ITS racket rate is a
+    different problem and is not this.
     """
     if not rackets or torso_px <= 0:
         return None
     points = [w for w in (wrists or ()) if w is not None]
     keep = []
     for box in rackets:
+        mine = box.overlap_fraction(player) if player is not None else 0.0
+        if any(box.overlap_fraction(o) > mine for o in others):
+            continue
         near = any(box.distance_to(w) <= RACKET_REACH * torso_px
                    for w in points)
-        held = (player is not None
-                and box.overlap_fraction(player) >= PLAYER_OVERLAP)
+        held = player is not None and mine >= PLAYER_OVERLAP
         if near or held:
             keep.append(box)
     return max(keep, key=lambda b: b.conf) if keep else None
@@ -375,8 +399,11 @@ def racket_motion(backend, neighbours, pose_box, wrists, torso_px):
         if frame is None:
             continue
         found = backend.detect(frame)
-        player = choose_player(found.get("person"), pose_box)
-        racket = choose_racket(found.get("racket"), wrists, player, torso_px)
+        persons = found.get("person") or []
+        player = choose_player(persons, pose_box)
+        others = [p for p in persons if p is not player]
+        racket = choose_racket(found.get("racket"), wrists, player, torso_px,
+                               others)
         if racket is not None:
             seen.append((offset, racket.centre))
     if len(seen) < 2 or torso_px <= 0:
@@ -397,8 +424,10 @@ def measure(backend, frame, plate, pose_box, wrists, torso_px, neighbours=None):
     is used to measure how far the racket moved.
     """
     found = backend.detect(frame)
-    player = choose_player(found.get("person"), pose_box)
-    racket = choose_racket(found.get("racket"), wrists, player, torso_px)
+    persons = found.get("person") or []
+    player = choose_player(persons, pose_box)
+    others = [p for p in persons if p is not player]
+    racket = choose_racket(found.get("racket"), wrists, player, torso_px, others)
     ball = choose_ball(found.get("ball"), frame, plate, torso_px)
     doc = {"space": "source_display",
            "detector": "%s/coco" % backend.name,
