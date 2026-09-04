@@ -282,6 +282,75 @@ export const DEFAULT_CONF = 0.25;
  */
 export const DEFAULT_CLASSES: ObjectClass[] = ['racket', 'ball'];
 
+/**
+ * Where the overlay's own settings live between visits.
+ *
+ * NOT keyed by session, unlike `shot-lab:hidden` and `shot-lab:starred`. Those
+ * record a judgement about particular swings and mean nothing anywhere else.
+ * This records how a reviewer likes to look at any swing, so carrying it across
+ * sessions is the point: a toggle that forgets itself on every reload is not a
+ * setting, it is a dare.
+ */
+const PREFS_KEY = 'shot-lab:boxes';
+
+export interface OverlayPrefs {
+  classes: Set<ObjectClass>;
+  conf: number;
+}
+
+export function defaultPrefs(): OverlayPrefs {
+  return { classes: new Set(DEFAULT_CLASSES), conf: DEFAULT_CONF };
+}
+
+/**
+ * Read the stored settings, falling back to the defaults for anything absent,
+ * malformed or no longer meaningful.
+ *
+ * Validated per field rather than trusted, because this is the one input the
+ * app takes from outside itself: a hand-edited or stale entry naming a class
+ * that no longer exists must not blank the overlay, and a `conf` off the step
+ * scale must not leave every button looking unselected.
+ */
+export function readOverlayPrefs(storage: Pick<Storage, 'getItem'> = localStorage): OverlayPrefs {
+  const fallback = defaultPrefs();
+  try {
+    const raw = storage.getItem(PREFS_KEY);
+    if (raw === null) return fallback;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return fallback;
+    const { classes, conf } = parsed as { classes?: unknown; conf?: unknown };
+    const kept = Array.isArray(classes)
+      ? classes.filter((c): c is ObjectClass =>
+          OBJECT_CLASSES.includes(c as ObjectClass),
+        )
+      : null;
+    return {
+      // An empty array is a real choice -- every class turned off -- and is
+      // kept. Only a missing or unparseable list falls back.
+      classes: kept === null ? fallback.classes : new Set(kept),
+      conf: CONF_STEPS.includes(conf as (typeof CONF_STEPS)[number])
+        ? (conf as number)
+        : fallback.conf,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeOverlayPrefs(
+  prefs: OverlayPrefs,
+  storage: Pick<Storage, 'setItem'> = localStorage,
+): void {
+  try {
+    storage.setItem(
+      PREFS_KEY,
+      JSON.stringify({ classes: [...prefs.classes], conf: prefs.conf }),
+    );
+  } catch {
+    // A full or disabled store costs the preference, never the session.
+  }
+}
+
 /** Per-class colours, chosen to read against the stage's dark surface. */
 export const CLASS_COLOUR: Record<ObjectClass, string> = {
   racket: '#ffd166',

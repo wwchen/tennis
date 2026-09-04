@@ -28,9 +28,9 @@ import {
 import {
   CLASS_COLOUR,
   CONF_STEPS,
-  DEFAULT_CLASSES,
-  DEFAULT_CONF,
   OBJECT_CLASSES,
+  readOverlayPrefs,
+  writeOverlayPrefs,
   boxRect,
   drawnBoxes,
   frameAt,
@@ -151,10 +151,13 @@ export function KeyframeReview({
    * way — the controls simply do not appear.
    */
   const [objects, setObjects] = useState<ObjectsDoc | null>(null);
+  // Restored from the last visit rather than reset to the defaults. How a
+  // reviewer likes to look at a swing is not a per-session judgement, so it
+  // outlives both the reload and the session switch.
   const [shownClasses, setShownClasses] = useState<Set<ObjectClass>>(
-    () => new Set(DEFAULT_CLASSES),
+    () => readOverlayPrefs().classes,
   );
-  const [confFloor, setConfFloor] = useState<number>(DEFAULT_CONF);
+  const [confFloor, setConfFloor] = useState<number>(() => readOverlayPrefs().conf);
   /**
    * The video element's own size and the size of the picture inside it.
    *
@@ -540,14 +543,26 @@ export function KeyframeReview({
     return () => observer.disconnect();
   }, [measure]);
 
-  const toggleClass = useCallback((cls: ObjectClass) => {
-    setShownClasses((prev) => {
-      const next = new Set(prev);
-      if (next.has(cls)) next.delete(cls);
-      else next.add(cls);
-      return next;
-    });
-  }, []);
+  const toggleClass = useCallback(
+    (cls: ObjectClass) => {
+      setShownClasses((prev) => {
+        const next = new Set(prev);
+        if (next.has(cls)) next.delete(cls);
+        else next.add(cls);
+        writeOverlayPrefs({ classes: next, conf: confFloor });
+        return next;
+      });
+    },
+    [confFloor],
+  );
+
+  const chooseConf = useCallback(
+    (c: number) => {
+      setConfFloor(c);
+      writeOverlayPrefs({ classes: shownClasses, conf: c });
+    },
+    [shownClasses],
+  );
 
   // The picker lists only playable sessions, but the app still LOADS whichever
   // session the tree lists first — `IMG_0304`, which has no source video. That
@@ -904,7 +919,7 @@ export function KeyframeReview({
                   Conf
                 </span>
                 {CONF_STEPS.map((c) => (
-                  <span key={c} onClick={() => setConfFloor(c)} style={S.click}>
+                  <span key={c} onClick={() => chooseConf(c)} style={S.click}>
                     <Button variant={c === confFloor ? 'secondary' : 'tertiary'} size="sm">
                       {c.toFixed(2)}
                     </Button>

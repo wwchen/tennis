@@ -1,16 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_CLASSES,
+  DEFAULT_CONF,
   boxRect,
   drawnBoxes,
   frameAt,
   objectsUrl,
   parseObjectsJsonl,
+  readOverlayPrefs,
   sampleLifeMs,
-  videoContentRect,
   type BoxRow,
   type ObjectClass,
   type ObjectsFrame,
   type ObjectsHeader,
+  videoContentRect,
+  writeOverlayPrefs,
 } from './object-overlay';
 
 /** The first two lines of a real export, verbatim. */
@@ -232,5 +236,68 @@ describe('objectsUrl', () => {
   it('escapes the session name, which reaches the route as a path segment', () => {
     expect(objectsUrl('IMG_0684')).toBe('/api/objects/IMG_0684');
     expect(objectsUrl('a/b')).toBe('/api/objects/a%2Fb');
+  });
+});
+
+describe('overlay preferences', () => {
+  const store = (raw: string | null) => ({
+    getItem: () => raw,
+    setItem: () => undefined,
+  });
+
+  it('falls back to the defaults when nothing is stored', () => {
+    const got = readOverlayPrefs(store(null));
+    expect([...got.classes].sort()).toEqual([...DEFAULT_CLASSES].sort());
+    expect(got.conf).toBe(DEFAULT_CONF);
+  });
+
+  it('restores what was written', () => {
+    let held: string | null = null;
+    const rw = {
+      getItem: () => held,
+      setItem: (_k: string, v: string) => {
+        held = v;
+      },
+    };
+    writeOverlayPrefs({ classes: new Set<ObjectClass>(['person']), conf: 0.5 }, rw);
+    const got = readOverlayPrefs(rw);
+    expect([...got.classes]).toEqual(['person']);
+    expect(got.conf).toBe(0.5);
+  });
+
+  it('keeps an empty class list, which is a real choice', () => {
+    // Every class turned off is a reviewer decision, not corruption; only a
+    // missing or unparseable list falls back to the defaults.
+    const got = readOverlayPrefs(store(JSON.stringify({ classes: [], conf: 0.25 })));
+    expect(got.classes.size).toBe(0);
+  });
+
+  it('drops a class name that no longer exists rather than blanking the overlay', () => {
+    const got = readOverlayPrefs(
+      store(JSON.stringify({ classes: ['racket', 'shuttlecock'], conf: 0.25 })),
+    );
+    expect([...got.classes]).toEqual(['racket']);
+  });
+
+  it('rejects a conf off the step scale, which would leave every button unselected', () => {
+    expect(readOverlayPrefs(store(JSON.stringify({ conf: 0.37 }))).conf).toBe(DEFAULT_CONF);
+    expect(readOverlayPrefs(store(JSON.stringify({ conf: 'high' }))).conf).toBe(DEFAULT_CONF);
+  });
+
+  it('survives malformed json and a hostile shape', () => {
+    expect(readOverlayPrefs(store('{not json')).conf).toBe(DEFAULT_CONF);
+    expect(readOverlayPrefs(store('null')).conf).toBe(DEFAULT_CONF);
+    expect(readOverlayPrefs(store('[1,2,3]')).conf).toBe(DEFAULT_CONF);
+  });
+
+  it('a storage that throws costs the preference, never the session', () => {
+    const hostile = {
+      setItem: () => {
+        throw new Error('QuotaExceededError');
+      },
+    };
+    expect(() =>
+      writeOverlayPrefs({ classes: new Set<ObjectClass>(['ball']), conf: 0.1 }, hostile),
+    ).not.toThrow();
   });
 });
