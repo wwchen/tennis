@@ -74,7 +74,11 @@ def parse_args(argv=None):
 
 
 def load(session_dir):
-    """(labelled positions sorted by ms, count of "no ball", contact times)."""
+    """(labelled positions sorted by ms, count of "no ball", [(window, contact)]).
+
+    Windows and contacts are index-aligned in the header, so each window can be
+    attributed to the swing it was cut around.
+    """
     with open(os.path.join(session_dir, "ball-labels.json")) as fh:
         doc = json.load(fh)
     labels = doc.get("labels") or {}
@@ -83,7 +87,32 @@ def load(session_dir):
         header = json.loads(fh.readline())
     positions = sorted((int(ms), xy) for ms, xy in labels.items() if xy is not None)
     blanks = sum(1 for xy in labels.values() if xy is None)
-    return positions, blanks, header.get("contacts") or []
+    windows = header.get("windows") or []
+    contacts = header.get("contacts") or []
+    if len(windows) != len(contacts):
+        raise SystemExit(
+            "header has %d windows and %d contacts; they must be index-aligned "
+            "-- regenerate with scripts/detect_ball_candidates.py"
+            % (len(windows), len(contacts)))
+    return positions, blanks, list(zip(windows, contacts))
+
+
+def contact_for(pairs, ms):
+    """The contact of the window `ms` falls in, or None.
+
+    The window's OWN contact, never the nearest one in the session. Matching to
+    the nearest flatters the result by construction: a reversal measured far
+    from its own strike gets attributed to whichever swing sits closest, so the
+    error reported is bounded by the gap between swings instead of being the
+    error. It did not bite on the first data -- contacts are ~3.5 s apart and
+    every delta was under 42 ms -- but the measurement could not have told an
+    accurate `contact_ms` from a bad one either way, which is the whole point of
+    making it.
+    """
+    for (start, end), contact in pairs:
+        if start <= ms <= end:
+            return contact
+    return None
 
 
 def runs_of(positions):
@@ -121,9 +150,9 @@ def sharpest_turn(times, points):
 
 def main(argv=None):
     args = parse_args(argv)
-    positions, blanks, contacts = load(args.session_dir)
-    if not contacts:
-        print("no contact times in the candidate header; nothing to compare")
+    positions, blanks, pairs = load(args.session_dir)
+    if not pairs:
+        print("no windows in the candidate header; nothing to compare")
         return 1
 
     groups = runs_of(positions)
@@ -147,7 +176,15 @@ def main(argv=None):
             skipped += 1
             continue
         degrees, reversal = turn
-        contact = min(contacts, key=lambda c: abs(c - reversal))
+        # Anchored on the labels, not the reversal: a reversal that lands
+        # outside its own window is exactly the case this must report rather
+        # than re-home onto a neighbouring swing.
+        contact = contact_for(pairs, group[0][0])
+        if contact is None:
+            print("%-9d %5d %7.0f   labels fall in no candidate window"
+                  % (group[0][0], len(group), degrees))
+            skipped += 1
+            continue
         delta = reversal - contact
         deltas.append(delta)
         print("%-9d %5d %7.0f %11.0f %11d %+8.0f"

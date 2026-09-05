@@ -52,7 +52,7 @@ const BALL_LABELS = 'ball-labels.json';
  * The windowed, native-rate ball candidates for a session.
  *
  * Fixed here for `OBJECTS`' reason: the name is joined onto a path and only
- * `scripts/detect_ball_candidates.py` has ever written it. A DIFFERENT file from
+ * `scripts/detect_ball_candidates.py` writes it. A DIFFERENT file from
  * `OBJECTS` above, which is a uniform 10fps sample of the whole video for the
  * playback overlay — this one is 60fps and covers contact ±500ms of a sample of
  * swings, because confirming a detection is only possible at the rate the ball
