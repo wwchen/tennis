@@ -107,6 +107,20 @@ export interface EtlSwingDoc {
   labels: EtlLabels;
   frames: EtlFrame[];
   measurements: Record<string, unknown> | null;
+  /**
+   * What the COCO object detector found on the contact frame, or null.
+   *
+   * OPTIONAL in the TS sense, unlike `measurements`: this block did not exist
+   * before `--objects-backend`, so every swing rendered until then omits the
+   * key entirely rather than carrying a null. Absent and null both mean "no
+   * detector looked", which is a different fact from a block whose `racket` is
+   * null — that one looked and found nothing.
+   *
+   * Open-shaped for the same reason `measurements` is: `schema.py` marks `conf`,
+   * `motion` and `racket_distance` present-only, so each is checked at the value
+   * rather than trusted from the type.
+   */
+  objects?: Record<string, unknown> | null;
   edit: EtlEdit | null;
 }
 

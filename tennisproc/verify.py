@@ -1,31 +1,38 @@
-"""Was this candidate actually a swing? And which arm swung?
+"""Was this candidate actually a swing?
 
 The candidate reaching here is a wrist-speed peak that found a strike near it
 (`scan.corroborate`), or, with `detector="audio"`, a bare onset. Either way
 this stage sees only the dense landmark track around it.
 
-Two jobs, both derived from that single track:
+One job: accept or reject the candidate, with a reason from a fixed enum so
+the rejection histogram makes tuning measurable rather than anecdotal. What
+survives is where the player was (`center_x`), how large they were
+(`torso_height`), and the crop boxes.
 
-  * accept or reject the candidate, with a reason from a fixed enum so the
-    rejection histogram makes tuning measurable rather than anecdotal
-  * pick the hitting wrist, and measure the swing around it
+THIS STAGE NO LONGER SAYS WHICH ARM SWUNG. It used to, twice: first by picking
+the wrist furthest from the body midline (which selects the free arm -- the
+old README measured 22% stroke agreement and contact_x clustering bimodally
+at -1.77 and +0.86, two clusters because it was measuring two different
+arms), then by picking the wrist that moved fastest. The second rule was
+never verified either. The one attempt scored it against a proxy built from
+MediaPipe's own landmarks and then used that to judge MediaPipe, which is not
+a check; on a smaller uncontaminated sample it agreed 58% of the time with a
+95% interval spanning 36-80%, which cannot distinguish "broken" from "fine".
 
-The wrist choice is the one piece of real diagnosis carried over from the
-previous code. That version chose the wrist *furthest from the body midline*,
-reasoning that the hitting arm is extended. It is not: the free arm is
-usually flung wider for balance. The old README measured the damage at 22%
-stroke agreement (10 of 46 hand labels) and found contact_x clustering
-bimodally at -1.77 and +0.86 -- two clusters because it was measuring two
-different arms.
+So `hitting_side`, `contact_offset`, `contact_height` and `wrist_peak_speed`
+are gone rather than left in place looking authoritative. What remains of the
+speed rule is `peak_wrist_motion`, which reports how fast either wrist moved
+without naming one: that gates `min_wrist_speed`, the only test separating a
+swing from a player standing still, and orders the slots when several people
+are in frame.
 
-The fix: the hitting wrist is the one that *moves fastest*. A racket arm
-accelerates through contact; a balance arm does not. Speed also degrades
-gracefully -- a wrong pick on a slow swing matters less than on a fast one.
+Anything that needs to know which arm holds the racket should ask the racket.
+`objects.py` finds it on 70% of swings and its box was confirmed by hand at
+15/16 -- which is more than was ever true of the heuristic removed here.
 
-All lengths are in torso heights and all speeds in torso heights per second,
-so a player at the back of the court is comparable to one near the camera.
+All lengths are in torso heights, so a player at the back of the court is
+comparable to one near the camera.
 """
-
 from . import pose as pose_mod
 
 # Reject reasons, mirroring schema.REJECT_REASONS.
@@ -56,16 +63,15 @@ ONSET_WINDOW_FRACTION = 0.5
 # 81.8, max 123 -- so the old cap sat at the MEDIAN and flattened 63% of the
 # shipped corpus onto one value. Two consequences, both measured:
 #
-#   * `wrist_peak_speed` stopped being a usable dimension. Anything comparing
-#     two swings by it was comparing 40.0 with 40.0.
-#   * Worse, `choose_hitting_side` picks the faster wrist with a strict `>`
-#     and tries "left" first, so every tie became "left". With the cap, 33%
-#     of tracks tie; without it, 0% do. Across the shipped corpus that reads
-#     as 90.9% left-handed among capped swings against 51.6% among uncapped
-#     ones -- roughly 620 swings with the wrong arm recorded, and with
-#     `contact_offset`/`contact_height` therefore measured on the free arm.
-#     That is the exact fault this module's docstring describes fixing once
-#     already; the cap reintroduced it through a different door.
+#   * The peak stopped being a usable quantity at all. Anything comparing two
+#     swings by it was comparing 40.0 with 40.0.
+#   * Worse, the side-choosing rule that used to live here picked the faster
+#     wrist with a strict `>` and tried "left" first, so every tie became
+#     "left". With the cap 33% of tracks tie; without it 0% do. Across the
+#     shipped corpus that read as 90.9% left-handed among capped swings
+#     against 51.6% among uncapped ones. That rule is gone now, but the cap
+#     still decides which SLOT gets measured when several people are in
+#     frame, so it is no less load-bearing.
 #
 # 150.0 is chosen to stop the cap DECIDING anything, not because nothing
 # reaches it. Measured with the cap fully lifted across all 25 cached sessions
@@ -74,39 +80,36 @@ ONSET_WINDOW_FRACTION = 0.5
 # failure it caused before. `BODY_JUMP` filtering removes the teleports, and
 # what is left above ~50 is single-frame landmark jitter rather than a limb.
 #
-# Which means the honest reading of this dimension is narrower than its range
-# suggests. A torso is roughly half a metre, so 150 torso-heights/s implies a
-# 75 m/s wrist; an elite serve's RACKET HEAD peaks near 50 m/s and the wrist
-# far below that. Anything above roughly 50 here is measurement noise that
-# happened to survive the jump filter. Treat `wrist_peak_speed` as ordinal
-# within a swing (which wrist moved faster) and as a coarse gate against
-# `min_wrist_speed`; do not read the number as a physical speed, and do not
-# build a threshold in the tail without re-measuring it first.
+# Which is why the number is no longer published. A torso is roughly half a
+# metre, so 150 torso-heights/s implies a 75 m/s wrist; an elite serve's
+# RACKET HEAD peaks near 50 m/s and the wrist far below that. Anything above
+# roughly 50 here is measurement noise that survived the jump filter. It is a
+# threshold input and a slot ordering, never a property of a swing -- which is
+# exactly how it was read while it sat in the output as `wrist_peak_speed`.
 SPEED_CAP = 150.0
 
 
 class Measured:
     """Per-slot swing measurements, or a reason the slot is unusable."""
 
-    __slots__ = ("slot", "reason", "hitting_side", "wrist_peak_speed",
-                 "torso_height", "contact_offset", "contact_height",
+    # `peak_motion` is deliberately NOT in to_metadata(): it orders slots and
+    # feeds the min_wrist_speed gate, and publishing it is what invited it to
+    # be read as a property of a swing rather than a threshold input.
+    __slots__ = ("slot", "reason", "peak_motion",
+                 "torso_height",
                  "peak_ms", "center_x", "boxes",
                  # The instant this swing is anchored on, and whether pose had
                  # to move it off the audio onset to get there.
                  "contact_ms", "reanchored")
 
-    def __init__(self, slot, reason=None, hitting_side=None,
-                 wrist_peak_speed=None, torso_height=None,
-                 contact_offset=None, contact_height=None, peak_ms=None,
+    def __init__(self, slot, reason=None, peak_motion=0.0,
+                 torso_height=None, peak_ms=None,
                  center_x=None, boxes=None, contact_ms=None,
                  reanchored=False):
         self.slot = slot
         self.reason = reason
-        self.hitting_side = hitting_side
-        self.wrist_peak_speed = wrist_peak_speed
+        self.peak_motion = peak_motion
         self.torso_height = torso_height
-        self.contact_offset = contact_offset
-        self.contact_height = contact_height
         self.peak_ms = peak_ms
         self.contact_ms = contact_ms
         self.reanchored = reanchored
@@ -124,14 +127,9 @@ class Measured:
         return {
             "space": "crop_normalized",
             "origin": "top_left",
-            "units": {"length": "torso_heights",
-                      "speed": "torso_heights_per_s"},
-            "hitting_side": self.hitting_side,
+            "units": {"length": "torso_heights"},
             "per_frame": "pose.json",
-            "wrist_peak_speed": _round(self.wrist_peak_speed),
             "torso_height": _round(self.torso_height),
-            "contact_offset": _round(self.contact_offset),
-            "contact_height": _round(self.contact_height),
             # Where on court the player was, at contact. Measured all along and
             # thrown away at this line: `dedupe_swings` decides whether two
             # detections are one player from exactly this number, so without it
@@ -205,38 +203,39 @@ def wrist_speeds(series, wrist_index, torso, aspect=1.0):
     return out
 
 
-def choose_hitting_side(series, torso, aspect=1.0):
-    """Return ("left"|"right", peak_speed, peak_ms) by peak wrist speed.
+def peak_wrist_motion(series, torso, aspect=1.0):
+    """The fastest either wrist moved, as (speed, ms). No side attached.
 
-    Not by reach. See the module docstring: reach selects the free arm.
+    This replaced `choose_hitting_side`, which returned the same peak AND
+    named the arm it belonged to. The naming was the problem: it was never
+    verified, and the one attempt to check it measured MediaPipe against a
+    proxy built from MediaPipe's own landmarks, which is not a check. Nothing
+    now claims to know which arm swung.
+
+    What survives is the part that was doing real work. This gates
+    `min_wrist_speed`, which is the only test separating a swing from a player
+    standing still -- 40% of accepted candidates in one hand-audited session
+    were split-steps, and removing the gate would have made that worse rather
+    than better. It also orders the slots when several people are in frame.
+
+    The maximum over both wrists rather than either one in particular: a
+    swing is fast whichever arm holds the racket, and that is the whole
+    question being asked here.
     """
-    best = (None, -1.0, None)
-    tied = False
-    for side, index in (("left", pose_mod.L_WRIST),
-                        ("right", pose_mod.R_WRIST)):
+    # Starts BELOW zero, not at zero. A player standing still has speeds
+    # computed and every one of them is 0.0, which is "nobody swung" -- and
+    # that must reach the `min_wrist_speed` gate as `wrist_too_slow`. Starting
+    # at 0.0 left `ms` unset for that case and reported `no_wrist_track`
+    # instead, which says the pose failed when it did not.
+    best = (-1.0, None)
+    for index in (pose_mod.L_WRIST, pose_mod.R_WRIST):
         speeds = wrist_speeds(series, index, torso, aspect)
         if not speeds:
             continue
         peak_ms, peak = max(speeds, key=lambda row: row[1])
-        if peak > best[1]:
-            best = (side, peak, peak_ms)
-            tied = False
-        elif peak == best[1] and peak > 0:
-            # Exactly equal NON-ZERO peaks mean this measurement cannot tell
-            # the arms apart. Silently keeping whichever was tried first is
-            # what turned a saturated speed into a 91%-left corpus; with
-            # SPEED_CAP raised this is unreachable on real footage, and if it
-            # ever fires again it should be visible rather than decided by
-            # loop order.
-            #
-            # Zero is excluded because it is not that case: a player standing
-            # still ties at 0.0 on both wrists, and "nobody swung" is already
-            # said better, and earlier, by `wrist_too_slow`. Nulling the side
-            # there would relabel every standing player as `no_wrist_track`.
-            tied = True
-    if tied:
-        return (None, best[1], best[2])
-    return best
+        if peak > best[0]:
+            best = (peak, peak_ms)
+    return (max(0.0, best[0]), best[1])
 
 
 def frame_aspect(track):
@@ -258,14 +257,13 @@ def measure_slot(track, slot, settings):
     if torso < settings.min_torso:
         return Measured(slot, reason=TORSO_TOO_SMALL, torso_height=torso)
 
-    side, peak_speed, peak_ms = choose_hitting_side(series, torso,
-                                                    frame_aspect(track))
-    if side is None:
+    peak_speed, peak_ms = peak_wrist_motion(series, torso,
+                                            frame_aspect(track))
+    if peak_ms is None:
         return Measured(slot, reason=NO_WRIST_TRACK, torso_height=torso)
     if peak_speed < settings.min_wrist_speed:
         return Measured(slot, reason=WRIST_TOO_SLOW, torso_height=torso,
-                        wrist_peak_speed=peak_speed, hitting_side=side,
-                        peak_ms=peak_ms)
+                        peak_motion=peak_speed, peak_ms=peak_ms)
 
     # The onset should coincide with the swing, not sit outside it. A ball
     # bouncing near a stationary player would otherwise pass.
@@ -284,35 +282,25 @@ def measure_slot(track, slot, settings):
     # 58% on the moved value, 0.2-0.35s off on every shot it touched. The
     # distance is evidence about the candidate, not a correction to apply.
     window_ms = settings.pose_window_s * 1000.0 * ONSET_WINDOW_FRACTION
-    peak_off_swing = (peak_ms is not None
-                      and abs(peak_ms - track.contact_ms) > window_ms)
+    peak_off_swing = abs(peak_ms - track.contact_ms) > window_ms
     if peak_off_swing and peak_speed < settings.reanchor_min_speed:
         return Measured(slot, reason=PEAK_OFF_ONSET, torso_height=torso,
-                        wrist_peak_speed=peak_speed, hitting_side=side,
-                        peak_ms=peak_ms)
+                        peak_motion=peak_speed, peak_ms=peak_ms)
     contact_ms = track.contact_ms
 
-    wrist_index = (pose_mod.L_WRIST if side == "left" else pose_mod.R_WRIST)
     index = track.nearest_index(contact_ms, slot)
     at_contact = series[index][1]
-    mid_x = at_contact.center_x()
-    wrist_x, wrist_y = at_contact.xy(wrist_index)
-    shoulder_y = (at_contact.points[pose_mod.L_SHOULDER][1]
-                  + at_contact.points[pose_mod.R_SHOULDER][1]) / 2.0
 
     return Measured(
         slot,
-        hitting_side=side,
-        wrist_peak_speed=peak_speed,
+        peak_motion=peak_speed,
         torso_height=torso,
-        # Signed: negative means contact happened left of the midline.
-        contact_offset=(wrist_x - mid_x) / torso,
-        # Negative means above the shoulder, since y grows downward.
-        contact_height=(wrist_y - shoulder_y) / torso,
         peak_ms=peak_ms,
         contact_ms=contact_ms,
         reanchored=False,
-        center_x=mid_x,
+        # Where on court the player was, at contact. `dedupe_swings` decides
+        # whether two detections are one player from exactly this number.
+        center_x=at_contact.center_x(),
         boxes=[lm.bbox() for _, lm in series],
     )
 
@@ -320,9 +308,9 @@ def measure_slot(track, slot, settings):
 def verify(track, settings):
     """Pick the swinging slot in a track and measure it.
 
-    With more than one player in frame, the slot with the fastest wrist is
-    the one that hit the ball -- the same logic as choosing an arm, one level
-    up. Returns (Measured, all_slot_results).
+    With more than one player in frame, the slot whose wrist moved fastest is
+    the one to measure. That is an ordering, not a claim about who hit the
+    ball. Returns (Measured, all_slot_results).
     """
     slots = track.slot_count()
     if slots == 0:
@@ -331,7 +319,7 @@ def verify(track, settings):
     results = [measure_slot(track, slot, settings) for slot in range(slots)]
     usable = [m for m in results if m.ok]
     if usable:
-        return max(usable, key=lambda m: m.wrist_peak_speed), results
+        return max(usable, key=lambda m: m.peak_motion), results
 
     # Nothing usable: report the least-bad reason so the histogram points at
     # the real problem. A frame where a body was found but moved too slowly is

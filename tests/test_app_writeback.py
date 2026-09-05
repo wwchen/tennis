@@ -47,7 +47,9 @@ class TestAppWriteback(unittest.TestCase):
         while JSON.stringify(1.0) is "1". Real output hits this --
         detection.contact_offset is -1.0 in 2 of the sample session's 42 swings
         and measurements.wrist_peak_speed is 40.0 in another -- and the effect
-        was a false "stale review" warning on ~10% of reviewed swings.
+        was a false "stale review" warning on ~10% of reviewed swings. Neither
+        field is produced any longer, but this hashes trees on disk and 2505
+        shipped swings still carry them.
 
         The same two constants are pinned in vite-plugin-shot-lab.test.ts, so
         neither side can drift alone."""

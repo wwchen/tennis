@@ -118,7 +118,8 @@ export interface Clip {
    * What the verifier measured, for the reviewer to judge against.
    *
    * Absent on seeded clips and on any swing whose `measurements` block the ETL
-   * left null. Numbers, not a verdict: `isSuspect` turns them into one.
+   * left null. Facts about the player in frame, not a verdict on the swing:
+   * the panel reports them and the reviewer judges.
    */
   measurements?: ClipMeasurements;
   /**
@@ -132,15 +133,16 @@ export interface Clip {
    */
   detection?: ClipDetection;
   /**
-   * The human-authored label block, verbatim.
+   * Where the racket and the ball were on the contact frame.
    *
-   * `stroke`, `grade`, `player` and `note` above are the app's lossy views of
-   * it — `grade` has three values against quality's five, `player` collapses a
-   * name and a court slot into one string, and `rejected` is one bit against
-   * four verdicts. A panel whose job is to report what the pipeline knows has
-   * to show the unreduced values, or it re-tells the same lossy story.
+   * Absent means NO DETECTOR LOOKED — a seeded clip, or any swing rendered
+   * before `--objects-backend` existed. That is a different state from a
+   * present block whose `racket` is null, which is a detector that looked and
+   * found nothing, and the panel has to keep the two apart: a missing racket is
+   * ordinary (it is found on 62% of swings) and says nothing about the swing,
+   * while "nobody looked" says nothing about anything.
    */
-  labels?: ClipLabels;
+  objects?: ClipObjects;
   /**
    * Pixel size of the rendered clip, as the ETL wrote it.
    *
@@ -152,26 +154,36 @@ export interface Clip {
   clipSize?: { width: number; height: number };
 }
 
+/**
+ * What the verifier is willing to say about a swing.
+ *
+ * Two numbers, both scale and position. It used to carry four more —
+ * `wristSpeed`, `armOffset`, `contactHeight` and `hittingSide` — which
+ * together answered "which arm swung and where did it meet the ball". The ETL
+ * stopped producing them: the rule that picked an arm was never verified, and
+ * with the arm unknown a distance from the midline is a distance from nothing.
+ * See `verify.py`.
+ *
+ * Both fields are optional because the schema marks every measurement field
+ * optional and swings rendered before `center_x` existed carry only the first.
+ */
 export interface ClipMeasurements {
-  /** Peak wrist speed, in torso heights per second. Saturates at 40. */
-  wristSpeed: number;
-  /** Hitting wrist's distance from the body midline at contact, in torso heights. */
-  armOffset: number;
   /**
-   * The tracked player's torso height as a fraction of the crop — the unit
-   * everything else here is expressed in.
+   * The tracked player's torso height as a fraction of the crop.
    *
-   * Worth showing because it is the denominator: a swing measured against a
-   * torso of 0.008 of the frame is a player far enough away that both numbers
-   * above are mostly noise, and nothing else on the panel would say so.
-   * Optional because the schema marks every measurement field optional; a swing
-   * can carry the two required numbers and not this one.
+   * The scale of the whole measurement: a swing measured against a torso of
+   * 0.008 of the frame is a player far enough away that the pipeline's own
+   * gates were working on noise, and nothing else on the panel would say so.
    */
   torsoHeight?: number;
-  /** Contact's height within the crop, 0 at the top edge. */
-  contactHeight?: number;
-  /** Which wrist the numbers above were taken from. */
-  hittingSide?: 'left' | 'right';
+  /**
+   * Where across the frame the player stood at contact, 0 at the left edge.
+   *
+   * Frame-normalized, not in torso heights — it is a position, and it is what
+   * the ETL's own de-duplication uses to decide whether two detections are one
+   * player hitting twice or two players rallying.
+   */
+  centerX?: number;
 }
 
 /** @see Clip.detection */
@@ -201,36 +213,93 @@ export interface ClipDetection {
   rejectReason: string | null;
 }
 
-/** @see Clip.labels */
-export interface ClipLabels {
-  /** Court zone the ETL assigned. A zone, never a person. */
-  playerSlot: string | null;
-  /** The name a human typed, or null — which is why `player` falls back to the slot. */
-  playerName: string | null;
-  /** 1–5, finer than `grade`'s three values. */
-  quality: number | null;
-  /** `valid` | `false_positive` | `duplicate` | `unclear`, or null for no call. */
-  verdict: string | null;
-  tags: string[];
+/**
+ * One detection box, in SOURCE-DISPLAY PIXELS.
+ *
+ * Not the space `ClipMeasurements` uses. Those are crop-normalized fractions of
+ * a rectangle `--crop-mode` chooses; these are found on the whole frame before
+ * any crop exists, so the two must never be compared or plotted together.
+ */
+export interface ObjectBox {
+  /** Top-left corner and size, in source-display pixels. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Detector confidence, 0-1. Present-only in `schema.py`, hence optional. */
+  conf?: number;
+}
+
+/** @see Clip.objects */
+export interface RacketBox extends ObjectBox {
+  /**
+   * How far the racket moved per frame across the contact window, in torso
+   * heights. @see RACKET_SWUNG
+   */
+  motion?: number;
+  /**
+   * Whether that displacement cleared the threshold — i.e. whether the racket
+   * was actually swung.
+   *
+   * Absent, not false, when the racket was seen in fewer than two frames.
+   * "Never found" and "did not move" are different claims and only one of them
+   * is evidence; treating the first as the second would flag every occluded
+   * swing as fake.
+   */
+  swung?: boolean;
+}
+
+/** @see Clip.objects */
+export interface BallBox extends ObjectBox {
+  /**
+   * How far this box's pixels deviate from a short background plate, 0-255.
+   *
+   * The one number that separates a ball in flight from one lying on the court,
+   * which look identical to a box detector. @see BALL_IN_FLIGHT
+   */
+  motion?: number;
+  /**
+   * Gap from the ball to the racket box, in torso heights.
+   *
+   * Absent when no racket was found — there is nothing to measure against, and
+   * a 0 would read as the ball resting on a racket that was never located.
+   */
+  racketDistance?: number;
+}
+
+/** @see Clip.objects */
+export interface ClipObjects {
+  /** Which backend found these, e.g. `yolo/coco`. */
+  detector?: string;
+  /** Null when the detector looked and found none. Not the same as absent. */
+  racket: RacketBox | null;
+  ball: BallBox | null;
 }
 
 /**
- * Whether a swing reads as "the detector fired, but nobody hit anything".
+ * The racket displacement above which the racket was swung, torso heights per
+ * frame. Mirrors `objects.RACKET_MOVING`.
  *
- * Both halves are needed, and neither alone is enough. Measured over the 329
- * swings of the first four sessions: speed has no gap to cut at — thresholds
- * from 2 to 12 shave off 2% to 41% with nothing to distinguish a soft volley
- * from a non-shot. Arm extension separates far better (157 of 206 swings above
- * speed 10 have the arm out, against almost none of the slow ones), but a
- * genuine drop-shot is slow with the arm out too.
+ * Measured over 40 hand-audited candidates: candidates that were NOT swings
+ * (the player bouncing in ready position between machine feeds) peak at 0.144,
+ * while real swings sit at a median of 0.365. The two barely overlap.
  *
- * Together they flag 18% of the tree: slow AND the wrist still at the midline,
- * which is a body standing still. This is a sorting aid, not a filter the
- * pipeline applies — `IMG_0305/swing_019` at speed 2.27 and offset 0.01 is
- * still a swing until a human looks at the clip and says otherwise.
+ * Note the signal is displacement and not presence. Racket detection RATE goes
+ * the other way — it FELL from 73% to 62% on a cleaner candidate set, because
+ * a swinging racket blurs and a stationary one does not — so "a racket was
+ * found" is weak evidence against a swing rather than for one.
  */
-export const SUSPECT_SPEED = 5;
-export const SUSPECT_ARM = 0.4;
+export const RACKET_SWUNG = 0.15;
+
+/**
+ * The `motion` above which a detected ball is flying rather than lying there.
+ *
+ * A ball on the court is still a ball to a box detector, and there are usually
+ * several of them in shot. Motion against a short background plate separates
+ * them with room to spare: dead balls measured 2-3, and confirmed in-flight
+ * ones 21-65, so anything under 20 is on the ground.
+ */
+export const BALL_IN_FLIGHT = 20;
 
 /**
  * A clip id with its session prefix dropped: `IMG_0305/swing_042` -> `swing_042`.
@@ -305,11 +374,6 @@ export const sourceRange = (clip: Clip): string => {
   const length = `${seconds.toFixed(1).replace(/\.0$/, '')}s`;
   return `${clock(clip.sourceStartMs)}–${clock(clip.sourceEndMs)} (${length})`;
 };
-
-export const isSuspect = (clip: Clip): boolean =>
-  clip.measurements !== undefined &&
-  clip.measurements.wristSpeed < SUSPECT_SPEED &&
-  Math.abs(clip.measurements.armOffset) < SUSPECT_ARM;
 
 export interface Comment {
   id: number;

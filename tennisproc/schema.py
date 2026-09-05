@@ -51,7 +51,7 @@ ROTATIONS = (0, 90, 180, 270)
 
 # Blocks the ETL owns outright. A stale user-edit.json must never be able to
 # rewrite where a clip came from.
-ETL_OWNED = ("source", "trim", "crop", "detection", "measurements")
+ETL_OWNED = ("source", "trim", "crop", "detection", "measurements", "objects")
 
 _INT = (int,)
 _NUM = (int, float)
@@ -238,14 +238,63 @@ def _check_frames(c, frames, path, has_pose):
               "no frame has a score, but measurements is not null")
 
 
+OBJECT_SPACE = "source_display"
+
+
+def _check_box(c, b, path, extra=()):
+    for name in ("x", "y", "w", "h"):
+        c.field(b, name, path, _NUM)
+    # A racket carries `swung`: whether its displacement cleared
+    # objects.RACKET_MOVING. Present-only, like everything below.
+    if "swung" in b and not isinstance(b["swung"], bool):
+        c.add("%s.swung" % path, "expected boolean")
+    # Present-only, never required. `optional=True` means "may be null", not
+    # "may be absent" -- the same trap `measurements.center_x` documents. conf
+    # is absent from a hand-written box; motion and racket_distance exist only
+    # on a ball, and racket_distance only when a racket was also found.
+    for name in ("conf",) + tuple(extra):
+        if name in b:
+            c.field(b, name, path, _NUM, optional=True)
+
+
+def _check_objects(c, o, path):
+    """The racket/ball block.
+
+    Both entries are nullable and stay nullable: the detector finds a racket on
+    roughly three swings in five and a ball in flight on fewer, so "absent" is
+    the common case rather than an error. Boxes are in source-display pixels,
+    NOT crop-normalized like `measurements` -- they are found on the full frame
+    before any crop exists, and converting them here would bake in a rectangle
+    that `--crop-mode` can change.
+    """
+    c.const(o, "space", path, OBJECT_SPACE)
+    c.field(o, "detector", path, (str,), optional=True)
+    for name, extra in (("racket", ("motion",)),
+                        ("ball", ("motion", "racket_distance"))):
+        if name not in o:
+            c.add("%s.%s" % (path, name), "missing (use null when not found)")
+        elif o[name] is not None:
+            if not isinstance(o[name], dict):
+                c.add("%s.%s" % (path, name), "expected object or null")
+            else:
+                _check_box(c, o[name], "%s.%s" % (path, name), extra=extra)
+
+
 def _check_measurements(c, m, path):
     c.const(m, "space", path, MEASURE_SPACE)
     c.const(m, "origin", path, MEASURE_ORIGIN)
-    c.field(m, "hitting_side", path, (str,), enum=HITTING_SIDES)
     c.field(m, "per_frame", path, (str,), optional=True)
-    for name in ("wrist_peak_speed", "torso_height", "contact_offset",
-                 "contact_height"):
-        c.field(m, name, path, _NUM, optional=True)
+    c.field(m, "torso_height", path, _NUM, optional=True)
+    # `hitting_side`, `wrist_peak_speed`, `contact_offset` and
+    # `contact_height` were removed from this block: nothing produces them any
+    # more, and the rule that chose an arm was never verified. They are not
+    # rejected when present, because 2505 shipped swings carry them and a
+    # validator that fails on the whole existing corpus is not a validator.
+    for name in ("wrist_peak_speed", "contact_offset", "contact_height"):
+        if name in m:
+            c.field(m, name, path, _NUM, optional=True)
+    if "hitting_side" in m:
+        c.field(m, "hitting_side", path, (str,), enum=HITTING_SIDES)
     # Checked only when present, for the same reason as `source.modified`:
     # `optional=True` means "may be null", never "may be absent", so requiring
     # this would fail every one of the 2505 swings written before it existed.
@@ -253,8 +302,12 @@ def _check_measurements(c, m, path):
         c.field(m, "center_x", path, _NUM, optional=True)
     units = c.block(m, "units", path)
     if units is not None:
-        for name in ("length", "speed"):
-            c.field(units, name, "%s.units" % path, (str,))
+        c.field(units, "length", "%s.units" % path, (str,))
+        # `speed` went with `wrist_peak_speed`: there is no speed in this
+        # block to give a unit to any more. Still accepted for the same reason
+        # as the fields above -- the shipped corpus declares it.
+        if "speed" in units:
+            c.field(units, "speed", "%s.units" % path, (str,))
 
 
 def _check_edit(c, edit, path):
@@ -305,6 +358,14 @@ def validate_swing(doc):
             c.add("measurements", "expected object or null")
         else:
             _check_measurements(c, doc["measurements"], "measurements")
+
+    # Absent on every swing written before object detection existed, so its
+    # absence is not an error -- only a present-but-malformed block is.
+    if doc.get("objects") is not None:
+        if not isinstance(doc["objects"], dict):
+            c.add("objects", "expected object or null")
+        else:
+            _check_objects(c, doc["objects"], "objects")
 
     if "frames" not in doc:
         c.add("frames", "missing")

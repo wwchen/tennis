@@ -56,7 +56,8 @@ def read_json(path):
 def build_swing_doc(swing_id, source, trim, crop_rect, contact_ms, frames,
                     measurements=None, player_slot=None, onset_peak=None,
                     verified=True, reject_reason=None,
-                    method="audio_onset+pose_verify", onset_ms=None):
+                    method="audio_onset+pose_verify", onset_ms=None,
+                    objects=None):
     """One swing's metadata.json.
 
     `source` is denormalized into every swing rather than referenced, so a
@@ -91,6 +92,9 @@ def build_swing_doc(swing_id, source, trim, crop_rect, contact_ms, frames,
         "labels": schema.new_labels(player_slot=player_slot),
         "frames": list(frames),
         "measurements": measurements,
+        # Racket and ball, in source-display pixels. None when the object
+        # backend did not run; null members when it ran and found nothing.
+        "objects": objects,
         "edit": None,
     }
 

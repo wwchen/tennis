@@ -10,10 +10,8 @@ from tennisproc import crop, players, schema, verify
 
 
 def measured(center_x=0.5, torso=0.12, speed=2.0):
-    return verify.Measured(0, hitting_side="right", wrist_peak_speed=speed,
-                           torso_height=torso, contact_offset=0.5,
-                           contact_height=-0.1, peak_ms=1000,
-                           center_x=center_x)
+    return verify.Measured(0, peak_motion=speed, torso_height=torso,
+                           peak_ms=1000, center_x=center_x)
 
 
 class TestWidestGap(unittest.TestCase):

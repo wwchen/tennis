@@ -165,8 +165,8 @@ class TestEndToEnd(unittest.TestCase):
                                              self.doc["swings"][0]["dir"],
                                              "metadata.json"))
         self.assertIsNotNone(doc["measurements"])
-        self.assertIn(doc["measurements"]["hitting_side"],
-                      schema.HITTING_SIDES)
+        self.assertIsNotNone(doc["measurements"]["torso_height"])
+        self.assertIsNotNone(doc["measurements"]["center_x"])
         self.assertTrue(any(f["pose_score"] is not None
                             for f in doc["frames"]))
 

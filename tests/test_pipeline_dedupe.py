@@ -16,8 +16,7 @@ def _swing(contact_ms, center_x, speed=40.0, onset_peak=10.0, torso=0.10):
     candidate = {"contact_ms": contact_ms, "onset_peak": onset_peak}
     track = tracks.Track(candidate, frames=[])
     measured = verify.Measured(
-        0, hitting_side="right", wrist_peak_speed=speed, torso_height=torso,
-        contact_offset=0.0, contact_height=0.0, peak_ms=contact_ms,
+        0, peak_motion=speed, torso_height=torso, peak_ms=contact_ms,
         center_x=center_x, contact_ms=contact_ms)
     return track, measured
 

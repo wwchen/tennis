@@ -2,7 +2,7 @@ import type { Dispatch } from 'react';
 import type { Action, Ui } from '@/state/store';
 import type { Stats } from '@/lib/selectors';
 import type { Phase } from '@/domain/types';
-import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES, SUSPECT_SPEED } from '@/domain/types';
+import { ALL_PLAYERS, ALL_RATINGS, ALL_STROKES } from '@/domain/types';
 import { GRADE_ORDER, GRADES } from '@/domain/grades';
 import { Button, checkedOf, ICONS, SegmentedControl, Select, Toggle, valueOf } from '@/lds';
 import { Mono } from './shared';
@@ -133,6 +133,29 @@ export function Filters({
           onChange={(e: Event) => dispatch({ type: 'setOnlyAnchor', value: checkedOf(e) })}
           hint-size="100%,24px"
         />
+        <Toggle
+          label="Hide unswung rackets"
+          checked={ui.swungOnly}
+          onChange={(e: Event) => dispatch({ type: 'setSwungOnly', value: checkedOf(e) })}
+          hint-size="100%,24px"
+        />
+        {/*
+          Hides a candidate only when the racket was SEEN across the contact
+          window and moved less than RACKET_SWUNG. A clip whose racket was
+          never located stays: not finding one is the ordinary case on about a
+          third of swings and says nothing about whether a ball was hit.
+
+          Displacement rather than presence, because presence points the wrong
+          way -- racket detection RATE fell from 73% to 62% on a cleaner
+          candidate set, a swinging racket being blurred and a stationary one
+          not. Needs `--objects-backend=yolo`; without it no clip carries the
+          field and the toggle changes nothing.
+        */}
+        <div style={{ fontSize: 12, lineHeight: 1.4, color: 'var(--gray-600)' }}>
+          Drops candidates where the racket was found and measurably still —
+          the player bouncing between feeds rather than hitting. Silent on
+          swings whose racket was never located.
+        </div>
       </div>
 
       <div
@@ -150,17 +173,6 @@ export function Filters({
           onChange={(e: Event) => dispatch({ type: 'setLowOnly', value: checkedOf(e) })}
           hint-size="100%,24px"
         />
-        <Toggle
-          label="Likely not a swing"
-          checked={ui.suspectOnly}
-          onChange={(e: Event) => dispatch({ type: 'setSuspectOnly', value: checkedOf(e) })}
-          hint-size="100%,24px"
-        />
-        <div style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--gray-600)' }}>
-          Wrist slower than {SUSPECT_SPEED} torso-heights/s <em>and</em> still at the body midline
-          at contact — a body standing still. About 18% of a session; check the clip before
-          removing.
-        </div>
         <Toggle
           label="Show removed clips"
           checked={ui.showRejected}

@@ -8,15 +8,18 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { adaptSwing } from '@/domain/etl';
 import { toUserEdit } from '@/domain/etl-write';
 import type { EtlSource, EtlSwingDoc } from '@/domain/etl-types';
 import {
+  OBJECTS,
   docHash,
   listSessions,
   overlayEdit,
   parseRange,
   readMedia,
+  readObjects,
   readSession,
   resolveClipCut,
   resolveWriteTarget,
@@ -571,6 +574,65 @@ describe('resolveWriteTarget', () => {
     expect(resolveWriteTarget(tmpDir, 'IMG_0304/swings/swing_001/user-edit')).toHaveProperty(
       'target',
     );
+  });
+});
+
+describe('readObjects', () => {
+  const tmpDir = join(process.cwd(), '.test-tmp-objects');
+  const session = join(tmpDir, 'IMG_0684');
+  const header =
+    '{"space":"source_display","detector":"yolo/coco","weights":"yolo11x.pt",' +
+    '"imgsz":1280,"conf":0.1,"fps":10.0,"width":1080,"height":1920}';
+  const frame = '{"racket":[[658.0,866.9,61.9,171.0,0.773]],"ms":76000}';
+
+  const writeExport = (text: string) => {
+    mkdirSync(join(session, 'work'), { recursive: true });
+    writeFileSync(join(session, OBJECTS), gzipSync(Buffer.from(text, 'utf-8')));
+  };
+
+  beforeEach(() => {
+    // A session is only a session if it has swings — `listSessions` is the
+    // guard this route resolves its name through.
+    mkdirSync(join(session, 'swings', 'swing_001'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('decompresses the export and hands back a parsed document', () => {
+    // Decompressed HERE rather than passed through: otherwise every reader of
+    // the route needs `DecompressionStream` and a JSONL splitter of its own.
+    writeExport(`${header}\n${frame}\n`);
+
+    const doc = readObjects(tmpDir, 'IMG_0684');
+
+    expect(doc?.header.width).toBe(1080);
+    expect(doc?.header.fps).toBe(10);
+    expect(doc?.frames).toHaveLength(1);
+    expect(doc?.frames[0].ms).toBe(76000);
+  });
+
+  it('reads a missing export as "no overlay", which is the ordinary case', () => {
+    // The object pass is an optional extra run, so most sessions have none.
+    // That is not an error and must not read as one.
+    expect(readObjects(tmpDir, 'IMG_0684')).toBeNull();
+  });
+
+  it('reads a corrupt archive as no overlay rather than throwing', () => {
+    mkdirSync(join(session, 'work'), { recursive: true });
+    writeFileSync(join(session, OBJECTS), Buffer.from('not gzip at all'));
+    expect(readObjects(tmpDir, 'IMG_0684')).toBeNull();
+  });
+
+  it('refuses a session name that is not a session', () => {
+    // Resolved through `listSessions` rather than joined onto a path, so no
+    // traversal or absolute path is expressible here — the same guard
+    // `?session=` uses.
+    writeExport(`${header}\n${frame}\n`);
+    expect(readObjects(tmpDir, '../IMG_0684')).toBeNull();
+    expect(readObjects(tmpDir, 'IMG_9999')).toBeNull();
+    expect(readObjects(tmpDir, '/etc')).toBeNull();
   });
 });
 

@@ -57,9 +57,16 @@ def _add_settings_args(parser):
 
     g = parser.add_argument_group("pose")
     g.add_argument("--pose-backend", default=s.pose_backend,
-                   choices=("mediapipe", "stub"),
-                   help="stub runs headless with synthetic poses")
+                   choices=("mediapipe", "rtmpose", "stub"),
+                   help="rtmpose is the accurate one and needs no display; "
+                        "stub runs headless with synthetic poses")
     g.add_argument("--pose-model", default=s.pose_model)
+    g.add_argument("--objects-backend", default=s.objects_backend,
+                   choices=("none", "yolo", "stub"),
+                   help="detect racket and ball with COCO-pretrained YOLO "
+                        "(needs `pip install ultralytics`, AGPL-3.0)")
+    g.add_argument("--objects-weights", default=s.objects_weights,
+                   help="COCO weights for --objects-backend=yolo")
     g.add_argument("--pose-tiles", type=int, default=s.pose_tiles,
                    help="vertical tiles for a player too small to detect "
                         "whole; 0 or 1 means no tiling (default %(default)s)")
@@ -146,9 +153,9 @@ def cmd_detect(args):
 
     print("\nverified swings:")
     for i, (track, measured) in enumerate(accepted, 1):
-        print("  %3d  %8.2fs  speed %5.2f  torso %.3f  %s"
-              % (i, track.contact_ms / 1000.0, measured.wrist_peak_speed,
-                 measured.torso_height, measured.hitting_side))
+        print("  %3d  %8.2fs  torso %.3f  x %.3f"
+              % (i, track.contact_ms / 1000.0, measured.torso_height,
+                 measured.center_x or 0.0))
     print("\n%d candidates -> %d swings (%.0f%% kept)"
           % (len(candidates), len(accepted),
              100.0 * len(accepted) / max(1, len(candidates))))

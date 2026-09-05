@@ -50,6 +50,28 @@ curl --create-dirs -o models/pose_landmarker_lite.task \
 .venv/bin/python -m tennisproc validate out/IMG_0305
 ```
 
+**RTMPose is the better backend and needs no display.** It runs through
+ONNX with no `mmcv`/`mmpose` install, and models download themselves on first
+use to `~/.cache/rtmlib` (~90 MB), so there is no model file to fetch by hand:
+
+```bash
+.venv/bin/pip install rtmlib onnxruntime
+# then: --pose-backend=rtmpose
+```
+
+**Racket and ball detection is optional and off by default.** `tennis racket`
+and `sports ball` are two of COCO's eighty classes, so stock weights need no
+training and no labelling:
+
+```bash
+.venv/bin/pip install ultralytics
+# then: --objects-backend=yolo
+```
+
+`ultralytics` is AGPL-3.0 and pulls torch (~2 GB). Fine privately; a licensing
+decision if this is ever redistributed. That is why the stage is opted into
+rather than out of, and why neither package is in `requirements.txt`.
+
 ### Pose needs a logged-in GUI session
 
 MediaPipe on macOS needs a window server. Without one -- over ssh, from a
@@ -70,6 +92,7 @@ scan      pose over the whole video at 10fps -> wrist-speed peaks    (cached)
 detect    each peak takes the timestamp of its nearest audio onset
 pose      one dense landmark track per surviving candidate           (cached)
 verify    accept or reject each candidate; measure the swing
+objects   racket and ball at each contact, from COCO weights     (optional)
 render    cut the clip, extract the frames
 index     write the session document
 ```
@@ -147,6 +170,248 @@ empty court. Padding cannot fix that; the problem is the fraction of the clip
 the box was measured over, not its size. Use `--crop pose` when the frame span
 is inside the pose window, where a tight frame on the body is exactly what a
 reviewer wants.
+
+## Which pose backend
+
+Three exist: `mediapipe`, `rtmpose` and `stub`. **Prefer `rtmpose`.**
+
+MediaPipe puts the hitting wrist in the wrong place often enough to break the
+measurements built on it. Scored against a COCO-pretrained racket box -- a
+correctly located hitting wrist must sit on or beside the racket the hand is
+holding -- over the 41 IMG_0684 swings where a hand-checked racket box sat on
+the tracked player:
+
+| landmark | within 0.25 torso | within 0.5 |
+|---|---|---|
+| MediaPipe wrist the pipeline chose | 54% | 63% |
+| MediaPipe nearest of its two wrists | 63% | 73% |
+| RTMPose nearest of its two wrists | **90%** | **95%** |
+
+On 24% of those swings the MediaPipe hitting wrist sat more than a whole torso
+height from the racket. That is the failure behind crops centred on an ankle,
+and it also explains detections that look like a bad racket box and are
+actually a bad wrist: of racket boxes more than 1.9 torso from the wrist, a
+quarter were on the player and only the wrist was wrong.
+
+**The swap also removes candidates that were never swings, and finds more real
+ones.** RTMPose accepts fewer: 796 across the eleven re-processed sessions
+against MediaPipe's 858, which reads as lost recall until something neither
+backend can see is asked to judge. A real strike should have a ball in flight
+at the racket; a split-step should not. Scored over identical frames, so the
+ball detector's session-to-session unreliability cancels:
+
+| candidate set | candidates | strikes found | strike rate |
+|---|---|---|---|
+| MediaPipe | 858 | 249 | 29% |
+| RTMPose | 796 | **273** | **34%** |
+
+**62 fewer candidates and 24 more strikes.** Better in 8 of 11 sessions. The
+gain is not only filtering: a strike is recognised by a ball sitting at the
+RACKET, and the racket is found relative to the WRIST, so better anchors
+surface strikes that were always in the footage and previously went
+unrecognised.
+
+Three sessions go the other way -- IMG_0687 (-13 points), IMG_0691 (-6),
+IMG_0695 (-1). IMG_0687 also has the second-lowest racket rate in the corpus
+and IMG_0695 the lowest ball rate, so the anomalies may share a cause. It is
+not known.
+
+Read the strike rate as relative, never absolute. A 34% rate does not mean
+two thirds of swings are fake: the test fires only when a racket AND a moving
+ball are both found AND within a torso height of each other, so it is a
+comparison between two candidate sets over the same frames and nothing more.
+
+**Device matters more than model size.** Seconds per frame, and the resulting
+whole-video scan pass (5016 frames at 10 fps over a 502 s session):
+
+| mode | cpu | accelerated |
+|---|---|---|
+| performance | 0.373 (31.2 min) | 0.060 (5.0 min) |
+| balanced | 0.287 (24.0 min) | 0.049 (4.1 min) |
+| lightweight | 0.087 (7.3 min) | 0.026 (2.2 min) |
+
+MediaPipe scans the same session in 1.9 min. Defaulting RTMPose to CPU made
+the accurate backend 16x slower than the one it replaces; on the accelerator
+it is 2.6x, which is affordable for the accuracy. The backend picks its own
+device from onnxruntime's provider list.
+
+`RTMPoseBackend` uses rtmlib's `Wholebody` even though this package reads only
+the 17 body joints, because `Body` in `performance` mode bundles YOLOX-x
+(351 MB) as its person detector while `Wholebody` uses RTMDet: measured 0.82
+s/frame at 88% against 0.32 s/frame at 90%. The larger-sounding model is the
+cheaper one.
+
+**One trap.** CoreML cannot run the person detector's output node when that
+output is *empty* -- a frame with nobody in it gives a dynamic-shaped tensor
+with zero elements and the provider raises rather than returning nothing. The
+scan pass walks the whole video and meets frames with the player out of shot
+on every session, so this crashed a full run 40 s in. The exception is
+translated into the empty result it stands for, matched narrowly on the error
+text: catching everything there would turn a genuinely broken accelerator into
+a session that silently finds no swings.
+
+## Racket and ball
+
+`--objects-backend=yolo` writes an `objects` block into each swing document:
+racket and ball boxes in **source-display pixels**, not crop-normalized like
+`measurements`. They are found on the full frame before any crop exists, and
+converting at write time would bake in a rectangle `--crop-mode` can change.
+
+Two things are this package's own; the detector is stock and untested here,
+because testing it would be testing ultralytics.
+
+**Which racket box belongs to the player.** A raw detection is not enough. Of
+39 racket boxes sitting more than 1.9 torso heights from a wrist, 0% were on a
+second person, 25.6% were on the player with a misplaced wrist, and 74.4% were
+on nothing at all. A box is accepted when it is near a wrist **or** overlaps
+the tracked player, never both: 53.7% recall for the wrist test alone, 38.9%
+for the overlap test alone, **62.0% for either** -- because the wrist test
+survives a bad player box and the overlap test survives a bad wrist.
+
+**That measurement was taken on single-player footage, and the "0% on a second
+person" is an artefact of it.** IMG_0684 has one player. On IMG_0693, where two
+rally side by side and the detector finds a median of two people per contact
+frame, **38% of accepted rackets sat more on the other player** -- the
+near-a-wrist branch reaches 1.9 torso heights, far enough to take a
+neighbour's racket, and the OR means the overlap test cannot object. A racket
+overlapping another detected person more than the tracked one is now vetoed
+outright, which takes that 38% to 0% and leaves single-player sessions
+untouched.
+
+That one session accounted for three separate anomalies at once: a 99%
+acceptance rate and 17.7 swings/min (two players really do hit twice as often),
+the corpus's largest ball lift (two players rallying keep a ball in the air),
+and the lowest racket-motion distribution (the other player's racket is
+stationary while this one swings).
+
+**Whether a ball is in flight.** Detection alone is nearly worthless: the court
+fills with dead balls as a session runs and the detector finds them all,
+reporting a ball at **79.2%** of control moments when nothing was being
+struck. Motion against a short background plate separates them -- a ball at
+15 m/s covers most of a torso height between frames, one lying on the court is
+in every plate frame and cancels:
+
+| motion threshold | at contact | at control (>=5 s from any shot) | lift |
+|---|---|---|---|
+| 10 | 69.4% | 45.5% | +23.9 |
+| **20** | **59.3%** | **31.7%** | **+27.6** |
+| 40 | 34.3% | 13.9% | +20.4 |
+| 50 | 16.7% | 3.0% | +13.7 |
+
+20 was checked at its own boundary rather than in the comfortable middle: a
+candidate scoring 21 was confirmed by eye to be a real ball. Dead balls score
+2-3.
+
+**That lift does not survive a change of session, and this is the weakest
+claim on the page.** Re-run over 24 swings each of four other sessions, using
+the shipped rules:
+
+Those figures were all measured on MediaPipe anchors, and are therefore a
+floor rather than a value. Re-derived over all eleven re-processed sessions on
+RTMPose anchors, from the `objects` blocks on disk:
+
+| session | swings | racket | ball |
+|---|---|---|---|
+| IMG_0684 | 73 | 66% | 82% |
+| IMG_0685 | 63 | 83% | 52% |
+| IMG_0687 | 53 | 55% | 68% |
+| IMG_0688 | 78 | 76% | 74% |
+| IMG_0689 | 72 | 82% | 67% |
+| IMG_0690 | 73 | 82% | 48% |
+| IMG_0691 | 75 | 81% | 81% |
+| IMG_0693 | 102 | 56% | 71% |
+| IMG_0694 | 76 | 49% | 78% |
+| IMG_0695 | 59 | 64% | 36% |
+| IMG_0696 | 72 | 57% | 72% |
+| **all, n=796** | | **68%** | **67%** |
+| **excluding IMG_0693, n=694** | | **70%** | **67%** |
+
+against the 62-66% and 53% those older figures gave. The per-session spread is
+wide -- racket 49-83%, ball 36-82% -- and is not explained by orientation;
+player size correlates only weakly (r=+0.54, n=5, with one clear
+counter-example).
+
+**IMG_0693 is quoted separately because two players alternate throughout it**,
+which makes it the wrong instrument for anything about a single player's
+pattern. It is also the only session where the wrong-player veto changes
+anything: its racket rate was 74% before that fix and 56% after, the
+difference being rackets belonging to the other player. IMG_0687 has two
+players too but was already clean. Removing IMG_0693 from the aggregate moves
+the racket figure by two points and the ball figure by none, so the older
+single number was not misleading -- it is quoted both ways here so nobody has
+to wonder.
+
+| session | shape | racket found | ball at contact | ball at control | lift |
+|---|---|---|---|---|---|
+| IMG_0684 | portrait | 62% | 59% | 32% | +27 |
+| IMG_0685 | portrait | 62% | 46% | 14% | +32 |
+| IMG_0689 | landscape | 75% | 58% | 71% | **-13** |
+| IMG_0693 | landscape | 83% | 46% | 0% | +46 |
+| IMG_0696 | landscape | 42% | 62% | 42% | +21 |
+| **all, n=96** | | **66%** | **53%** | **32%** | **+22** |
+
+The aggregate lift is close to the single-session figure, and the racket rate
+holds up and is if anything better. But the per-session ball lift runs from
+-13 to +46, and on IMG_0689 the control fires MORE often than contact does --
+there, this test is worse than useless.
+
+Swing density does not explain it: IMG_0693 has the tightest median gap
+between swings (2.8 s) and the largest lift, while IMG_0689 sits mid-pack at
+3.7 s and goes negative. The cause is not known. Until it is, read a ball
+detection as suggestive on a session you have checked and as nothing at all on
+one you have not.
+
+Neither half works alone, which is why both are required. A plate-only test
+cannot tell a ball from a shoe -- a heel is bright, convex, ball-sized at this
+scale, and moving.
+
+**Inference width is not a free knob.** Racket found within reach of the hand:
+48.1% at `--imgsz 640`, 53.7% at 1280, 53.7% at 1920. At 640 a 1080x1920 frame
+is squashed threefold and a motion-blurred racket stops looking like one; on
+the first frame this was checked against, 640 found no racket at all. 1920
+buys nothing over 1280 and costs twice the time.
+
+The confidence floor is deliberately low at 0.10. Boxes at 0.12 and 0.22 were
+both confirmed correct by eye, and raising the floor to 0.25 costs about ten
+points of recall to remove detections that are right. Confidence barely
+separates good boxes from bad here: median 0.74 near the hand against 0.67 on
+the false ones.
+
+**Was the racket actually swung?** `objects.RACKET_MOVING` is 0.15 torso
+heights per frame, measured as the peak displacement of the racket box across
+five frames spanning contact. Against 40 hand-audited candidates of IMG_0684 --
+16 the player bouncing in ready position between machine feeds, 24 real swings
+-- the groups barely overlap: non-swings peak at 0.144 and real swings sit at a
+median of 0.365. At 0.15 every non-swing in that sample is cut and 79% of real
+swings kept.
+
+Checked on three further sessions against a signal that knows nothing about
+racket motion -- whether a ball in flight sits at the racket. Pooled over 302
+swings the distribution is bimodal and its sparsest bin is **0.10-0.15**, where
+the fitted threshold already sat; and a ball is at the racket on 20% of swings
+below it against 43% at or above, positive in all four sessions (+51, +26,
++24, +18 points). The direction generalises. The magnitude does not: the lift
+is much larger on the session the threshold came from.
+
+Fewer than two racket sightings reports nothing rather than zero. "Never
+found" and "did not move" are different claims, and about a third of swings
+carry no racket at all.
+
+`scripts/detect_objects.py` exports the same detections for a whole video as
+gzipped JSONL, one line per sampled frame, for drawing over playback. Sampling
+rate is the decision there: a racket interpolates smoothly at 10 fps, a ball
+does not -- below native rate it teleports, and a straight line between two
+samples passes through positions it never occupied.
+
+**How far these numbers have actually been checked.** The racket rate and the
+ball lift are measured across five sessions (96 swings, both orientations);
+the racket rate holds, the ball lift does not. Everything else -- the
+MediaPipe-versus-RTMPose comparison, the acceptance-rule recall figures, the
+imgsz and confidence sweeps, and every precision figure -- comes from
+`IMG_0684` alone, an indoor portrait net drill, backed by a few dozen hand
+checks. The corpus is 25 sessions and most are landscape, several outdoor
+doubles at distance. Treat the single-session numbers as an order of
+magnitude, not a value.
 
 ## Tuning
 
@@ -257,10 +522,11 @@ sessions where the result is least verifiable, being distant outdoor doubles.
 
 **Which member survives is chosen for coverage, not for correctness.** Nothing
 the pipeline measures identifies the real strike: over the feed-slot collisions
-`onset_peak`, `|contact_offset|`, `torso_height` and `wrist_peak_speed` all
-score between 50% and 61%, which at that sample size is a coin flip.
-`wrist_peak_speed` is the worst of them, because `verify.SPEED_CAP` clips at
-40.0 and 1575 of 2505 swings (63%) sit exactly on the cap. So `dedupe_swings`
+`onset_peak`, `torso_height` and the wrist-motion peak all scored between 50%
+and 61%, which at that sample size is a coin flip. (Two of the quantities in
+that comparison, `|contact_offset|` and `wrist_peak_speed`, no longer exist --
+see "Which arm swung" below. The conclusion is unchanged: none of them
+discriminated.) So `dedupe_swings`
 optimises for keeping the strike **on screen** instead: the window is
 asymmetric (`--pre` 1.5 s, `--post` 2.0 s), so keeping the earlier member
 covers the other contact for gaps up to 2.0 s while keeping the later covers
@@ -413,16 +679,17 @@ stops meaning the same person the moment two players change ends. That is why
   before this guard a "wrist" could teleport between players. Over 396 shipped
   swings, 49% of measured series contained such a jump and 43% reported a peak
   that sat on one. Because `verify` picks the slot with the fastest wrist, a
-  flip also chose *which player* got measured: guarding changes the recorded
-  `hitting_side` on 26% of swings. Recall is unchanged (67/89/91%) and clips
+  flip also chose *which player* got measured, and still does: `verify` picks
+  the slot whose wrist moved fastest. Recall is unchanged (67/89/91%) and clips
   per real swing improve slightly (1.50/0.97/1.26 → 1.33/0.96/1.24).
   **Trees rendered before this fix carry the old values.**
-- **`wrist_peak_speed` still saturates.** `verify.SPEED_CAP` is 40 torso
-  heights per second, which is roughly the physical ceiling for a hand. The
-  guard above took saturation from 73% of swings to 39%, so the number
-  discriminates over most of its range now, but the top of the distribution is
-  still pose jitter rather than swing speed, and `dedupe_swings` breaks ties on
-  it.
+- **The wrist-motion peak saturates.** `verify.SPEED_CAP` is 150 torso heights
+  per second. It was 40 — roughly a hand's physical ceiling — and that was far
+  too low: re-measured with the cap lifted across 25 cached sessions the peak
+  runs p50 33, p90 87, p99 279, so 40 sat near the median and flattened most of
+  the corpus onto one value. At 150 the cap still binds on 3.56% of tracks.
+  The number is no longer published for this reason, but it still gates
+  `min_wrist_speed`, orders the slots, and breaks ties in `dedupe_swings`.
 - **Nothing is re-anchored to the wrist peak.** Moving contact from the audio
   onset to the fastest wrist sample was tried and reverted. Against the 12
   verified shot times in IMG_0304, recall was 100% measured on the onset and
@@ -444,6 +711,102 @@ stops meaning the same person the moment two players change ends. That is why
   there; its neighbours are half a second away, so a reviewer can confirm the
   detector's instant but cannot move it. That needs `--fps 0`.
 - **The recall number is not the one it looks like.** See below.
+
+### Which arm swung: not measured, and no longer guessed
+
+`hitting_side`, `contact_offset`, `contact_height` and `wrist_peak_speed` were
+removed. Nothing in the pipeline now claims to know which arm hit the ball.
+
+The claim was made twice and neither version was ever verified. The first chose
+the wrist furthest from the body midline, reasoning that the hitting arm is
+extended; it is not, the free arm is flung wider for balance, and the old
+README measured 22% stroke agreement with `contact_x` clustering bimodally at
+-1.77 and +0.86 -- two clusters because it was measuring two different arms.
+The second chose the wrist that moved fastest, which is at least a property of
+swinging, and shipped for the rest of the corpus's life without a check.
+
+The one attempt at a check was circular: it scored MediaPipe's chosen arm
+against "whichever MediaPipe wrist is nearer the detected racket", which is
+MediaPipe judging itself. Rebuilt on RTMPose as an independent reference, 54%
+of swings were undecidable -- both hands on the grip, no proxy of that shape
+can call them -- and the decidable remainder agreed 58% over 19 cases, a 95%
+interval of roughly 36-80%. That cannot distinguish "badly broken" from "fine",
+so the number was withdrawn rather than published either way.
+
+What survives is `verify.peak_wrist_motion`: how fast EITHER wrist moved, with
+no side attached. It gates `min_wrist_speed` -- the only test separating a
+swing from a player standing still, and worth keeping, since 40% of accepted
+candidates in one hand-audited session were split-steps -- and it orders the
+slots when several people are in frame. It is deliberately not written to
+`measurements`, because sitting in the output as `wrist_peak_speed` is what
+invited it to be read as a property of a swing rather than a threshold input.
+
+**If you need to know which arm holds the racket, ask the racket.**
+`--objects-backend=yolo` finds one on 68% of swings across the corpus (70%
+excluding the two-player session) and its box was confirmed by hand at 15/16,
+which is more than was ever true of either heuristic. The
+racket-ownership rule already takes both wrists rather than a chosen one.
+
+Swing documents written before this still carry all four fields and still
+validate: the schema accepts them when present and requires none of them. A
+validator that rejected the entire existing corpus would not be one.
+
+### Ball flight paths: three approaches that do not work
+
+The ball is found independently at each frame and nothing links the detections
+into a trajectory. That is a real gap -- a ball reversing direction dates
+contact unambiguously, without the audio's ambiguity between a strike and a
+bounce -- and three off-the-shelf routes to it were tried and measured. All
+three fail, each for a different and identifiable reason.
+
+**Sampling rate first.** `scripts/detect_objects.py` defaults to `--fps 10`,
+which is right for drawing a racket and useless for a ball: at 15 m/s the ball
+covers ~90 px per frame here, so consecutive 10 fps samples are ~540 px apart
+and cannot be associated with each other at all. Anything below is measured at
+native rate (`--fps 0`).
+
+**What the detections look like.** Over a 30 s window of IMG_0684 at native
+rate, 73% of frames carry at least one ball and 94% of the gaps between
+detections are a single frame -- the detector is nearly continuous. But only
+**8.5% of detections are moving** (>0.20 torso/frame). The other 91% are the
+dead balls that accumulate on court: 69% are below 0.05 torso/frame. Any linker
+must reject those first or it will thread the court furniture into
+thousand-frame "flights".
+
+**1. TrackNet's published weights do not transfer.** It is the domain-specific
+choice, built for tennis, stacking three frames precisely because a single
+blurred streak is not separable. Run on a 16:9 band cropped around the player,
+it reports a ball on 76% of frames -- and that number is meaningless: 72% of
+its detections land within 200 px of one fixed point, the vertical spread is
+196 px, and the median step between consecutive detections is 0.04 torso
+heights. Visually it parks on the net post while the real ball crosses the
+frame. Its weights are trained on 1280x720 broadcast footage, elevated and
+behind the baseline; this footage is a phone at net height, portrait. Cropping
+fixes the aspect and cannot fix the viewpoint.
+
+**2 and 3. ByteTrack and BoT-SORT cannot associate this ball, and no parameter
+changes that.** Both ship with ultralytics and both were run over the same
+window on validated detections. Each produced 22 tracks of three or more
+detections, **none of them a flight** -- every survivor is a dead ball with a
+median step of 0.03-0.06 torso. Track ids reached ~500, meaning the flying ball
+got a fresh id on nearly every frame and was never linked to its own past.
+
+The cause is structural. Both associate boxes by IoU overlap. A ball box is
+~20 px across and moves 90 px between frames, up to 290 px at p99 -- four to
+fourteen box-widths, so **IoU is exactly zero** on every consecutive pair.
+Tuning `angle_weight` or `min_track_len` helps objects that still overlap a
+little; nothing helps a zero. These trackers are built for dense, slow,
+overlapping boxes, and a tennis ball is outside that envelope by construction.
+
+**What would work**, if this is picked up: association by DISTANCE rather than
+IoU, with a velocity-consistency gate and tolerance for the one- and two-frame
+gaps where the ball crosses the player, the net cord or a court line. A
+prototype of exactly that recovered flights that consecutive-frame linking
+discarded -- on one confirmed strike the ball was found at frames
+26, 27, 28, _, 30, 31, _, _, 34, and a linker demanding consecutive detections
+returned a three-point path and threw the flight away. The alternative is
+fine-tuning TrackNet on this footage, which needs the ball labels the COCO
+route was chosen to avoid.
 
 ### The recall trap
 

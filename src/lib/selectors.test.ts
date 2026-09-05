@@ -21,7 +21,7 @@ const doc = (): Doc => ({
 
 const ui = (patch: Partial<Ui> = {}): Ui => ({
   view: 'compare',
-  suspectOnly: false,
+  swungOnly: false,
   inspectorPlaying: false,
   sourceMetaOpen: false,
   inlineClip: null,
@@ -429,63 +429,6 @@ describe('null strokes', () => {
   });
 });
 
-describe('the "likely not a swing" filter', () => {
-  const measured = (id: string, wristSpeed: number, armOffset: number): Clip => ({
-    id,
-    player: 'left',
-    stroke: null,
-    rejected: false,
-    duration: '0:03',
-    triaged: false,
-    grade: null,
-    note: '',
-    frames: [{ i: 0, sourceMs: 0, phase: null }],
-    measurements: { wristSpeed, armOffset },
-  });
-
-  const docOf = (clips: Clip[]): Doc => ({
-    clips,
-    comments: [],
-    extraPlayers: [],
-    removedStack: [],
-    nextCommentId: 1,
-  });
-
-  it('keeps only the swings that are both slow and unextended', () => {
-    // Measured shapes from the real tree: a standing body, a drop shot (slow
-    // but the arm is out), a mishit (fast, arm in), a normal drive.
-    const d = docOf([
-      measured('standing', 2.27, 0.01),
-      measured('drop-shot', 2.4, 0.9),
-      measured('fast-arm-in', 22.0, 0.1),
-      measured('drive', 28.0, 1.1),
-    ]);
-    const kept = visibleClips(d, ui({ suspectOnly: true })).map((c) => c.id);
-    expect(kept).toEqual(['standing']);
-  });
-
-  it('is off by default, so nothing is hidden until asked', () => {
-    const d = docOf([measured('standing', 2.27, 0.01), measured('drive', 28.0, 1.1)]);
-    expect(visibleClips(d, ui()).map((c) => c.id)).toEqual(['standing', 'drive']);
-  });
-
-  it('never flags a clip with no measurements rather than guessing', () => {
-    // Seeded clips carry none. Treating "unmeasured" as "suspect" would hide
-    // the whole seed the moment the toggle went on.
-    const unmeasured = { ...measured('seed', 0, 0) };
-    delete unmeasured.measurements;
-    const d = docOf([unmeasured]);
-    expect(visibleClips(d, ui({ suspectOnly: true }))).toEqual([]);
-  });
-
-  it('reads the sign of the arm offset, not its direction', () => {
-    // `contact_offset` is signed: a left-handed contact is negative and just as
-    // extended, so flagging on the raw value would flag every left-side shot.
-    const d = docOf([measured('left-side', 2.0, -0.9)]);
-    expect(visibleClips(d, ui({ suspectOnly: true }))).toEqual([]);
-  });
-});
-
 describe('the selected clip is findable', () => {
   // The highlight is styling, so what is pinned here is the fact it keys off:
   // playing a clip must leave `sel` naming that clip, or the row the reviewer
@@ -509,5 +452,48 @@ describe('the selected clip is findable', () => {
     const state = { ...base, doc: { ...base.doc, clips: [clip] } };
     const played = reducer(state, { type: 'playClip', clip: clip.id });
     expect(played.ui.sel?.clip).toBe(clip.id);
+  });
+});
+
+describe('the unswung-racket filter', () => {
+  const withRacket = (id: string, swung?: boolean): Clip => ({
+    ...seedClips()[0],
+    id,
+    objects: {
+      racket: { x: 0, y: 0, w: 10, h: 10, ...(swung === undefined ? {} : { swung }) },
+      ball: null,
+    },
+  });
+
+  const docOf = (clips: Clip[]): Doc => ({ ...doc(), clips });
+
+  it('drops a candidate whose racket was seen and did not move', () => {
+    const got = visibleClips(docOf([withRacket('still', false)]), ui({ swungOnly: true }));
+    expect(got).toHaveLength(0);
+  });
+
+  it('keeps one whose racket was swung', () => {
+    const got = visibleClips(docOf([withRacket('swung', true)]), ui({ swungOnly: true }));
+    expect(got.map((c) => c.id)).toEqual(['swung']);
+  });
+
+  it('keeps one whose racket was never located', () => {
+    // "Not found" is not "did not move". A third of swings carry no racket and
+    // hiding them would drop real strikes on a detector miss.
+    const got = visibleClips(docOf([withRacket('unknown', undefined)]), ui({ swungOnly: true }));
+    expect(got.map((c) => c.id)).toEqual(['unknown']);
+  });
+
+  it('keeps a clip with no objects block at all', () => {
+    // Every swing rendered before the detector existed, and every run with
+    // --objects-backend=none.
+    const bare = { ...seedClips()[0], id: 'bare', objects: undefined };
+    const got = visibleClips(docOf([bare]), ui({ swungOnly: true }));
+    expect(got.map((c) => c.id)).toEqual(['bare']);
+  });
+
+  it('changes nothing when the toggle is off', () => {
+    const clips = [withRacket('a', false), withRacket('b', true), withRacket('c', undefined)];
+    expect(visibleClips(docOf(clips), ui({ swungOnly: false }))).toHaveLength(3);
   });
 });

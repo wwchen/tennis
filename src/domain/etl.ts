@@ -7,13 +7,16 @@ import type {
   SwingEntry,
 } from './etl-types';
 import type {
+  BallBox,
   Clip,
   ClipDetection,
-  ClipLabels,
   ClipMeasurements,
+  ClipObjects,
   Frame,
   Grade,
+  ObjectBox,
   Phase,
+  RacketBox,
   Stroke,
 } from './types';
 import { frameWindow } from './window';
@@ -140,30 +143,26 @@ export const mediaUrlFor = (session: string, dir: string, file: string): string 
  * ETL. Neither is a placeholder to be filled with a guess.
  */
 /**
- * The two numbers the row shows, or null if the ETL did not measure them.
+ * What the verifier measured, or null if it measured nothing.
  *
  * `measurements` is typed as an open record because the schema marks every
  * field in it optional, so each one is checked at the value rather than trusted
- * from the type. A swing missing either number is reported as unmeasured
- * instead of half-measured: `isSuspect` needs both to say anything.
+ * from the type. Present-but-empty is a real state and stays distinct from
+ * absent: the block being there says pose locked onto a body, which is what the
+ * panel's "no measurements" note is about, and every individual field is
+ * missing on some vintage of tree.
+ *
+ * `wrist_peak_speed`, `contact_offset`, `contact_height` and `hitting_side` are
+ * deliberately NOT read, though 2505 shipped swings still carry them. They said
+ * which arm swung and where it met the ball, on a rule that was never verified;
+ * reading them here would put that claim back on screen. See `verify.py`.
  */
 function measurementsOf(doc: EtlSwingDoc): ClipMeasurements | null {
   const m = doc.measurements;
   if (m === null || typeof m !== 'object') return null;
-  const speed = m.wrist_peak_speed;
-  const arm = m.contact_offset;
-  if (typeof speed !== 'number' || typeof arm !== 'number') return null;
-  // The three below are reported, not judged, so a missing one costs only its
-  // own row — unlike the two above, whose absence makes `isSuspect` unanswerable
-  // and so makes the whole block unmeasured.
   return {
-    wristSpeed: speed,
-    armOffset: arm,
     ...(typeof m.torso_height === 'number' ? { torsoHeight: m.torso_height } : {}),
-    ...(typeof m.contact_height === 'number' ? { contactHeight: m.contact_height } : {}),
-    ...(m.hitting_side === 'left' || m.hitting_side === 'right'
-      ? { hittingSide: m.hitting_side }
-      : {}),
+    ...(typeof m.center_x === 'number' ? { centerX: m.center_x } : {}),
   };
 }
 
@@ -183,23 +182,84 @@ const detectionOf = (doc: EtlSwingDoc): ClipDetection => ({
 });
 
 /**
- * The label block, unreduced.
+ * One box off disk, or null.
  *
- * `tags` is guarded with `Array.isArray` because `overlay()` merges
- * `user-edit.json` in unchecked, and a hand-edited file can put anything there
- * — the panel maps over this, so a non-array would throw the whole clip out of
- * `adaptSession` rather than losing one row.
+ * The four geometry fields are required together: a box missing `w` cannot be
+ * drawn or reported, and half of one is worse than none. `conf` is carried only
+ * when it is a number, matching `schema.py`, where it is present-only.
  */
-const labelsOf = (doc: EtlSwingDoc): ClipLabels => ({
-  playerSlot: doc.labels.player_slot ?? null,
-  playerName: doc.labels.player_name ?? null,
-  quality: doc.labels.quality ?? null,
-  verdict: doc.labels.verdict ?? null,
-  tags: Array.isArray(doc.labels.tags) ? doc.labels.tags : [],
+function boxOf(raw: unknown): ObjectBox | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const b = raw as Record<string, unknown>;
+  const { x, y, w, h } = b;
+  if (
+    typeof x !== 'number' ||
+    typeof y !== 'number' ||
+    typeof w !== 'number' ||
+    typeof h !== 'number'
+  ) {
+    return null;
+  }
+  return { x, y, w, h, ...(typeof b.conf === 'number' ? { conf: b.conf } : {}) };
+}
+
+/**
+ * The racket/ball block, or null when no detector looked.
+ *
+ * The two "nothing here" answers are NOT the same and this is where they part.
+ * A missing or malformed `objects` returns null, which the panel reads as
+ * "nobody looked" — true of every swing rendered before `--objects-backend`
+ * existed. A block that IS there returns with `racket`/`ball` null, which the
+ * panel reads as "looked and found nothing", the ordinary case: the racket is
+ * found on 62% of swings and a ball in flight on 59%.
+ */
+function objectsOf(doc: EtlSwingDoc): ClipObjects | null {
+  const o = doc.objects;
+  if (o === null || o === undefined || typeof o !== 'object' || Array.isArray(o)) return null;
+
+  const ball = boxOf(o.ball);
+  return {
+    ...(typeof o.detector === 'string' ? { detector: o.detector } : {}),
+    racket: racketOf(o.racket),
+    ball:
+      ball === null
+        ? null
+        : {
+            ...ball,
+            ...(typeof o.ball === 'object' && o.ball !== null
+              ? extras(o.ball as Record<string, unknown>)
+              : {}),
+          },
+  };
+}
+
+/**
+ * A racket box plus `motion`/`swung`, each carried only when measured.
+ *
+ * `swung` is copied only when it is genuinely a boolean, so a malformed or
+ * absent value reads as "unknown" rather than "did not swing" — the whole
+ * distinction the ETL is careful to preserve.
+ */
+function racketOf(v: unknown): RacketBox | null {
+  const box = boxOf(v);
+  if (box === null || typeof v !== 'object' || v === null) return box;
+  const r = v as Record<string, unknown>;
+  return {
+    ...box,
+    ...(typeof r.motion === 'number' ? { motion: r.motion } : {}),
+    ...(typeof r.swung === 'boolean' ? { swung: r.swung } : {}),
+  };
+}
+
+/** `motion` and `racket_distance`, each carried only when measured. */
+const extras = (b: Record<string, unknown>): Partial<BallBox> => ({
+  ...(typeof b.motion === 'number' ? { motion: b.motion } : {}),
+  ...(typeof b.racket_distance === 'number' ? { racketDistance: b.racket_distance } : {}),
 });
 
 export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
   const measured = measurementsOf(doc);
+  const objects = objectsOf(doc);
   const frames: Frame[] = doc.frames.map((f, i) => ({
     i,
     sourceMs: f.source_ms,
@@ -225,7 +285,6 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
     sourceEndMs: doc.trim.source_end_ms,
     contactMs: doc.detection.contact_ms,
     detection: detectionOf(doc),
-    labels: labelsOf(doc),
     clipSize: { width: doc.trim.width, height: doc.trim.height },
     triaged: doc.edit?.reviewed === true,
     grade: qualityToGrade(doc.labels.quality),
@@ -235,6 +294,7 @@ export function adaptSwing(doc: EtlSwingDoc, mediaBase?: string): Clip {
     // records it, and metadata.json is the only thing entitled to say it.
     ...(mediaBase === undefined ? {} : { videoUrl: `${mediaBase}/${doc.trim.file}` }),
     ...(measured === null ? {} : { measurements: measured }),
+    ...(objects === null ? {} : { objects }),
   };
 }
 

@@ -1,5 +1,4 @@
 import type { Clip, Comment, Phase, Stroke } from '@/domain/types';
-import { isSuspect } from '@/domain/types';
 import {
   ALL_PLAYERS,
   ALL_RATINGS,
@@ -54,7 +53,11 @@ export function visibleClips(doc: Doc, ui: Ui): Clip[] {
       // "Unchecked auto-tags only" — a clip drops out the moment a human
       // confirms or corrects anything on it.
       (!ui.lowOnly || !c.triaged) &&
-      (!ui.suspectOnly || isSuspect(c)) &&
+      // Drops a candidate only when the racket was SEEN and demonstrably did
+      // not move. A clip whose racket was never located keeps its place: not
+      // finding a racket is the ordinary case on about a third of swings, and
+      // is not evidence that nothing was hit.
+      (!ui.swungOnly || c.objects?.racket?.swung !== false) &&
       (ui.gradeFilter === ALL_RATINGS || gradeOf(c.grade).label === ui.gradeFilter),
   );
 }

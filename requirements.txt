@@ -21,3 +21,36 @@ opencv-python-headless>=4.8
 #     https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
 #
 # mediapipe
+
+# RTMPose is the better pose backend and the one to prefer: `--pose-backend=
+# rtmpose`. It needs no window server, so it also runs headless where
+# MediaPipe aborts.
+#
+# Measured against MediaPipe on IMG_0684, scoring each detected wrist by its
+# distance to a COCO-pretrained racket box (41 swings):
+#
+#     MediaPipe wrist the pipeline chose   54% within 0.25 torso
+#     RTMPose nearest of its two wrists    90% within 0.25 torso
+#
+# On 24% of those swings MediaPipe's hitting wrist sat over a torso height
+# from the racket -- the failure that centres crops on an ankle.
+#
+#   pip install rtmlib onnxruntime
+#
+# Models download on first use to ~/.cache/rtmlib (~90 MB); there is no model
+# file to fetch by hand as there is for MediaPipe.
+
+# Racket and ball detection, `--objects-backend=yolo`. Optional and off by
+# default. `tennis racket` and `sports ball` are two of COCO's eighty classes,
+# so stock weights need no training and no labelling.
+#
+# Measured on IMG_0684's 108 swings: a racket is found on the tracked player
+# on 62.0%, against 47.2% for a hand-rolled blob detector, at 15/16 precision
+# by hand adjudication. A ball in flight is found on 59.3% against 31.7% at
+# control moments at least 5 s from any shot, at 8/8 precision.
+#
+#   pip install ultralytics
+#
+# NOTE ultralytics is AGPL-3.0 -- fine privately, a licensing decision if this
+# is ever redistributed. It also pulls torch (~2 GB). That is why the backend
+# is opted into rather than out of, and why this is not a hard requirement.

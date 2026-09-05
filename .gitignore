@@ -53,3 +53,8 @@ models/
 # vite-plugin-shot-lab.test.ts). Removed on teardown, left behind when a run
 # is interrupted.
 .test-tmp*
+
+# COCO weights, downloaded on first use by --objects-backend=yolo.
+# 114 MB and reproducible; it was committed once by accident.
+yolo11x.pt
+*.pt

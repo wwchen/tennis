@@ -24,6 +24,7 @@ import os
 from . import audio, crop, players, probe, render, scan, schema, session, tracks
 from .errors import TennisprocError
 from . import pose as pose_mod
+from . import objects as objects_mod
 from . import verify as verify_mod
 
 
@@ -197,15 +198,17 @@ def _strike_confidence(pair):
     `Settings.min_gap_s`, this picks the on-lattice detection 58 times.
 
     Wrist speed, which this used to decide on alone, picks it 38 times and
-    cannot decide at all in 23 of them: `verify.SPEED_CAP` clips peak speed at
-    40.0 and 1575 of the 2505 shipped swings (63%) sit exactly on the cap, so
-    "keep the fastest" was a coin flip on nearly a third of the pairs. It
-    stays as the tiebreak for a detector run with no onset strengths.
+    cannot decide at all in 23 of them: `verify.SPEED_CAP` was 40.0 and 1575
+    of the 2505 shipped swings (63%) sat exactly on the cap, so "keep the
+    fastest" was a coin flip on nearly a third of the pairs. The cap is 150.0
+    now and no longer flattens them, but the onset is still the better
+    evidence. Speed stays as the tiebreak for a detector run with no onset
+    strengths.
     """
     track, measured = pair
     peak = track.candidate.get("onset_peak")
     return (peak if peak is not None else -1.0,
-            measured.wrist_peak_speed or 0.0)
+            measured.peak_motion or 0.0)
 
 
 def dedupe_swings(accepted, min_gap_s, same_place_torsos, pre_s=1.5):
@@ -260,6 +263,124 @@ def dedupe_swings(accepted, min_gap_s, same_place_torsos, pre_s=1.5):
         else:
             kept.append(pair)
     return kept
+
+
+def stage_objects(video, accepted, source, settings, report=None):
+    """Racket and ball at each accepted swing's contact, or None per swing.
+
+    Never fatal. A missing model, a missing dependency or a frame the decoder
+    will not give back costs this block and nothing else -- the swing still
+    renders, still carries measurements and still gets reviewed. That is the
+    same posture as `stage_proxy`: an extra that must not be able to take the
+    session down with it.
+
+    One capture is opened for the whole session rather than one per swing, and
+    each swing needs five decodes: the contact frame plus `PLATE_OFFSETS`
+    either side of it to build the short background plate.
+    """
+    if settings.objects_backend in (None, "none"):
+        return [None] * len(accepted)
+    try:
+        backend = objects_mod.make_backend(
+            settings.objects_backend,
+            **({"weights": settings.objects_weights}
+               if settings.objects_backend == "yolo" else {}))
+    except TennisprocError as exc:
+        if report:
+            report.say("objects: skipped (%s)" % exc)
+        return [None] * len(accepted)
+
+    import cv2
+    step_ms = 1000.0 / float(source["fps"] or 30.0)
+    out = []
+    found_racket = found_ball = 0
+    cap = tracks.open_capture(video, cv2)
+    try:
+        swung = 0
+        for track, measured in accepted:
+            contact_ms = (measured.contact_ms if measured.contact_ms is not None
+                          else track.contact_ms)
+            try:
+                frame = _frame_at(cap, cv2, contact_ms, source)
+                plate = objects_mod.short_plate(
+                    [_frame_at(cap, cv2, contact_ms + off * step_ms, source)
+                     for off in objects_mod.PLATE_OFFSETS])
+            except Exception as exc:            # decoder, not our logic
+                if report:
+                    report.say("  warning: objects at %dms: %s"
+                               % (contact_ms, exc))
+                out.append(None)
+                continue
+            if frame is None or plate is None:
+                out.append(None)
+                continue
+            # The racket is located at several instants, not one, so its
+            # DISPLACEMENT can be measured -- which is what separates a swing
+            # from a player bouncing in ready position. Costs four extra
+            # detections per swing and is the only signal that does the job.
+            # Offset 0 reuses the contact frame already decoded above rather
+            # than fetching it again; `measure` still runs the detector on it
+            # once for the racket and ball, so this only saves the decode.
+            neighbours = [(off, frame if off == 0
+                           else _frame_at(cap, cv2, contact_ms + off * step_ms,
+                                          source))
+                          for off in objects_mod.RACKET_OFFSETS]
+            doc = objects_mod.measure(
+                backend, frame, plate,
+                _pose_box(track, measured, source),
+                _wrists_px(track, measured, source),
+                (measured.torso_height or 0.0) * source["height"],
+                neighbours=neighbours)
+            found_racket += doc["racket"] is not None
+            found_ball += doc["ball"] is not None
+            swung += bool(doc["racket"] and doc["racket"].get("swung"))
+            out.append(doc)
+    finally:
+        cap.release()
+        backend.close()
+    if report:
+        report.say("objects: racket on %d/%d swings (%d swung), "
+                   "ball in flight on %d"
+                   % (found_racket, len(accepted), swung, found_ball))
+    return out
+
+
+def _frame_at(cap, cv2, ms, source):
+    """One decoded frame at `ms`, in display orientation, or None."""
+    if ms < 0 or ms > source["duration_ms"]:
+        return None
+    cap.set(cv2.CAP_PROP_POS_MSEC, float(ms))
+    ok, raw = cap.read()
+    if not ok:
+        return None
+    return tracks.rotate_frame(raw, source.get("rotation", 0), cv2)
+
+
+def _pose_box(track, measured, source):
+    """The measured player's pose bbox, in source-display pixels."""
+    series = track.series(measured.slot)
+    index = track.nearest_index(track.contact_ms, measured.slot)
+    if index is None or not series:
+        return None
+    x0, y0, x1, y1 = series[index][1].bbox()
+    return objects_mod.Box(x0 * source["width"], y0 * source["height"],
+                           x1 * source["width"], y1 * source["height"])
+
+
+def _wrists_px(track, measured, source):
+    """Both wrists, in source-display pixels.
+
+    Both, not the hitting one: nothing decides which arm swung any more, and a
+    racket beside either hand is this player's regardless.
+    """
+    series = track.series(measured.slot)
+    index = track.nearest_index(track.contact_ms, measured.slot)
+    if index is None or not series:
+        return ()
+    landmarks = series[index][1]
+    return tuple((landmarks.xy(w)[0] * source["width"],
+                  landmarks.xy(w)[1] * source["height"])
+                 for w in (pose_mod.L_WRIST, pose_mod.R_WRIST))
 
 
 def stage_proxy(video, root, settings, report=None):
@@ -335,6 +456,8 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
     report.say("players: %d (%s)" % (players_info["count"],
                                      players_info["mode"]))
 
+    object_docs = stage_objects(video, accepted, source, settings, report)
+
     refs = []
     written_dirs = set()
     for index, ((track, measured), slot) in enumerate(zip(accepted, slots), 1):
@@ -376,7 +499,8 @@ def run(video, outdir, settings, report=None, raw_path=None, limit=0):
             # audio locates contact to about +-20ms, pose to a frame.
             method=("audio_onset+pose_contact" if measured.reanchored
                     else "audio_onset+pose_verify"),
-            onset_ms=track.contact_ms if measured.reanchored else None)
+            onset_ms=track.contact_ms if measured.reanchored else None,
+            objects=object_docs[index - 1])
         errors = schema.validate_swing(doc)
         if errors:
             raise RuntimeError("built an invalid swing doc for %s: %s"

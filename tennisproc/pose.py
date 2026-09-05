@@ -334,6 +334,159 @@ class MediaPipeBackend(PoseBackend):
             pass
 
 
+# COCO-17 keypoint order, which is what every RTMPose/OpenPose-lineage model
+# emits. COCO-WholeBody's first 17 points are exactly this, so one adapter
+# serves both.
+COCO_NOSE = 0
+COCO_L_SHOULDER, COCO_R_SHOULDER = 5, 6
+COCO_L_ELBOW, COCO_R_ELBOW = 7, 8
+COCO_L_WRIST, COCO_R_WRIST = 9, 10
+COCO_L_HIP, COCO_R_HIP = 11, 12
+
+# COCO index -> the BlazePose slot the rest of this package indexes by. Only
+# the joints downstream actually reads are mapped; everything else stays at
+# visibility 0 so `Landmarks.bbox()` ignores it rather than stretching the box
+# to a point that was never detected.
+COCO_TO_BLAZEPOSE = {
+    COCO_NOSE: NOSE,
+    1: 2, 2: 5,            # eyes
+    3: 7, 4: 8,            # ears
+    COCO_L_SHOULDER: L_SHOULDER, COCO_R_SHOULDER: R_SHOULDER,
+    COCO_L_ELBOW: L_ELBOW, COCO_R_ELBOW: R_ELBOW,
+    COCO_L_WRIST: L_WRIST, COCO_R_WRIST: R_WRIST,
+    COCO_L_HIP: L_HIP, COCO_R_HIP: R_HIP,
+    13: 25, 14: 26,        # knees
+    15: 27, 16: 28,        # ankles
+}
+
+
+def coco_to_landmarks(points, scores, width, height):
+    """One COCO-ordered person, in pixels, as 33-slot normalized Landmarks.
+
+    Kept separate from the backend so the index mapping can be tested without
+    a model file, a download, or a GPU -- the same reason StubBackend exists.
+    """
+    if width <= 0 or height <= 0:
+        raise PoseError("frame size must be positive, got %rx%r" % (width, height))
+    slots = [(0.0, 0.0, 0.0)] * N_LANDMARKS
+    for coco_index, slot in COCO_TO_BLAZEPOSE.items():
+        if coco_index >= len(points):
+            continue
+        x, y = points[coco_index][0], points[coco_index][1]
+        visibility = float(scores[coco_index]) if coco_index < len(scores) else 1.0
+        slots[slot] = (float(x) / width, float(y) / height, visibility)
+    return Landmarks(slots, score=1.0)
+
+
+class RTMPoseBackend(PoseBackend):
+    """RTMPose via rtmlib: ONNX only, no mmcv/mmpose install.
+
+    Measured against MediaPipe on IMG_0684, using the distance from the
+    detected wrist to a COCO-pretrained racket box as the yardstick (41 swings
+    where a validated racket box sat on the tracked player):
+
+        landmark                              within 0.25 torso   within 0.5
+        MediaPipe wrist the pipeline chose          54%              63%
+        MediaPipe nearest of its two wrists         63%              73%
+        RTMPose nearest of its two wrists           90%              95%
+
+    On 24% of those swings the MediaPipe hitting wrist sat more than a whole
+    torso height from the racket -- the failure that put crops on an ankle.
+    RTMPose's hand landed inside the racket box on 90% of those same swings.
+
+    `Wholebody` rather than `Body` despite this package needing only the 17
+    body joints. Measured on the same frames, Body ran 0.82 s/frame at 88%/90%
+    against Wholebody's 0.32 s/frame at 90%/95% -- worse AND slower, because
+    rtmlib's `Body` bundles YOLOX-x (351 MB) as its person detector while
+    `Wholebody` uses RTMDet. The difference is the detector, not the keypoint
+    head, so the larger-sounding model is the cheaper one here.
+    """
+
+    name = "rtmpose"
+
+    @staticmethod
+    def _best_device():
+        """Whatever accelerator onnxruntime actually offers, else CPU.
+
+        Worth 6x and it is not close. Measured over 16 frames of IMG_0684,
+        seconds per frame and the resulting whole-video scan pass (5016 frames
+        at 10 fps over a 502 s session):
+
+            mode          cpu              accelerated
+            performance   0.373 (31.2 min) 0.060 (5.0 min)
+            balanced      0.287 (24.0 min) 0.049 (4.1 min)
+            lightweight   0.087 ( 7.3 min) 0.026 (2.2 min)
+
+        For scale, MediaPipe scans at 4.5x realtime, or 1.9 min. Defaulting to
+        CPU made the accurate backend 16x slower than the one it replaces,
+        which is the difference between a usable default and an unusable one.
+
+        Probed through onnxruntime rather than torch: rtmlib runs on ONNX and
+        this package must not acquire a torch dependency to pick a device.
+        """
+        try:
+            import onnxruntime
+            providers = onnxruntime.get_available_providers()
+        except Exception:
+            return "cpu"
+        if "CoreMLExecutionProvider" in providers:
+            return "mps"
+        if "CUDAExecutionProvider" in providers:
+            return "cuda"
+        return "cpu"
+
+    def __init__(self, mode="performance", device=None,
+                 backend="onnxruntime", min_confidence=0.3):
+        try:
+            from rtmlib import Wholebody
+        except ImportError as exc:
+            raise PoseError(
+                "rtmlib not installed: %s. Install with "
+                "`pip install rtmlib onnxruntime`; models download on first "
+                "use to ~/.cache/rtmlib." % exc)
+        self.min_confidence = min_confidence
+        self.device = device or self._best_device()
+        self._model = Wholebody(mode=mode, backend=backend,
+                                device=self.device)
+
+    # CoreML cannot run the person detector's output node when that output is
+    # EMPTY -- a frame with nobody in it gives a dynamic-shaped tensor with
+    # zero elements, and the provider raises instead of returning nothing:
+    #
+    #   Input (1466) has a dynamic shape ({-1}) but the runtime shape ({0})
+    #   has zero elements. This is not supported by the CoreML EP.
+    #
+    # The same frame on CPU returns cleanly. The scan pass walks the whole
+    # video, so it meets frames with the player out of shot on every session
+    # and this crashed a full run at 40 s in. The exception IS the "no people"
+    # signal, so it is translated into the empty result it stands for --
+    # matched narrowly, because catching everything here would turn a genuine
+    # accelerator fault into a session that silently finds no swings.
+    _EMPTY_DETECTION = "zero elements"
+
+    def detect(self, frame, timestamp_ms=None):
+        # timestamp_ms is accepted for the interface and unused: like
+        # MediaPipe in IMAGE mode, each call is independent, which is what
+        # keeps slot order positional rather than tracked.
+        height, width = frame.shape[:2]
+        try:
+            keypoints, scores = self._model(frame)
+        except Exception as exc:
+            if self._EMPTY_DETECTION not in str(exc):
+                raise
+            return []
+        if keypoints is None or len(keypoints) == 0:
+            return []
+        found = []
+        for person, person_scores in zip(keypoints, scores):
+            landmarks = coco_to_landmarks(person, person_scores, width, height)
+            if landmarks.points[L_SHOULDER][2] < self.min_confidence \
+                    and landmarks.points[R_SHOULDER][2] < self.min_confidence:
+                continue
+            found.append(landmarks)
+        return dedupe(found)
+
+
 def dedupe(poses, min_dist=0.05):
     """Drop duplicates from overlapping tiles; return sorted left to right.
 
@@ -364,4 +517,6 @@ def make_backend(name, model_path=DEFAULT_MODEL, tiles=1, min_confidence=0.4,
     if name == "mediapipe":
         return MediaPipeBackend(model_path=model_path, tiles=tiles,
                                 min_confidence=min_confidence)
+    if name == "rtmpose":
+        return RTMPoseBackend(min_confidence=min_confidence)
     raise PoseError("unknown pose backend: %s" % name)
