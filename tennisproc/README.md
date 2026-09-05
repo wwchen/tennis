@@ -307,11 +307,39 @@ claim on the page.** Re-run over 24 swings each of four other sessions, using
 the shipped rules:
 
 Those figures were all measured on MediaPipe anchors, and are therefore a
-floor rather than a value: re-run over all eleven sessions on RTMPose anchors,
-the racket is found on **70%** of swings and a ball in flight on **67%**,
-against the 62-66% and 53% below. Per session the racket runs 48-82% and the
-ball 35-82%; neither spread is explained by orientation, and player size
-correlates only weakly (r=+0.54, n=5, with one clear counter-example).
+floor rather than a value. Re-derived over all eleven re-processed sessions on
+RTMPose anchors, from the `objects` blocks on disk:
+
+| session | swings | racket | ball |
+|---|---|---|---|
+| IMG_0684 | 73 | 66% | 82% |
+| IMG_0685 | 63 | 83% | 52% |
+| IMG_0687 | 53 | 55% | 68% |
+| IMG_0688 | 78 | 76% | 74% |
+| IMG_0689 | 72 | 82% | 67% |
+| IMG_0690 | 73 | 82% | 48% |
+| IMG_0691 | 75 | 81% | 81% |
+| IMG_0693 | 102 | 56% | 71% |
+| IMG_0694 | 76 | 49% | 78% |
+| IMG_0695 | 59 | 64% | 36% |
+| IMG_0696 | 72 | 57% | 72% |
+| **all, n=796** | | **68%** | **67%** |
+| **excluding IMG_0693, n=694** | | **70%** | **67%** |
+
+against the 62-66% and 53% those older figures gave. The per-session spread is
+wide -- racket 49-83%, ball 36-82% -- and is not explained by orientation;
+player size correlates only weakly (r=+0.54, n=5, with one clear
+counter-example).
+
+**IMG_0693 is quoted separately because two players alternate throughout it**,
+which makes it the wrong instrument for anything about a single player's
+pattern. It is also the only session where the wrong-player veto changes
+anything: its racket rate was 74% before that fix and 56% after, the
+difference being rackets belonging to the other player. IMG_0687 has two
+players too but was already clean. Removing IMG_0693 from the aggregate moves
+the racket figure by two points and the ball figure by none, so the older
+single number was not misleading -- it is quoted both ways here so nobody has
+to wonder.
 
 | session | shape | racket found | ball at contact | ball at control | lift |
 |---|---|---|---|---|---|
@@ -714,8 +742,9 @@ slots when several people are in frame. It is deliberately not written to
 invited it to be read as a property of a swing rather than a threshold input.
 
 **If you need to know which arm holds the racket, ask the racket.**
-`--objects-backend=yolo` finds one on 70% of swings and its box was confirmed
-by hand at 15/16, which is more than was ever true of either heuristic. The
+`--objects-backend=yolo` finds one on 68% of swings across the corpus (70%
+excluding the two-player session) and its box was confirmed by hand at 15/16,
+which is more than was ever true of either heuristic. The
 racket-ownership rule already takes both wrists rather than a chosen one.
 
 Swing documents written before this still carry all four fields and still
