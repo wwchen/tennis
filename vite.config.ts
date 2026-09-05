@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import shotLab from './vite-plugin-shot-lab';
@@ -47,5 +47,10 @@ export default defineConfig({
     // test here checks rendered text, roles and state, never computed style.
     // Processing it would cost more than the whole suite.
     css: false,
+    // Sibling git worktrees live under .claude/worktrees/. Vitest's default
+    // include glob walks into them, collecting another branch's test files
+    // against their own node_modules — which fails in ways that have nothing
+    // to do with this checkout.
+    exclude: [...configDefaults.exclude, '.claude/**'],
   },
 });
