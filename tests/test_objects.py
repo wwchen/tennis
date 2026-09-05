@@ -421,12 +421,29 @@ class TwoPlayers(unittest.TestCase):
         self.assertIs(objects.choose_racket(
             [mine], [(560, 1000)], self.me, TORSO, [self.other]), mine)
 
-    def test_a_racket_between_them_goes_to_whoever_holds_more_of_it(self):
-        """Overlap decides, not proximity: reach cannot arbitrate a tie."""
+    def test_overlap_decides_between_them_not_proximity(self):
+        """Named for what it asserts. Both directions, so it cannot pass vacuously."""
         theirs = box(880, 1000)
-        got = objects.choose_racket([theirs], [(700, 1000)], self.me, TORSO,
-                                    [self.other])
-        self.assertIsNone(got)
+        self.assertGreater(theirs.overlap_fraction(self.other),
+                           theirs.overlap_fraction(self.me))
+        self.assertIsNone(objects.choose_racket(
+            [theirs], [(700, 1000)], self.me, TORSO, [self.other]))
+        # ...and the mirror: the same box goes to whoever holds more of it.
+        self.assertIs(objects.choose_racket(
+            [theirs], [(700, 1000)], self.other, TORSO, [self.me]), theirs)
+
+    def test_no_tracked_player_means_no_veto_not_a_blanket_reject(self):
+        """The regression: `mine` pinned at 0.0 rejected every racket on a body.
+
+        `_pose_box` returns None when a track has no landmarks at the contact
+        index, and with nobody to compare against, any overlap at all beat 0.0
+        -- so a racket squarely beside the wrist was thrown away.
+        """
+        on_someone = box(550, 1000)
+        self.assertGreater(on_someone.overlap_fraction(self.me), 0.0)
+        self.assertIs(objects.choose_racket(
+            [on_someone], [(560, 1000)], None, TORSO, [self.me, self.other]),
+            on_someone)
 
     def test_no_others_means_no_veto(self):
         """Most of the corpus is one player; the veto must cost nothing there."""

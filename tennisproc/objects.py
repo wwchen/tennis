@@ -231,12 +231,21 @@ def choose_racket(rackets, wrists, player, torso_px, others=()):
     points = [w for w in (wrists or ()) if w is not None]
     keep = []
     for box in rackets:
-        mine = box.overlap_fraction(player) if player is not None else 0.0
-        if any(box.overlap_fraction(o) > mine for o in others):
-            continue
+        if player is None:
+            # No tracked player, so there is nobody to compare against and the
+            # veto has nothing to say. Skipping this guard is not a nicety: with
+            # `mine` pinned at 0.0 any overlap at all beat it, and every racket
+            # touching any body was rejected -- including one squarely beside
+            # the wrist. The wrist test below is the only evidence available
+            # here and must be allowed to speak.
+            mine = None
+        else:
+            mine = box.overlap_fraction(player)
+            if any(box.overlap_fraction(o) > mine for o in others):
+                continue
         near = any(box.distance_to(w) <= RACKET_REACH * torso_px
                    for w in points)
-        held = player is not None and mine >= PLAYER_OVERLAP
+        held = mine is not None and mine >= PLAYER_OVERLAP
         if near or held:
             keep.append(box)
     return max(keep, key=lambda b: b.conf) if keep else None

@@ -318,7 +318,11 @@ def stage_objects(video, accepted, source, settings, report=None):
             # DISPLACEMENT can be measured -- which is what separates a swing
             # from a player bouncing in ready position. Costs four extra
             # detections per swing and is the only signal that does the job.
-            neighbours = [(off, _frame_at(cap, cv2, contact_ms + off * step_ms,
+            # Offset 0 reuses the contact frame already decoded above rather
+            # than fetching it again; `measure` still runs the detector on it
+            # once for the racket and ball, so this only saves the decode.
+            neighbours = [(off, frame if off == 0
+                           else _frame_at(cap, cv2, contact_ms + off * step_ms,
                                           source))
                           for off in objects_mod.RACKET_OFFSETS]
             doc = objects_mod.measure(
