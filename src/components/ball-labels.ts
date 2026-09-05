@@ -1,4 +1,4 @@
-import { parseObjectsJsonl, type BoxRow, type ObjectsFrame, type ObjectsHeader } from './object-overlay';
+import { parseObjectsJsonl, type BoxRow, type ObjectsFrame, type ObjectsHeader } from './object-overlay.ts';
 
 /**
  * Ground-truth ball positions, made by a human confirming a detector's guesses.
