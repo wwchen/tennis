@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -13,14 +14,20 @@ import { adaptSwing } from '@/domain/etl';
 import { toUserEdit } from '@/domain/etl-write';
 import type { EtlSource, EtlSwingDoc } from '@/domain/etl-types';
 import {
+  BALL_CANDIDATES,
+  BALL_LABELS,
   OBJECTS,
+  WRITABLE,
   docHash,
   listSessions,
   overlayEdit,
   parseRange,
+  readBallCandidates,
+  readBallLabels,
   readMedia,
   readObjects,
   readSession,
+  resolveBallLabels,
   resolveClipCut,
   resolveWriteTarget,
   safeJoin,
@@ -962,5 +969,115 @@ describe('resolveClipCut', () => {
     writeFileSync(join(tmpDir, 'outside.mp4'), 'outside');
     symlinkSync(join(tmpDir, 'outside.mp4'), join(root, 'IMG_0684', 'source.mp4'));
     expect(resolveClipCut(root, SWING, window)).toMatchObject({ status: 404 });
+  });
+});
+
+describe('readBallCandidates', () => {
+  const tmpDir = join(process.cwd(), '.test-tmp-ball-candidates');
+  const session = join(tmpDir, 'IMG_0684');
+  const header =
+    '{"space":"source_display","detector":"yolo/coco","weights":"yolo11x.pt",' +
+    '"imgsz":1280,"conf":0.1,"fps":0,"width":1080,"height":1920,' +
+    '"windows":[[28943,29943]],"contacts":[29443]}';
+  const frame = '{"ms":28933,"ball":[[380.6,877.6,25.5,24.4,0.215]]}';
+
+  beforeEach(() => {
+    // A session is only a session if it has swings — `listSessions` is the
+    // guard this route resolves its name through.
+    mkdirSync(join(session, 'swings', 'swing_001'), { recursive: true });
+    mkdirSync(join(session, 'work'), { recursive: true });
+    writeFileSync(
+      join(session, BALL_CANDIDATES),
+      gzipSync(Buffer.from(`${header}\n${frame}\n`, 'utf-8')),
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reads the windowed native-rate export, windows and all', () => {
+    const doc = readBallCandidates(tmpDir, 'IMG_0684');
+
+    expect(doc?.header.windows).toEqual([{ startMs: 28943, endMs: 29943, contactMs: 29443 }]);
+    expect(doc?.frames).toHaveLength(1);
+  });
+
+  it('is a DIFFERENT file from the overlay export, not a second reader of it', () => {
+    // `objects.jsonl.gz` is a uniform 10fps sample of the whole video and
+    // carries no windows; confirming a ball needs the native rate around
+    // contact. Reading one where the other was meant would silently label the
+    // wrong frames, so the two names must not be interchangeable.
+    expect(BALL_CANDIDATES).not.toBe(OBJECTS);
+    rmSync(join(session, BALL_CANDIDATES));
+    expect(readBallCandidates(tmpDir, 'IMG_0684')).toBeNull();
+  });
+
+  it('has nothing to say about a session name that is not in the tree', () => {
+    expect(readBallCandidates(tmpDir, '../IMG_0684')).toBeNull();
+    expect(readBallCandidates(tmpDir, 'IMG_9999')).toBeNull();
+  });
+});
+
+describe('ball labels on disk', () => {
+  const tmpDir = join(process.cwd(), '.test-tmp-ball-labels');
+  const session = join(tmpDir, 'IMG_0684');
+  const doc = {
+    schema: 'tennis.ball-labels/1',
+    session: 'IMG_0684',
+    space: 'source_display',
+    labels: { '79733': [843, 982], '79750': null },
+  };
+
+  beforeEach(() => {
+    mkdirSync(join(session, 'swings', 'swing_001'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('round-trips a document written to the session directory', () => {
+    writeFileSync(join(session, BALL_LABELS), JSON.stringify(doc));
+
+    const read = readBallLabels(tmpDir, 'IMG_0684');
+    expect(read).toEqual({ doc });
+  });
+
+  it('lives beside the session, not inside a swing', () => {
+    // Swing directories are renumbered by every re-detection. A file keyed by
+    // timestamp but FILED under a swing would be orphaned by the same rename
+    // the keys were chosen to survive.
+    const resolved = resolveBallLabels(tmpDir, 'IMG_0684');
+    expect(resolved).toEqual({ target: join(realpathSync(session), BALL_LABELS) });
+    expect(BALL_LABELS).not.toBe(WRITABLE);
+  });
+
+  it('tells "nobody has labelled this yet" apart from "this file cannot be read"', () => {
+    // 404 invites the app to start an empty pass; 409 must not, because the
+    // file it cannot parse is somebody's ground truth and a fresh pass would
+    // replace it wholesale.
+    expect(readBallLabels(tmpDir, 'IMG_0684')).toEqual({ status: 404 });
+
+    writeFileSync(join(session, BALL_LABELS), '{"schema":"tennis.ball-labels/9","labels":{}}');
+    expect(readBallLabels(tmpDir, 'IMG_0684')).toEqual({ status: 409 });
+
+    writeFileSync(join(session, BALL_LABELS), 'not json at all');
+    expect(readBallLabels(tmpDir, 'IMG_0684')).toEqual({ status: 409 });
+  });
+
+  it('refuses to write through a symlink planted in the tree', () => {
+    // The same hole `resolveWriteTarget` closes for `user-edit.json`: a write
+    // follows a symlink at the final component, so a link pointing at
+    // `metadata.json` would let this route overwrite ETL output.
+    writeFileSync(join(session, 'metadata.json'), '{}');
+    symlinkSync(join(session, 'metadata.json'), join(session, BALL_LABELS));
+
+    expect(resolveBallLabels(tmpDir, 'IMG_0684')).toEqual({ status: 403 });
+  });
+
+  it('refuses a session name that is not in the tree', () => {
+    expect(resolveBallLabels(tmpDir, '../IMG_0684')).toEqual({ status: 404 });
+    expect(resolveBallLabels(tmpDir, 'IMG_9999')).toEqual({ status: 404 });
   });
 });

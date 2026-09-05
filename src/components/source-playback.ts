@@ -257,7 +257,7 @@ export const END_MODE_LABELS: Record<EndMode, { label: string; title: string }> 
  * against. Keeping them in three hand-synced places is how a UI ends up
  * advertising a key it no longer binds.
  */
-export const SHORTCUTS: { label: string; what: string }[] = [
+export const SHORTCUTS: { label: string; what: string; mode?: 'ball' }[] = [
   { label: '\u2190 \u2192', what: 'Previous / next swing' },
   { label: 'space', what: 'Play / pause' },
   { label: 'r', what: 'Replay the window' },
@@ -265,7 +265,21 @@ export const SHORTCUTS: { label: string; what: string }[] = [
   { label: 's', what: 'Star this swing' },
   { label: 'x', what: 'Hide this swing' },
   { label: 'e', what: 'Export this swing' },
+  { label: 'b', what: 'Ball labelling on / off' },
   { label: '?', what: 'This list' },
+  // Ball labelling REBINDS the arrows, from swings to single frames. That is
+  // the point of it being a mode rather than a set of extra keys: labelling is
+  // frame-by-frame work, and having to reach for a different pair of keys to
+  // step a frame is the difference between confirming 60 frames in a minute and
+  // in five. The overlay groups these under a heading so it is visible that
+  // they replace the entries above rather than adding to them.
+  { label: '\u2190 \u2192', what: 'Previous / next frame', mode: 'ball' },
+  { label: '\u21e7 \u2190 \u2192', what: 'Previous / next window', mode: 'ball' },
+  { label: 'a', what: 'Accept the offered candidate', mode: 'ball' },
+  { label: 'n', what: 'No ball visible in this frame', mode: 'ball' },
+  { label: 'c', what: 'Offer the next candidate', mode: 'ball' },
+  { label: 'click', what: 'Put the ball where it really is', mode: 'ball' },
+  { label: 'backspace', what: 'Unlabel this frame', mode: 'ball' },
 ];
 
 /**

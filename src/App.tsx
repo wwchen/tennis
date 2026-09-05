@@ -9,6 +9,7 @@ import { Mono, SkippedBanner } from '@/components/shared';
 import { Filters } from '@/components/Filters';
 import { SourcePicker } from '@/components/SourcePicker';
 import { CompareTable, FrameGrid } from '@/components/CompareView';
+import { NO_SESSION } from '@/domain/types';
 import { CatalogView } from '@/components/CatalogView';
 import { DetailView } from '@/components/DetailView';
 import { Inspector } from '@/components/Inspector';
@@ -74,7 +75,7 @@ export default function App() {
           probe={state.source}
           settings={state.settings}
           detection={state.detection}
-          session={state.session ?? '—'}
+          session={state.session ?? NO_SESSION}
           sessions={state.playable}
           onSession={switchSession}
         />

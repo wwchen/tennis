@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip } from '@/domain/types';
 import {
+  SHORTCUTS,
   SPEED_STEPS,
   axisTicks,
   clock,
@@ -326,5 +327,29 @@ describe('rateLabel', () => {
     expect(rateLabel(0.5)).toBe('0.5×');
     expect(rateLabel(0.25)).toBe('0.25×');
     expect(rateLabel(1.5)).toBe('1.5×');
+  });
+});
+
+describe('SHORTCUTS', () => {
+  it('registers the labelling keys, so the help overlay cannot go stale', () => {
+    // The list exists precisely so the handler, the button labels and the `?`
+    // overlay cannot drift apart. A key bound in `KeyframeReview` and missing
+    // here is a key nothing tells the reviewer about.
+    const ball = SHORTCUTS.filter((k) => k.mode === 'ball').map((k) => k.what);
+
+    expect(SHORTCUTS.some((k) => k.label === 'b' && k.mode === undefined)).toBe(true);
+    expect(ball).toContain('Accept the offered candidate');
+    expect(ball).toContain('No ball visible in this frame');
+    expect(ball).toContain('Put the ball where it really is');
+    expect(ball).toContain('Unlabel this frame');
+  });
+
+  it('says the arrows are REBOUND while labelling rather than listing them once', () => {
+    // Two entries with the same key and different meanings is the honest
+    // description of a mode, and the overlay groups them under a heading.
+    const arrows = SHORTCUTS.filter((k) => k.label === '\u2190 \u2192');
+
+    expect(arrows).toHaveLength(2);
+    expect(arrows.filter((k) => k.mode === 'ball')).toHaveLength(1);
   });
 });
