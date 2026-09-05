@@ -118,6 +118,24 @@ error fails the image, not just CI. Caddy handles the SPA fallback, sets the
 CSP and security headers, caches fingerprinted `/assets/*` forever and
 `index.html` never, and answers `/healthz` for the container healthcheck.
 
+`out/` is mounted read-only at `/data`, and Caddy serves the two ETL routes
+from it — `/api/media/*` as files, and `/api/session` from payloads
+`scripts/session-index.ts` writes under `out/_index` ahead of time, since a
+file server cannot walk a directory the way the dev middleware does. The
+generator calls `readSession` itself, so the static route cannot drift from
+the dev route it stands in for.
+
+**Rerun `make session-index` after every `tennisproc` run.** `make up` depends
+on it, but a session processed afterwards will not appear until the index is
+rebuilt, and a stale index is indistinguishable from a session you have not
+reviewed yet.
+
+Read-only is deliberate: `user-edit.json` lives in that tree and is the one
+thing the pipeline cannot regenerate from the source video. The consequence is
+that **verdicts cannot be saved from the deployed app** — the `PUT` that stores
+them 404s there. Review work happens against `npm run dev`; the container is
+for looking, from anywhere.
+
 #### Cloudflare Access
 
 Authentication is enforced **at the Cloudflare edge**, the same way the roadtrip
@@ -226,10 +244,45 @@ On a **private** repo, CodeQL and secret scanning themselves also require GHAS.
 On a public repo both are free. Dependabot and dependency review work either
 way.
 
-Deployment is not wired up yet: CI stops at a pushed image. The roadtrip pattern
-to mirror when that changes is a `deploy.yml` triggered by `workflow_run` on CI
-success, joining the tailnet, installing a release over SSH and running
-`docker compose --profile tunnel up -d` on the host.
+### Deploying
+
+CI stops at a pushed image; putting one in front of the tunnel is manual, and
+runs on the host holding `secrets/cloudflare_tunnel_token`. From a checkout of
+the commit you mean to ship:
+
+```sh
+make session-index                       # or a session processed since the last
+                                         # deploy will not appear
+SHOT_LAB_SHA=$(git rev-parse HEAD) \
+  docker compose --profile tunnel up -d --build
+```
+
+Then check the container, not just the site:
+
+```sh
+docker compose ps                        # image tag names the deployed commit
+curl -s localhost:8080/api/session | head -c 60
+```
+
+`/api/session` is the check that matters. Every route answers 200 whether or not
+the ETL mount is working, because Caddy's SPA fallback returns `index.html` for
+anything it cannot serve — so a broken deploy looks healthy and quietly shows
+seed data. JSON means the tree is mounted; `<!doctype html>` means it is not.
+
+The SHA tag is what makes a deploy nameable, so keep the commit reachable from
+a branch: **build after any `--amend` or rebase, never between.** Otherwise the
+tag names a tree nobody can check out, and `docker compose ps` stops answering
+what is live — an image ran for a day tagged with a commit no branch contained,
+amended away ninety seconds after it was built.
+
+Deploy from `main`. Everything the container needs is there, which is the point
+of merging the ETL mount rather than carrying it on a branch: a tree missing it
+loses `/api` in exactly the silent way described above.
+
+The roadtrip pattern to mirror when this is automated is a `deploy.yml`
+triggered by `workflow_run` on CI success, joining the tailnet, installing a
+release over SSH and running `docker compose --profile tunnel up -d` on the
+host.
 
 ---
 

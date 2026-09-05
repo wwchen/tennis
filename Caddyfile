@@ -17,6 +17,68 @@
 		respond "ok" 200
 	}
 
+	# The ETL tree, mounted read-only at /data (see docker-compose.yml).
+	#
+	# In dev these two routes are Node middleware that reads `out/` per request;
+	# here they are static files. Keeping the container a file server is the
+	# point: nothing behind the tunnel walks a filesystem or accepts a path from
+	# the client that a `root` does not contain.
+	handle_path /api/media/* {
+		root * /data
+		header {
+			X-Content-Type-Options nosniff
+			# Frame paths are stable across ETL runs but their contents are not,
+			# so these must revalidate. Unlike /assets/*, the name carries no
+			# hash to make a long max-age safe.
+			Cache-Control "no-cache"
+			-Server
+		}
+		file_server
+	}
+
+	# `?session=` names one session; absent means the first. The value is
+	# interpolated into a path, so the matcher admits only the character set
+	# scripts/session-index.ts writes files for — file_server would contain a
+	# traversal attempt anyway, but this keeps the two ends agreeing on what a
+	# session name is.
+	@session_named expression `{query.session}.matches('^[A-Za-z0-9._-]+$')`
+	@session_absent expression `{query.session} == ""`
+	handle /api/session {
+		root * /data
+		header {
+			X-Content-Type-Options nosniff
+			Cache-Control "no-cache"
+			-Server
+		}
+		handle @session_named {
+			rewrite * /_index/by-name/{query.session}.json
+			file_server
+		}
+		handle @session_absent {
+			rewrite * /_index/default.json
+			file_server
+		}
+		# A name that exists 404s from the by-name branch above; a name that is
+		# not addressable at all 404s here. Both rather than falling back to the
+		# default payload: `readSession` refuses that substitution on purpose,
+		# because the app writes edits back under whichever session it was
+		# handed, and answering a request for one tree with another is how a
+		# reviewer's labels land in the wrong one.
+		handle {
+			respond 404
+		}
+	}
+
+	# Everything else under /api has no static equivalent — chiefly the PUT
+	# that saves a reviewer's verdicts, which needs a writable tree this
+	# container deliberately does not have. 404 rather than falling through to
+	# the SPA below, which answered every /api request with index.html and a
+	# 200: that is what made a missing API indistinguishable from a working one
+	# and left the app quietly showing seed data.
+	handle /api/* {
+		respond 404
+	}
+
 	handle {
 		header {
 			X-Content-Type-Options nosniff

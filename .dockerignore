@@ -15,3 +15,26 @@ raw
 Dockerfile
 docker-compose*.yml
 README.md
+
+# --- Trees that must never enter the build context ---
+
+# The Cloudflare tunnel token. Nothing in the image needs it (it is mounted
+# into the cloudflared container as a Docker secret at runtime), and a build
+# context copy lands in an intermediate layer.
+secrets
+
+# ETL output and source video: 800 MB and 13 GB respectively, neither of which
+# `npm run build` reads. out/ reaches the container as a read-only mount, not a
+# COPY. Leaving these in the context made every image build stream the whole
+# lot to the daemon, and a single unreadable .MOV fail the build outright.
+out
+raw
+models
+
+# Python side: the ETL runs on the host, never in the web image.
+.venv
+.venv313
+__pycache__
+
+# Scratch trees left behind by an interrupted test run.
+.test-tmp*
