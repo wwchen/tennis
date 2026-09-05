@@ -216,6 +216,25 @@ export function KeyframeReview({
   // PUT back what it has only just read. Same rule and same reason as the
   // `lastSentRef` cache in the store's `user-edit.json` write-back.
   const sentLabels = useRef(new Map<string, string>());
+  /**
+   * The payload the debounce is waiting to send, so a session change can flush
+   * it instead of dropping it.
+   *
+   * Without this the last edit before a switch is lost silently: the reset
+   * above nulls `labels` during render, the write effect's cleanup clears the
+   * timer, and the rerun returns early on the null. Up to LABEL_WRITE_MS of
+   * somebody's labelling, gone, with nothing said.
+   */
+  const pendingLabels = useRef<{ session: string; payload: string } | null>(null);
+  /**
+   * A write that did not land. Shown, not swallowed.
+   *
+   * Mid-pass a failure heals itself -- the payload is cumulative and the next
+   * keystroke retries the lot -- but the LAST write of a session has no next
+   * keystroke. This file is the only record of twenty minutes of human
+   * judgement, so it must not be able to disappear quietly.
+   */
+  const [labelsUnsaved, setLabelsUnsaved] = useState(false);
 
   const [seenObjectSession, setSeenObjectSession] = useState(session);
   if (seenObjectSession !== session) {
@@ -228,6 +247,7 @@ export function KeyframeReview({
     setCandidates(null);
     setLabels(null);
     setLabelsUnreadable(false);
+    setLabelsUnsaved(false);
     setLabelling(false);
     setFrameIdx(0);
   }
@@ -819,25 +839,41 @@ export function KeyframeReview({
    * risk, not requests per second. Twenty minutes of labelling lost to a reload
    * would be unforgivable; half a second of it is a frame nobody minds redoing.
    */
+  const flushLabels = useCallback(() => {
+    const due = pendingLabels.current;
+    if (due === null) return;
+    if (sentLabels.current.get(due.session) === due.payload) return;
+    pendingLabels.current = null;
+    // `keepalive` so the request survives the page going away: a flush is most
+    // valuable exactly when the document is being torn down.
+    void fetch(ballLabelsUrl(due.session), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: due.payload,
+      keepalive: true,
+    })
+      .then((res) => {
+        // `fetch` resolves for 4xx/5xx too, and caching a rejected payload as
+        // sent would retire those labels permanently.
+        if (res.ok) sentLabels.current.set(due.session, due.payload);
+        setLabelsUnsaved(!res.ok);
+      })
+      .catch(() => setLabelsUnsaved(true));
+  }, []);
+
   useEffect(() => {
     if (labels === null) return;
     const payload = JSON.stringify(ballLabelsDoc(session, labels));
     if (sentLabels.current.get(session) === payload) return;
-    const timer = setTimeout(() => {
-      void fetch(ballLabelsUrl(session), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-      })
-        .then((res) => {
-          // `fetch` resolves for 4xx/5xx too, and caching a rejected payload as
-          // sent would retire those labels permanently.
-          if (res.ok) sentLabels.current.set(session, payload);
-        })
-        .catch(() => undefined);
-    }, LABEL_WRITE_MS);
+    pendingLabels.current = { session, payload };
+    const timer = setTimeout(flushLabels, LABEL_WRITE_MS);
     return () => clearTimeout(timer);
-  }, [labels, session]);
+  }, [labels, session, flushLabels]);
+
+  // Flush on the way out. Cleanup here runs on a session change and on unmount
+  // and NOT on every keystroke, which is what lets the debounce above stay a
+  // debounce: the effect depends on the session alone.
+  useEffect(() => () => flushLabels(), [session, flushLabels]);
 
   /**
    * Re-read the element's box and the picture's size inside it.
@@ -1148,6 +1184,13 @@ export function KeyframeReview({
                       {labelDone.total - labelDone.labelled} left
                     </span>
                   )}
+                  {/* Loud on purpose. Every other badge here is dim because it
+                      reports; this one is a warning that work is not on disk. */}
+                  {labelsUnsaved && (
+                    <span style={S.badgeWarn} title="The last write did not reach the server. Keep this tab open and label another frame to retry.">
+                      not saved
+                    </span>
+                  )}
                   <span style={S.badgeDim}>
                     {labelAt === undefined
                       ? 'unlabelled'
@@ -1401,6 +1444,9 @@ export function KeyframeReview({
                     {labelling ? 'Labelling ball' : 'Label ball (b)'}
                   </Button>
                 </span>
+                {labelling && labelsUnsaved && (
+                  <span style={S.badgeWarn}>not saved</span>
+                )}
                 {labelling && labelDone !== null && (
                   <span style={S.mono}>
                     {labelDone.labelled}/{labelDone.total} · {labelDone.total - labelDone.labelled}{' '}
@@ -1723,6 +1769,17 @@ const S: Record<string, CSSProperties> = {
     letterSpacing: '0.06em',
     color: 'rgba(250,249,233,0.62)',
     background: 'rgba(16,19,14,0.45)',
+    padding: '4px 6px',
+    borderRadius: 4,
+  },
+  // The one badge that is not dim. The others report state; this one says work
+  // is not on disk, and a reviewer who misses it loses the pass.
+  badgeWarn: {
+    fontFamily: 'var(--th-mono)',
+    fontSize: 11,
+    letterSpacing: '0.06em',
+    color: '#101310',
+    background: '#ffd166',
     padding: '4px 6px',
     borderRadius: 4,
   },

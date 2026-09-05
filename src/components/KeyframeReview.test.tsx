@@ -189,4 +189,42 @@ describe('KeyframeReview ball labelling', () => {
     await new Promise((r) => setTimeout(r, 700));
     expect(written).toEqual([]);
   });
+
+  it('flushes a pending write when the session changes, instead of dropping it', async () => {
+    // The bug this pins: the session reset nulls `labels` during render, the
+    // debounced write's cleanup clears its timer, and the rerun returns early
+    // on the null -- so the last edit before a switch vanished silently.
+    const view = renderView();
+    await screen.findByText('Label ball (b)');
+    fireEvent.keyDown(window, { key: 'b' });
+    fireEvent.keyDown(window, { key: 'a' });
+    // Unmount INSIDE the debounce window, which is what a session change does
+    // to this effect. Nothing has reached the server yet.
+    expect(written).toHaveLength(0);
+    view.unmount();
+    await waitFor(() => expect(written.length).toBeGreaterThan(0));
+    expect(Object.keys(lastWritten().labels)).toHaveLength(1);
+  });
+
+  it('says so when a write does not land, rather than losing it quietly', async () => {
+    // Mid-pass a failure heals -- the payload is cumulative and the next
+    // keystroke retries everything -- but the LAST write has no next keystroke,
+    // so a silent failure is the whole pass gone.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => {
+        if (url.startsWith('/api/ball-candidates/')) return Promise.resolve(jsonResponse(CANDIDATES));
+        if (url.startsWith('/api/ball-labels/')) {
+          if (init?.method === 'PUT') return Promise.resolve({ ok: false, status: 500 } as Response);
+          return Promise.resolve(jsonResponse(null, 404));
+        }
+        return Promise.resolve(jsonResponse(null, 404));
+      }),
+    );
+    renderView();
+    await screen.findByText('Label ball (b)');
+    fireEvent.keyDown(window, { key: 'b' });
+    fireEvent.keyDown(window, { key: 'a' });
+    expect(await screen.findAllByText(/not saved/i)).not.toHaveLength(0);
+  });
 });
