@@ -20,11 +20,11 @@ import { tmpdir } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { Plugin, ViteDevServer } from 'vite';
-import { clipExportFileName } from './src/components/clip-export';
-import type { ObjectsDoc } from './src/components/object-overlay';
-import { parseObjectsJsonl } from './src/components/object-overlay';
-import type { BallCandidatesDoc, BallLabelsDoc } from './src/components/ball-labels';
-import { parseBallCandidates, parseBallLabels } from './src/components/ball-labels';
+import { clipExportFileName } from './src/components/clip-export.ts';
+import type { ObjectsDoc } from './src/components/object-overlay.ts';
+import { parseObjectsJsonl } from './src/components/object-overlay.ts';
+import type { BallCandidatesDoc, BallLabelsDoc } from './src/components/ball-labels.ts';
+import { parseBallCandidates, parseBallLabels } from './src/components/ball-labels.ts';
 
 /**
  * Serves the `tennisproc` output tree to the review app in dev.

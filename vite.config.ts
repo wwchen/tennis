@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
-import shotLab from './vite-plugin-shot-lab';
+import shotLab from './vite-plugin-shot-lab.ts';
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
