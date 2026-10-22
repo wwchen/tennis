@@ -25,5 +25,13 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "vite.config.ts", "vite-plugin-shot-lab.ts", "vite-plugin-shot-lab.test.ts", "vitest.setup.ts"]
+  "include": [
+    "src",
+    "scripts/session-index.ts",
+    "scripts/session-index.test.ts",
+    "vite.config.ts",
+    "vite-plugin-shot-lab.ts",
+    "vite-plugin-shot-lab.test.ts",
+    "vitest.setup.ts"
+  ]
 }

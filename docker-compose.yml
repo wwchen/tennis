@@ -28,6 +28,14 @@ services:
     # copy Access is protecting.
     ports:
       - '127.0.0.1:8080:80'
+    volumes:
+      # The tennisproc output tree: clips, frames, and the pre-built
+      # /api/session payloads under _index/ (scripts/session-index.ts).
+      #
+      # Read-only, and not negotiable. user-edit.json lives in this tree and is
+      # the one thing the pipeline cannot regenerate from the source video, so
+      # the container that faces the internet gets no way to touch it.
+      - ./out:/data:ro
 
   cloudflared:
     profiles: [tunnel]

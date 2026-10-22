@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install dev build test lint typecheck check image up down logs clean
+.PHONY: help install dev build test lint typecheck check image session-index up down logs clean
 
 IMAGE ?= shot-lab/web
 
@@ -30,7 +30,10 @@ check: lint typecheck test build ## Everything CI runs, in CI's order
 image: ## Build the production container
 	docker build --target web -t $(IMAGE) .
 
-up: ## Serve the production build on 127.0.0.1:8080
+session-index: ## Rebuild the static /api/session payloads under out/_index
+	node scripts/session-index.ts
+
+up: session-index ## Serve the production build on 127.0.0.1:8080
 	docker compose up -d --build
 	@echo "http://127.0.0.1:8080"
 
